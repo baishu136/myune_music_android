@@ -1,0 +1,26 @@
+[package]
+name = "rust_lib_myune_music"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[dependencies]
+flutter_rust_bridge = "=2.10.0"
+
+lofty = "0.23.3"
+
+serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(windows)'.dependencies.windows]
+version = "0.61.3"
+features = [
+    "Media_Playback",
+    "Storage",
+    "Storage_Streams",
+    "Storage_FileProperties"
+]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

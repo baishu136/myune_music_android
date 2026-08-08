@@ -1,0 +1,136 @@
+import 'dart:async';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'package:flutter/services.dart';
+
+import '../page/playlist/playlist_content_notifier.dart';
+import '../widgets/app_window_title_bar.dart';
+import 'main_view.dart';
+import '../widgets/playbar.dart';
+import '../widgets/playing_queue_drawer.dart';
+
+class AppShell extends StatefulWidget {
+  const AppShell({super.key});
+
+  @override
+  State<AppShell> createState() => _AppShellState();
+}
+
+class _AppShellState extends State<AppShell> {
+  StreamSubscription<String>? _errorSubscription;
+  StreamSubscription<String>? _infoSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final notifier = context.read<PlaylistContentNotifier>();
+      // 错误提示
+      _errorSubscription = notifier.errorStream.listen((errorMessage) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Container(
+                constraints: const BoxConstraints(maxWidth: 400),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error, color: Colors.white),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(errorMessage)),
+                    TextButton(
+                      onPressed: () =>
+                          Clipboard.setData(ClipboardData(text: errorMessage)),
+                      child: Text(
+                        '复制',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onError,
+                        ),
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: () =>
+                          ScaffoldMessenger.of(context).hideCurrentSnackBar(),
+                      child: Text(
+                        '关闭',
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.onError,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              backgroundColor: Theme.of(context).colorScheme.error,
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 3),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              margin: const EdgeInsets.only(bottom: 80, left: 12, right: 12),
+              persist: false,
+            ),
+          );
+        }
+      });
+      // 普通提示
+      _infoSubscription = notifier.infoStream.listen((infoMessage) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(
+              content: Container(
+                constraints: const BoxConstraints(maxWidth: 400),
+                child: Row(
+                  children: [
+                    const Icon(Icons.info, color: Colors.white),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(infoMessage)),
+                  ],
+                ),
+              ),
+              backgroundColor: Theme.of(context).colorScheme.primary,
+              behavior: SnackBarBehavior.floating,
+              duration: const Duration(seconds: 3),
+              shape: RoundedRectangleBorder(
+                borderRadius: BorderRadius.circular(8),
+              ),
+              margin: const EdgeInsets.only(bottom: 80, left: 12, right: 12),
+              action: SnackBarAction(
+                label: '关闭',
+                onPressed: () {
+                  ScaffoldMessenger.of(context).hideCurrentSnackBar();
+                },
+              ),
+              persist: false,
+            ),
+          );
+        }
+      });
+    });
+  }
+
+  @override
+  void dispose() {
+    _errorSubscription?.cancel(); // 在销毁时取消订阅
+    _infoSubscription?.cancel(); // 在销毁时取消订阅
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return const Scaffold(
+      backgroundColor: Colors.transparent,
+      endDrawer: PlayingQueueDrawer(),
+      body: Material(
+        color: Colors.transparent,
+        child: Column(
+          children: [
+            AppWindowTitleBar(),
+            Expanded(child: MainView()),
+            Playbar(),
+          ],
+        ),
+      ),
+    );
+  }
+}
