@@ -133,9 +133,11 @@ sudo apt install keybinder-3.0
 
 ## 📸 软件截图
 
-![](screenshot/1f1d095fdece3740c123cc267b2933d8.png)
+![安卓播放页：封面与歌词](screenshot/android-now-playing.jpg)
 
-![](screenshot/ed403ac56eb0c48ccfa7f1bb769c040d.png)
+![安卓播放设置：均衡器、歌词源与自定义均衡器](screenshot/android-playback-settings.jpg)
+
+![安卓音乐库、歌单、歌手、专辑与设置](screenshot/android-library-and-settings.jpg)
 
 
 ## 🚀 快速开始
