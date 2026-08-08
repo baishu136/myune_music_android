@@ -714,6 +714,19 @@ class PlaylistContentNotifier extends ChangeNotifier {
     _audioService.dispose();
   }
 
+  MediaSession _buildMediaSession(Song song) {
+    return MediaSession(
+      appName: 'MyuneMusic',
+      title: song.title,
+      artist: song.artist,
+      album: song.album,
+      // Regaining Android audio focus must not start music by itself. The
+      // player resumes only after an explicit user play command.
+      interruptionPolicy: InterruptionPolicy.pauseOnly,
+      autoApplyPlaylistNavigation: false,
+    );
+  }
+
   void _setupMediaPlayerListeners() {
     _audioService.player.stream.playing.listen((playing) {
       _isPlaying = playing; // 更新内部状态
@@ -2474,13 +2487,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
           _scheduleCoverEviction();
         }
 
-        final session = MediaSession(
-          appName: 'MyuneMusic',
-          title: songToPlay.title,
-          artist: songToPlay.artist,
-          album: songToPlay.album,
-          autoApplyPlaylistNavigation: false,
-        );
+        final session = _buildMediaSession(songToPlay);
         await _audioService.player.setMediaSession(session);
 
         _currentLyrics = [];
@@ -2992,13 +2999,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
     }
 
     try {
-      final session = MediaSession(
-        appName: 'MyuneMusic',
-        title: songToPlay.title,
-        artist: songToPlay.artist,
-        album: songToPlay.album,
-        autoApplyPlaylistNavigation: false,
-      );
+      final session = _buildMediaSession(songToPlay);
       await _audioService.player.setMediaSession(session);
 
       if (_gaplessEnabled) {
@@ -3216,13 +3217,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
         // 加载歌词
         _loadLyricsForSong(songFilePath);
 
-        final session = MediaSession(
-          appName: 'MyuneMusic',
-          title: _currentSong!.title,
-          artist: _currentSong!.artist,
-          album: _currentSong!.album,
-          autoApplyPlaylistNavigation: false,
-        );
+        final session = _buildMediaSession(_currentSong!);
         await _audioService.player.setMediaSession(session);
 
         // 提取并应用动态主题色

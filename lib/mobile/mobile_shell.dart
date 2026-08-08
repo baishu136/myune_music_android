@@ -823,53 +823,59 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
         initialChildSize: .88,
         minChildSize: .55,
         maxChildSize: .95,
-        builder: (context, controller) => SafeArea(
-          child: ListView(
-            controller: controller,
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-            children: [
-              Row(
-                children: [
-                  Text('自定义均衡器', style: Theme.of(context).textTheme.titleLarge),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: notifier.resetAudioControls,
-                    child: const Text('重置'),
-                  ),
-                ],
-              ),
-              Text('当前预设：${notifier.equalizerPresetName}'),
-              const SizedBox(height: 8),
-              ...List.generate(
-                PlaylistContentNotifier.equalizerFrequencies.length,
-                (index) {
-                  final frequency =
-                      PlaylistContentNotifier.equalizerFrequencies[index];
-                  final gain = notifier.equalizerGains[index];
-                  return Row(
-                    children: [
-                      SizedBox(width: 58, child: Text(_frequency(frequency))),
-                      Expanded(
-                        child: Slider(
-                          min: -12,
-                          max: 12,
-                          divisions: 48,
-                          value: gain,
-                          onChanged: (value) =>
-                              notifier.setEqualizerBand(index, value),
-                          onChangeEnd: (value) =>
-                              notifier.commitEqualizerBand(index, value),
+        builder: (context, controller) => AnimatedBuilder(
+          animation: notifier,
+          builder: (context, child) => SafeArea(
+            child: ListView(
+              controller: controller,
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+              children: [
+                Row(
+                  children: [
+                    Text(
+                      '自定义均衡器',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: notifier.resetAudioControls,
+                      child: const Text('重置'),
+                    ),
+                  ],
+                ),
+                Text('当前预设：${notifier.equalizerPresetName}'),
+                const SizedBox(height: 8),
+                ...List.generate(
+                  PlaylistContentNotifier.equalizerFrequencies.length,
+                  (index) {
+                    final frequency =
+                        PlaylistContentNotifier.equalizerFrequencies[index];
+                    final gain = notifier.equalizerGains[index];
+                    return Row(
+                      children: [
+                        SizedBox(width: 58, child: Text(_frequency(frequency))),
+                        Expanded(
+                          child: Slider(
+                            min: -12,
+                            max: 12,
+                            divisions: 48,
+                            value: gain,
+                            onChanged: (value) =>
+                                notifier.setEqualizerBand(index, value),
+                            onChangeEnd: (value) =>
+                                notifier.commitEqualizerBand(index, value),
+                          ),
                         ),
-                      ),
-                      SizedBox(
-                        width: 48,
-                        child: Text('${gain.toStringAsFixed(1)} dB'),
-                      ),
-                    ],
-                  );
-                },
-              ),
-            ],
+                        SizedBox(
+                          width: 48,
+                          child: Text('${gain.toStringAsFixed(1)} dB'),
+                        ),
+                      ],
+                    );
+                  },
+                ),
+              ],
+            ),
           ),
         ),
       ),
