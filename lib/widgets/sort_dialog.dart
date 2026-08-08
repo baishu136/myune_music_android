@@ -34,6 +34,10 @@ class _SortDialogState extends State<SortDialog> {
                   value: SortCriterion.title,
                 ),
                 const RadioListTile<SortCriterion>(
+                  title: Text('按文件名'),
+                  value: SortCriterion.file,
+                ),
+                const RadioListTile<SortCriterion>(
                   title: Text('按歌手名'),
                   value: SortCriterion.artist,
                 ),

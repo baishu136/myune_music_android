@@ -24,8 +24,9 @@ import '../../theme/theme_provider.dart';
 import '../statistics_page/playback_tracker.dart';
 import '../../services/audio_metadata_service.dart';
 import '../../services/global_hotkey_manager.dart';
+import '../../services/search_service.dart';
 
-enum SortCriterion { title, artist, dateModified, random, trackNumber }
+enum SortCriterion { title, artist, file, dateModified, random, trackNumber }
 
 enum PlayMode { sequence, shuffle, repeatOne }
 
@@ -233,11 +234,19 @@ class PlaylistContentNotifier extends ChangeNotifier {
   static const _playbackRateKey = 'player_playback_rate';
   static const _equalizerGainsKey = 'player_equalizer_gains';
   static const _equalizerPresetKey = 'player_equalizer_preset';
+  static const _enabledEffectsKey = 'player_enabled_effects';
+  static const _arnndnModelPathKey = 'player_arnndn_model_path';
+
+  final Set<String> _enabledEffects = {};
+  String? _arnndnModelPath;
 
   double get currentPitch => _currentPitch;
   double get currentPlaybackRate => _currentPlaybackRate;
   List<double> get equalizerGains => List.unmodifiable(_equalizerGains);
   String get equalizerPresetName => _equalizerPresetName;
+  Set<String> get enabledEffects => Set.unmodifiable(_enabledEffects);
+  bool isEffectEnabled(String id) => _enabledEffects.contains(id);
+  String? get arnndnModelPath => _arnndnModelPath;
 
   // --- 音量控制 ---
   double _volume = 100.0; // 当前音量
@@ -264,6 +273,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
   String _searchKeyword = ''; // 当前搜索关键词
   bool _isSearching = false; // 是否正在搜索（用于切换UI）
   List<Song> _filteredSongs = []; // 搜索结果列表
+  final SearchService _searchService = SearchService();
 
   bool _disableHotKeys = false; // 是否禁用快捷键
 
@@ -617,6 +627,19 @@ class PlaylistContentNotifier extends ChangeNotifier {
     await _audioService.player.setPitch(_currentPitch);
     await _audioService.player.setRate(_currentPlaybackRate);
     await _applyEqualizer();
+
+    final effectsJson = prefs.getString(_enabledEffectsKey);
+    if (effectsJson != null) {
+      try {
+        final decoded = jsonDecode(effectsJson);
+        if (decoded is List) _enabledEffects.addAll(decoded.cast<String>());
+      } catch (_) {}
+    }
+    _arnndnModelPath = prefs.getString(_arnndnModelPathKey);
+    for (final id in _enabledEffects.toList()) {
+      final applied = await _applyEffect(id, true);
+      if (!applied) _enabledEffects.remove(id);
+    }
   }
 
   Future<void> _saveAudioControlSettings() async {
@@ -625,6 +648,15 @@ class PlaylistContentNotifier extends ChangeNotifier {
     await prefs.setDouble(_playbackRateKey, _currentPlaybackRate);
     await prefs.setString(_equalizerPresetKey, _equalizerPresetName);
     await prefs.setString(_equalizerGainsKey, jsonEncode(_equalizerGains));
+    await prefs.setString(
+      _enabledEffectsKey,
+      jsonEncode(_enabledEffects.toList()..sort()),
+    );
+    if (_arnndnModelPath == null) {
+      await prefs.remove(_arnndnModelPathKey);
+    } else {
+      await prefs.setString(_arnndnModelPathKey, _arnndnModelPath!);
+    }
   }
 
   void _scheduleAudioControlSave() {
@@ -2334,8 +2366,203 @@ class PlaylistContentNotifier extends ChangeNotifier {
     await _audioService.player.setPitch(_currentPitch);
     await _audioService.player.setRate(_currentPlaybackRate);
     await _applyEqualizer();
+    for (final id in _enabledEffects.toList()) {
+      await _applyEffect(id, false);
+    }
+    _enabledEffects.clear();
     await _saveAudioControlSettings();
     notifyListeners();
+  }
+
+  static const Map<String, Set<String>> _effectConflicts = {
+    'crossfeed': {'earwax'},
+    'earwax': {'crossfeed'},
+    'vocalBoost': {'vocalRemover'},
+    'vocalRemover': {'vocalBoost'},
+    'tilt': {'vinyl'},
+    'vinyl': {'tilt'},
+  };
+
+  Future<bool> toggleEffect(String id, bool enabled) async {
+    if (enabled && id == 'arnndn' && _arnndnModelPath == null) {
+      postError('请先选择人声降噪模型文件');
+      return false;
+    }
+
+    final disabledConflicts = <String>[];
+    if (enabled) {
+      for (final conflict in _effectConflicts[id] ?? const <String>{}) {
+        if (_enabledEffects.remove(conflict)) {
+          await _applyEffect(conflict, false);
+          disabledConflicts.add(conflict);
+        }
+      }
+    }
+
+    final applied = await _applyEffect(id, enabled);
+    if (!applied) {
+      for (final conflict in disabledConflicts) {
+        if (await _applyEffect(conflict, true)) _enabledEffects.add(conflict);
+      }
+      postError('音效启用失败，当前设备或音频格式可能不支持');
+      notifyListeners();
+      return false;
+    }
+
+    enabled ? _enabledEffects.add(id) : _enabledEffects.remove(id);
+    await _saveAudioControlSettings();
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> setArnndnModelPath(String? path) async {
+    _arnndnModelPath = path;
+    await _saveAudioControlSettings();
+    notifyListeners();
+  }
+
+  Future<bool> _applyEffect(String id, bool enabled) async {
+    final player = _audioService.player;
+    try {
+      switch (id) {
+        case 'crossfeed':
+          await player.updateAudioEffects(
+            (e) => e.updateCrossfeed(
+              (m) => m.copyWith(enabled: enabled, strength: 0.4, range: 0.5),
+            ),
+          );
+        case 'earwax':
+          await player.updateAudioEffects(
+            (e) => e.updateCrossfeed(
+              (m) => m.copyWith(enabled: enabled, strength: 0.3),
+            ),
+          );
+        case 'widerStereo':
+          await player.updateAudioEffects(
+            (e) => e
+                .updateExtrastereo((m) => m.copyWith(enabled: enabled, m: 1.2))
+                .updateStereowiden(
+                  (m) => m.copyWith(enabled: enabled, delay: 15, drymix: 0.8),
+                ),
+          );
+        case 'haas':
+          await player.updateAudioEffects(
+            (e) => e.updateHaas(
+              (m) => m.copyWith(
+                enabled: enabled,
+                level_in: 0.8,
+                level_out: 0.8,
+                side_gain: 0.35,
+                middle_source: HaasSource.mid,
+              ),
+            ),
+          );
+        case 'vocalBoost':
+          await player.updateAudioEffects(
+            (e) => e.updateStereotools(
+              (m) => m.copyWith(enabled: enabled, mlev: 1.4, slev: 0.8),
+            ),
+          );
+        case 'vocalRemover':
+          await player.updateAudioEffects(
+            (e) => e.updateStereotools(
+              (m) => m.copyWith(enabled: enabled, mlev: 0.15, slev: 1.1),
+            ),
+          );
+        case 'acompressor':
+          await player.updateAudioEffects(
+            (e) => e.updateAcompressor((m) => m.copyWith(enabled: enabled)),
+          );
+        case 'softClip':
+          await player.updateAudioEffects(
+            (e) => e
+                .updateAlimiter(
+                  (m) => m.copyWith(enabled: enabled, limit: 0.95),
+                )
+                .updateAsoftclip((m) => m.copyWith(enabled: enabled)),
+          );
+        case 'deNoise':
+          await player.updateAudioEffects(
+            (e) => e
+                .updateAgate(
+                  (m) => m.copyWith(enabled: enabled, threshold: 0.04),
+                )
+                .updateAfftdn((m) => m.copyWith(enabled: enabled)),
+          );
+        case 'virtualbass':
+          await player.updateAudioEffects(
+            (e) => e.updateVirtualbass((m) => m.copyWith(enabled: enabled)),
+          );
+        case 'subboost':
+          await player.updateAudioEffects(
+            (e) => e
+                .updateAsubboost(
+                  (m) => m.copyWith(enabled: enabled, dry: 0.7, wet: 0.5),
+                )
+                .updateBass((m) => m.copyWith(enabled: enabled, g: 3)),
+          );
+        case 'crystalizer':
+          await player.updateAudioEffects(
+            (e) => e
+                .updateCrystalizer((m) => m.copyWith(enabled: enabled))
+                .updateTreble((m) => m.copyWith(enabled: enabled, g: 2)),
+          );
+        case 'tilt':
+          await player.updateAudioEffects(
+            (e) => e
+                .updateAtilt((m) => m.copyWith(enabled: enabled))
+                .updateTiltshelf((m) => m.copyWith(enabled: enabled)),
+          );
+        case 'vinyl':
+          await player.updateAudioEffects(
+            (e) => e
+                .updateHighpass(
+                  (m) => m.copyWith(enabled: enabled, frequency: 150),
+                )
+                .updateLowpass(
+                  (m) => m.copyWith(enabled: enabled, frequency: 7500),
+                ),
+          );
+        case 'exciter':
+          await player.updateAudioEffects(
+            (e) => e.updateAexciter((m) => m.copyWith(enabled: enabled)),
+          );
+        case 'echo':
+          await player.updateAudioEffects(
+            (e) => e.updateAecho(
+              (m) => m.copyWith(
+                enabled: enabled,
+                in_gain: 0.8,
+                out_gain: 0.5,
+                delays: '80|160',
+                decays: '0.35|0.15',
+              ),
+            ),
+          );
+        case 'deesser':
+          await player.updateAudioEffects(
+            (e) => e.updateDeesser((m) => m.copyWith(enabled: enabled)),
+          );
+        case 'declip':
+          await player.updateAudioEffects(
+            (e) => e.updateAdeclip((m) => m.copyWith(enabled: enabled)),
+          );
+        case 'arnndn':
+          final model = _arnndnModelPath;
+          if (enabled && model == null) return false;
+          await player.updateAudioEffects(
+            (e) => e.copyWith(
+              arnndn: ArnndnSettings(enabled: enabled, model: model ?? ''),
+            ),
+          );
+        default:
+          return false;
+      }
+      return true;
+    } catch (error) {
+      debugPrint('应用音效 $id 失败: $error');
+      return false;
+    }
   }
 
   // 用于无缝播放模式下，将下一首预加载到 mpv playlist 中
@@ -3466,6 +3693,17 @@ class PlaylistContentNotifier extends ChangeNotifier {
     required SortCriterion criterion,
     required bool descending,
   }) async {
+    if (criterion == SortCriterion.file) {
+      final sorted = List<String>.from(paths)
+        ..sort(
+          (a, b) => p
+              .basename(a)
+              .toLowerCase()
+              .compareTo(p.basename(b).toLowerCase()),
+        );
+      return descending ? sorted.reversed.toList() : sorted;
+    }
+
     // 如果是按标题或歌手，需要歌曲的元数据
     if (criterion == SortCriterion.title || criterion == SortCriterion.artist) {
       // 创建一个包含路径和元数据的临时列表
@@ -5658,7 +5896,9 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
       final artist = song.artist.trim().toLowerCase();
       final title = song.title.trim().toLowerCase();
-      final key = '$artist|$title';
+      final album = song.album.trim().toLowerCase();
+      final hasUsableAlbum = album.isNotEmpty && album != '未知专辑';
+      final key = hasUsableAlbum ? '$artist|$title|$album' : '$artist|$title';
 
       if (seen.add(key)) {
         dedupedSongs.add(song);
@@ -5666,6 +5906,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
     }
 
     _allSongs = dedupedSongs;
+    _searchService.rebuild(_allSongs);
 
     final finalPathOrder = _allSongs.map((s) => s.filePath).toList();
     await _playlistManager.saveAllSongsOrder(finalPathOrder);
@@ -5818,6 +6059,10 @@ class PlaylistContentNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
+  List<Song> searchSongs(String keyword, Iterable<Song> source) {
+    return _searchService.search(keyword, source);
+  }
+
   void _updateFilteredSongs() {
     List<Song> sourceList;
 
@@ -5840,12 +6085,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
       // 如果关键词为空，则显示完整的源列表
       _filteredSongs = List.from(sourceList);
     } else {
-      // 否则进行过滤
-      _filteredSongs = sourceList.where((song) {
-        final titleMatch = song.title.toLowerCase().contains(_searchKeyword);
-        final artistMatch = song.artist.toLowerCase().contains(_searchKeyword);
-        return titleMatch || artistMatch;
-      }).toList();
+      _filteredSongs = _searchService.search(_searchKeyword, sourceList);
     }
   }
 

@@ -23,6 +23,7 @@ import 'package:flutter_single_instance/flutter_single_instance.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 import 'page/statistics_page/statistics_manager.dart';
 import 'layout/navigation_notifier.dart';
+import 'services/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -130,6 +131,7 @@ void main() async {
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
+        ChangeNotifierProvider(create: (_) => NotificationService()),
         ChangeNotifierProvider.value(value: themeProvider),
         ChangeNotifierProvider(
           create: (context) => PlaylistContentNotifier(
@@ -439,7 +441,7 @@ class _MyAppState extends State<MyApp> with TrayListener {
           darkTheme: themeProvider.darkThemeData,
           themeMode: themeProvider.themeMode,
           builder: (context, materialAppChild) => Platform.isAndroid
-              ? materialAppChild!
+              ? GlobalNoticeOverlay(child: materialAppChild!)
               : DragToResizeArea(child: Hotkeys(child: materialAppChild!)),
 
           home: Platform.isAndroid ? const MobileShell() : const AppShell(),

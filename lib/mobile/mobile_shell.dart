@@ -1,19 +1,24 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 
 import '../page/playlist/playlist_content_notifier.dart';
 import '../page/playlist/playlist_models.dart';
 import '../page/pages/statistics_page.dart';
+import '../page/pages/audio_analysis_page.dart';
 import '../page/setting/setting_page.dart';
 import '../page/setting/settings_provider.dart';
 import '../page/statistics_page/statistics_manager.dart';
 import '../widgets/playing_queue_drawer.dart';
 import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/sort_dialog.dart';
+import '../services/notification_service.dart';
 
 /// Touch-first Android presentation. The desktop pages and their data model stay
 /// intact; this shell only changes navigation density and common actions.
@@ -27,16 +32,35 @@ class MobileShell extends StatefulWidget {
 class _MobileShellState extends State<MobileShell> {
   int _tab = 0;
   String _query = '';
+  StreamSubscription<String>? _errorSubscription;
+  StreamSubscription<String>? _infoSubscription;
+  bool _noticeStreamsBound = false;
 
   static const _titles = ['音乐库', '歌单', '歌手', '专辑', '设置'];
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_noticeStreamsBound) return;
+    _noticeStreamsBound = true;
+    final notifier = context.read<PlaylistContentNotifier>();
+    final notices = context.read<NotificationService>();
+    _errorSubscription = notifier.errorStream.listen(notices.error);
+    _infoSubscription = notifier.infoStream.listen(notices.info);
+  }
+
+  @override
+  void dispose() {
+    _errorSubscription?.cancel();
+    _infoSubscription?.cancel();
+    super.dispose();
+  }
 
   Future<void> _requestAudioAccess() async {
     final status = await Permission.audio.request();
     if (!status.isGranted) {
       if (!mounted) return;
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('请允许“音乐和音频”权限后再导入歌曲')));
+      context.read<NotificationService>().warning('请允许“音乐和音频”权限后再导入歌曲');
     }
   }
 
@@ -134,9 +158,7 @@ class _MobileShellState extends State<MobileShell> {
         : notifier.selectedIndex >= 0 &&
               notifier.currentPlaylistSongs.isNotEmpty;
     if (!hasSongs) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('没有歌曲可以排序')));
+      context.read<NotificationService>().warning('没有歌曲可以排序');
       return;
     }
 
@@ -155,6 +177,9 @@ class _MobileShellState extends State<MobileShell> {
         criterion: criterion,
         descending: descending,
       );
+    }
+    if (mounted) {
+      context.read<NotificationService>().success('歌曲排序已应用');
     }
   }
 
@@ -749,9 +774,24 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
                     ),
                     Expanded(
                       child: IconButton(
-                        tooltip: '自定义均衡器',
+                        tooltip: '音频效果',
                         icon: const Icon(Icons.tune),
-                        onPressed: () => _showEqualizer(context, notifier),
+                        onPressed: () => _showAudioEffects(context),
+                      ),
+                    ),
+                    const SizedBox(
+                      height: 30,
+                      child: VerticalDivider(width: 1),
+                    ),
+                    Expanded(
+                      child: IconButton(
+                        tooltip: '音频分析',
+                        icon: const Icon(Icons.graphic_eq),
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => const AudioAnalysisPage(),
+                          ),
+                        ),
                       ),
                     ),
                   ],
@@ -856,70 +896,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     );
   }
 
-  void _showEqualizer(BuildContext context, PlaylistContentNotifier notifier) {
+  void _showAudioEffects(BuildContext context) {
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (sheetContext) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: .88,
-        minChildSize: .55,
-        maxChildSize: .95,
-        builder: (context, controller) => AnimatedBuilder(
-          animation: notifier,
-          builder: (context, child) => SafeArea(
-            child: ListView(
-              controller: controller,
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
-              children: [
-                Row(
-                  children: [
-                    Text(
-                      '自定义均衡器',
-                      style: Theme.of(context).textTheme.titleLarge,
-                    ),
-                    const Spacer(),
-                    TextButton(
-                      onPressed: notifier.resetAudioControls,
-                      child: const Text('重置'),
-                    ),
-                  ],
-                ),
-                Text('当前预设：${notifier.equalizerPresetName}'),
-                const SizedBox(height: 8),
-                ...List.generate(
-                  PlaylistContentNotifier.equalizerFrequencies.length,
-                  (index) {
-                    final frequency =
-                        PlaylistContentNotifier.equalizerFrequencies[index];
-                    final gain = notifier.equalizerGains[index];
-                    return Row(
-                      children: [
-                        SizedBox(width: 58, child: Text(_frequency(frequency))),
-                        Expanded(
-                          child: Slider(
-                            min: -12,
-                            max: 12,
-                            divisions: 48,
-                            value: gain,
-                            onChanged: (value) =>
-                                notifier.setEqualizerBand(index, value),
-                            onChangeEnd: (value) =>
-                                notifier.commitEqualizerBand(index, value),
-                          ),
-                        ),
-                        SizedBox(
-                          width: 48,
-                          child: Text('${gain.toStringAsFixed(1)} dB'),
-                        ),
-                      ],
-                    );
-                  },
-                ),
-              ],
-            ),
-          ),
-        ),
+      useSafeArea: true,
+      builder: (_) => const FractionallySizedBox(
+        heightFactor: .92,
+        child: _AudioEffectsSheet(),
       ),
     );
   }
@@ -1002,6 +986,271 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
       ),
     );
   }
+}
+
+class _AudioEffectsSheet extends StatefulWidget {
+  const _AudioEffectsSheet();
+
+  @override
+  State<_AudioEffectsSheet> createState() => _AudioEffectsSheetState();
+}
+
+class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
+  int _section = 0;
+
+  static const _sections = [
+    (icon: Icons.tune, label: '自定义均衡器'),
+    (icon: Icons.spatial_audio_off, label: '空间与立体声扩张'),
+    (icon: Icons.nightlight_round, label: '动态与夜间平稳'),
+    (icon: Icons.equalizer, label: '音调与频响修饰'),
+    (icon: Icons.auto_awesome, label: '复古与创意音效'),
+    (icon: Icons.auto_fix_high, label: '修复与人声优化'),
+  ];
+
+  static const _effects = <int, List<({String id, String label})>>{
+    1: [
+      (id: 'crossfeed', label: '交叉混音'),
+      (id: 'earwax', label: 'Bauer 空间模拟'),
+      (id: 'widerStereo', label: '立体声扩展'),
+      (id: 'haas', label: 'Haas 空间效果'),
+      (id: 'vocalBoost', label: '人声增强'),
+      (id: 'vocalRemover', label: '人声削弱'),
+    ],
+    2: [
+      (id: 'acompressor', label: '动态范围压缩'),
+      (id: 'softClip', label: '柔和削波'),
+      (id: 'deNoise', label: '背景降噪'),
+    ],
+    3: [
+      (id: 'virtualbass', label: '低音增强'),
+      (id: 'subboost', label: '极重低音'),
+      (id: 'crystalizer', label: '高频增强'),
+      (id: 'tilt', label: '倾斜均衡'),
+    ],
+    4: [
+      (id: 'vinyl', label: '黑胶/收音机'),
+      (id: 'exciter', label: '谐波激励'),
+      (id: 'echo', label: '回声与空间延迟'),
+    ],
+    5: [
+      (id: 'deesser', label: '人声齿音消除'),
+      (id: 'declip', label: '数字破音修复'),
+      (id: 'arnndn', label: '人声降噪'),
+    ],
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final notifier = context.watch<PlaylistContentNotifier>();
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.surface,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            width: 68,
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+            decoration: BoxDecoration(
+              color: scheme.surfaceContainer,
+              border: Border(right: BorderSide(color: scheme.outlineVariant)),
+            ),
+            child: Column(
+              children: [
+                for (var index = 0; index < _sections.length; index++) ...[
+                  Tooltip(
+                    message: _sections[index].label,
+                    child: IconButton.filledTonal(
+                      isSelected: _section == index,
+                      selectedIcon: Icon(_sections[index].icon),
+                      icon: Icon(_sections[index].icon),
+                      onPressed: () => setState(() => _section = index),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                ],
+              ],
+            ),
+          ),
+          Expanded(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 10, 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          _sections[_section].label,
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
+                      ),
+                      TextButton.icon(
+                        onPressed: notifier.resetAudioControls,
+                        icon: const Icon(Icons.restart_alt),
+                        label: const Text('重置'),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: _section == 0
+                      ? _equalizer(context, notifier)
+                      : _effectList(context, notifier),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _equalizer(BuildContext context, PlaylistContentNotifier notifier) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
+      children: [
+        Text('当前预设：${notifier.equalizerPresetName}'),
+        const SizedBox(height: 10),
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          child: Row(
+            children: PlaylistContentNotifier.equalizerPresets
+                .skip(1)
+                .map(
+                  (preset) => Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(preset.name),
+                      selected: preset.name == notifier.equalizerPresetName,
+                      onSelected: (_) => notifier.applyEqualizerPreset(preset),
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+        ),
+        const SizedBox(height: 8),
+        ...List.generate(PlaylistContentNotifier.equalizerFrequencies.length, (
+          index,
+        ) {
+          final frequency = PlaylistContentNotifier.equalizerFrequencies[index];
+          final gain = notifier.equalizerGains[index];
+          return Row(
+            children: [
+              SizedBox(width: 42, child: Text(_frequency(frequency))),
+              Expanded(
+                child: Slider(
+                  min: -12,
+                  max: 12,
+                  divisions: 48,
+                  value: gain,
+                  onChanged: (value) => notifier.setEqualizerBand(index, value),
+                  onChangeEnd: (value) =>
+                      notifier.commitEqualizerBand(index, value),
+                ),
+              ),
+              SizedBox(width: 55, child: Text('${gain.toStringAsFixed(1)} dB')),
+            ],
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _effectList(BuildContext context, PlaylistContentNotifier notifier) {
+    final effects = _effects[_section] ?? const [];
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 28),
+      children: [
+        Text(
+          '音效可组合使用；存在冲突的效果会自动互斥。',
+          style: Theme.of(context).textTheme.bodyMedium,
+        ),
+        const SizedBox(height: 16),
+        Wrap(
+          spacing: 10,
+          runSpacing: 10,
+          children: effects.map((effect) {
+            final selected = notifier.isEffectEnabled(effect.id);
+            return FilterChip(
+              selected: selected,
+              showCheckmark: true,
+              avatar: Icon(_effectIcon(effect.id), size: 18),
+              label: Text(effect.label),
+              onSelected: (enabled) async {
+                if (effect.id == 'arnndn' &&
+                    enabled &&
+                    notifier.arnndnModelPath == null) {
+                  final path = await _pickNoiseModel();
+                  if (path == null) return;
+                  await notifier.setArnndnModelPath(path);
+                }
+                await notifier.toggleEffect(effect.id, enabled);
+              },
+            );
+          }).toList(),
+        ),
+        if (_section == 5) ...[
+          const SizedBox(height: 18),
+          OutlinedButton.icon(
+            onPressed: () async {
+              final path = await _pickNoiseModel();
+              if (path == null) return;
+              await notifier.setArnndnModelPath(path);
+              if (context.mounted) {
+                context.read<NotificationService>().success('人声降噪模型已保存');
+              }
+            },
+            icon: const Icon(Icons.folder_open),
+            label: Text(
+              notifier.arnndnModelPath == null ? '选择 .rnnn 模型' : '更换降噪模型',
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Future<String?> _pickNoiseModel() async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const ['rnnn'],
+      );
+      final source = result?.files.single.path;
+      if (source == null) return null;
+      final directory = await getApplicationSupportDirectory();
+      final modelDirectory = Directory(p.join(directory.path, 'models'));
+      await modelDirectory.create(recursive: true);
+      final destination = p.join(modelDirectory.path, p.basename(source));
+      await File(source).copy(destination);
+      return destination;
+    } catch (error) {
+      if (mounted) {
+        context.read<NotificationService>().error('无法保存降噪模型：$error');
+      }
+      return null;
+    }
+  }
+
+  IconData _effectIcon(String id) => switch (id) {
+    'crossfeed' || 'earwax' || 'widerStereo' || 'haas' => Icons.surround_sound,
+    'vocalBoost' ||
+    'vocalRemover' ||
+    'deesser' ||
+    'arnndn' => Icons.record_voice_over,
+    'acompressor' || 'softClip' => Icons.compress,
+    'deNoise' => Icons.noise_control_off,
+    'virtualbass' || 'subboost' => Icons.speaker,
+    'crystalizer' || 'tilt' => Icons.equalizer,
+    'vinyl' => Icons.album,
+    'exciter' => Icons.bolt,
+    'echo' => Icons.multitrack_audio,
+    'declip' => Icons.healing,
+    _ => Icons.tune,
+  };
 }
 
 class _SettingsTab extends StatelessWidget {
@@ -1207,15 +1456,8 @@ class _SongSearchDelegate extends SearchDelegate<void> {
   Widget buildSuggestions(BuildContext context) => _results(context);
 
   Widget _results(BuildContext context) {
-    final songs = context
-        .watch<PlaylistContentNotifier>()
-        .allSongs
-        .where(
-          (song) => '${song.title} ${song.artist} ${song.album}'
-              .toLowerCase()
-              .contains(query.toLowerCase()),
-        )
-        .toList();
+    final notifier = context.watch<PlaylistContentNotifier>();
+    final songs = notifier.searchSongs(query, notifier.allSongs);
     return _SongList(
       songs: songs,
       onPlay: (index) => context

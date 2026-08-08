@@ -8,7 +8,7 @@
 一个基于 **Flutter (Dart)** 实现的 Android 本地音乐播放器。
 
 > [!IMPORTANT]
-> 本仓库是基于 [xiaobaimc/myune_music](https://github.com/xiaobaimc/myune_music) `0.9.2` 构建的 Android 移植与手机端适配版本，并非原项目官方 Android 发行版。原始项目与代码版权归原作者及贡献者所有；本项目继续遵循 [Apache License 2.0](LICENSE)。详细说明见 [ATTRIBUTION.md](ATTRIBUTION.md)。
+> 本仓库是基于 [xiaobaimc/myune_music](https://github.com/xiaobaimc/myune_music) `0.9.3` 构建的 Android 移植与手机端适配版本，并非原项目官方 Android 发行版。原始项目与代码版权归原作者及贡献者所有；本项目继续遵循 [Apache License 2.0](LICENSE)。详细说明见 [ATTRIBUTION.md](ATTRIBUTION.md)。
 
 ## Android 端
 
@@ -31,6 +31,11 @@ Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手
 * 🎧 自动读取音频元数据，支持多种格式
 * 📝 歌词支持：内嵌歌词、本地 `.lrc`、网络歌词源，支持本地逐字歌词
 * 🔊 提供 **音调控制** 与 **倍速播放**
+* 🔎 支持歌名、歌手、专辑、拼音及模糊匹配的 **智能搜索**
+* 🎛️ 提供自定义均衡器、空间扩展、动态处理、音色修饰及人声修复等音效
+* 📊 提供响度、电平、声场、频谱与频谱图 **实时音频分析**
+* ↕️ 支持按歌曲名、文件名、歌手及修改日期排序，并优化同名歌曲去重
+* 💬 提供跨页面的全局操作提示
 * ✨ 可自定义主题配色与字体
 * 🔔 支持 **Android 通知栏播放器** 与耳机媒体按键
 * 🎵 读取使用和写入 **ReplayGain** 标签

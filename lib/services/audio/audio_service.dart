@@ -215,7 +215,10 @@ class AudioService {
     required List<int> frequencies,
   }) async {
     if (_isEqualizerFlat(gains)) {
-      await _player.setAudioEffects(const AudioEffects());
+      // 只清除均衡器自定义滤镜，保留用户启用的其它音效。
+      await _player.updateAudioEffects(
+        (effects) => effects.copyWith(custom: []),
+      );
       return;
     }
 
