@@ -13,6 +13,7 @@ import '../page/setting/settings_provider.dart';
 import '../page/statistics_page/statistics_manager.dart';
 import '../widgets/playing_queue_drawer.dart';
 import '../widgets/mobile_lyrics_list.dart';
+import '../widgets/sort_dialog.dart';
 
 /// Touch-first Android presentation. The desktop pages and their data model stay
 /// intact; this shell only changes navigation density and common actions.
@@ -46,6 +47,12 @@ class _MobileShellState extends State<MobileShell> {
       appBar: AppBar(
         title: Text(_titles[_tab]),
         actions: [
+          if (_tab == 0 || _tab == 1)
+            IconButton(
+              tooltip: '排序歌曲',
+              icon: const Icon(Icons.sort),
+              onPressed: _showSortDialog,
+            ),
           if (_tab != 4)
             IconButton(
               tooltip: '搜索',
@@ -120,6 +127,37 @@ class _MobileShellState extends State<MobileShell> {
     );
   }
 
+  Future<void> _showSortDialog() async {
+    final notifier = context.read<PlaylistContentNotifier>();
+    final hasSongs = _tab == 0
+        ? notifier.allSongs.isNotEmpty
+        : notifier.selectedIndex >= 0 &&
+              notifier.currentPlaylistSongs.isNotEmpty;
+    if (!hasSongs) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('没有歌曲可以排序')));
+      return;
+    }
+
+    final result = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => const SortDialog(),
+    );
+    if (!mounted || result == null) return;
+
+    final criterion = result['criterion'] as SortCriterion;
+    final descending = result['descending'] as bool;
+    if (_tab == 0) {
+      await notifier.sortAllSongs(criterion: criterion, descending: descending);
+    } else if (_tab == 1) {
+      await notifier.sortCurrentPlaylist(
+        criterion: criterion,
+        descending: descending,
+      );
+    }
+  }
+
   Future<void> _showSearch(BuildContext context) async {
     final controller = TextEditingController(text: _query);
     await showSearch<void>(
@@ -188,8 +226,12 @@ class _LibraryTab extends StatelessWidget {
     if (songs.isEmpty) return const _EmptyLibrary();
     return _SongList(
       songs: filtered,
-      onPlay: (index) =>
-          context.read<PlaylistContentNotifier>().playSongFromAllSongs(index),
+      onPlay: (index) {
+        final notifier = context.read<PlaylistContentNotifier>();
+        return query.isEmpty
+            ? notifier.playSongFromAllSongs(index)
+            : notifier.playFromDynamicList(List<Song>.from(filtered), index);
+      },
     );
   }
 }

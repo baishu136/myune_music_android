@@ -3514,6 +3514,14 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
     await _loadCurrentPlaylistSongs();
 
+    // 排序不会改变正在播放的歌曲；同步它在新顺序中的索引，确保
+    // “上一首/下一首”继续从当前歌曲出发。
+    if (_playingPlaylist?.id == currentPlaylist.id && _currentSong != null) {
+      _playingSongIndex = currentPlaylist.songFilePaths.indexWhere(
+        (path) => _normalizePath(path) == _currentSong!.normalizedPath,
+      );
+    }
+
     notifyListeners();
   }
 
@@ -5656,6 +5664,14 @@ class PlaylistContentNotifier extends ChangeNotifier {
     }
     _allSongs = sortedSongList;
     _allSongsVirtualPlaylist.songFilePaths = sortedPaths;
+    _allSongsVirtualPlaylist.songs = sortedSongList;
+
+    if (_playingPlaylist?.id == _allSongsVirtualPlaylist.id &&
+        _currentSong != null) {
+      _playingSongIndex = sortedSongList.indexWhere(
+        (song) => song.normalizedPath == _currentSong!.normalizedPath,
+      );
+    }
 
     notifyListeners();
   }
