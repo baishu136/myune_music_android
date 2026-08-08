@@ -109,9 +109,27 @@ Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手
 
 ## 📸 软件截图
 
+### 播放页：封面与歌词
+
 ![安卓播放页：封面与歌词](screenshot/android-now-playing.jpg)
 
-![安卓播放设置：均衡器、歌词源与自定义均衡器](screenshot/android-playback-settings.jpg)
+### 音频效果、歌曲详情与播放统计
+
+![安卓音频效果、歌曲详情与播放统计](screenshot/android-audio-effects-and-statistics.jpg)
+
+### 实时音频分析
+
+<p align="center">
+  <img src="screenshot/android-audio-analysis.jpg" width="360" alt="安卓实时音频分析">
+</p>
+
+### 个性化设置
+
+<p align="center">
+  <img src="screenshot/android-settings.png" width="360" alt="安卓个性化设置">
+</p>
+
+### 音乐库、歌单、歌手、专辑与设置
 
 ![安卓音乐库、歌单、歌手、专辑与设置](screenshot/android-library-and-settings.jpg)
 
