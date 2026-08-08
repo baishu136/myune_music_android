@@ -181,8 +181,7 @@ flutter build windows --release # 或对应平台名
 
 > 提供了 Rust + Flutter 的 SMTC 实现参考 🙏
 
-## ❤️ 贡献与赞助
-如果你喜欢这个项目，觉得它对你有帮助，可以通过以下方式支持我，让我有动力继续维护和更新
+## ❤️ 贡献
 
 ### 🧩 贡献
 * 创建一个 [Issue](https://github.com/xiaobaimc/myune_music/issues)
@@ -194,10 +193,6 @@ flutter build windows --release # 或对应平台名
 可以是bug修复，添加新功能，或者是某个地方的优化
 
 对于新功能的PR，请先创建一个 Issue 探讨该功能是否需要
-
-### ☕ 赞助
-
-* [爱发电](https://ifdian.net/a/xiaobaimc)
 
 ## 📄 许可证
 
