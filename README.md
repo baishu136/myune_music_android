@@ -1,29 +1,30 @@
 # 🎵 Myune Music
 
 [![Flutter](https://img.shields.io/badge/Flutter-3.41%2B-blue?logo=flutter)](https://flutter.dev/)
-[![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux%20%7C%20Android-brightgreen)](#)
+[![Platform](https://img.shields.io/badge/Platform-Android-brightgreen?logo=android)](#)
 ![Rust](https://img.shields.io/badge/lang-Rust-orange)
 [![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey)](LICENSE)
 
-一个基于 **Flutter (Dart)** 实现的本地音乐播放器，支持 Windows、Linux 和 Android。
+一个基于 **Flutter (Dart)** 实现的 Android 本地音乐播放器。
 
 > [!IMPORTANT]
 > 本仓库是基于 [xiaobaimc/myune_music](https://github.com/xiaobaimc/myune_music) `0.9.2` 构建的 Android 移植与手机端适配版本，并非原项目官方 Android 发行版。原始项目与代码版权归原作者及贡献者所有；本项目继续遵循 [Apache License 2.0](LICENSE)。详细说明见 [ATTRIBUTION.md](ATTRIBUTION.md)。
 
 ## Android 端
 
-Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手、专辑、设置）、迷你播放条和全屏播放页。它与桌面端共用歌单、播放队列、播放模式、歌词解析/网络歌词、音调、倍速、均衡器、动态配色、统计和 ReplayGain 逻辑；仅桌面系统能力会交由 Android 的系统媒体框架处理：
+Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手、专辑、设置）、迷你播放条和全屏播放页，提供歌单、播放队列、播放模式、歌词解析/网络歌词、音调、倍速、均衡器、动态配色、统计和 ReplayGain 等功能：
 
-* 全局快捷键、托盘和任务栏缩略图 → Android 通知/耳机媒体按键
-* 手动音频设备、独占模式 → Android 系统音频路由
-* Windows Rust 元数据桥 → Android 端使用 Dart 元数据解析，并保留文件名回退
+* 支持 Android 通知栏播放器与耳机媒体按键
+* 使用 Android 系统音频路由
+* 使用 Dart 解析音频元数据，并保留文件名回退
 
 首次添加歌曲时，应用会请求“音乐和音频”权限。Android 端可在 Flutter SDK 可用的环境中执行 `flutter pub get` 和 `flutter build apk --release` 构建。
 
-> 🍎 macOS 用户可使用社区移植版：[myune_music_macos](https://github.com/Lannamokia/myune_music_macos)
+> [!NOTE]
+> 本仓库仅提供和支持 **Android** 版本。Windows/Linux 版本请前往 [Myune Music 源项目主页](https://github.com/xiaobaimc/myune_music) 下载。
 
 ## ✨ 特性
-* 💻 支持 **Windows / Linux / Android**
+* 📱 仅支持 **Android**
 * 🎶 歌曲管理：支持 **文件夹歌单** 与 **手动歌单**
 * 🧠 自动按 **歌手** 与 **专辑** 分类
 * 🎨 使用 [Material 3](https://m3.material.io/) 组件与配色
@@ -31,39 +32,9 @@ Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手
 * 📝 歌词支持：内嵌歌词、本地 `.lrc`、网络歌词源，支持本地逐字歌词
 * 🔊 提供 **音调控制** 与 **倍速播放**
 * ✨ 可自定义主题配色与字体
-* 🖥️ 集成 **SMTC（系统媒体传输控制）** 与 **MPRIS（Linux）**
-* 🧩 支持 **音频独占模式**（仅 Windows）
-* 🔌 支持 **手动选择音频输出设备**
-* ⚙️ **全局快捷键**支持
+* 🔔 支持 **Android 通知栏播放器** 与耳机媒体按键
 * 🎵 读取使用和写入 **ReplayGain** 标签
 
-
-## 🔧关于 Linux
-
-对于0.9.1及以下的版本，需要安装 `libmpv`
-
-例如 **Ubuntu/Debian**
-
-``` bash
-sudo apt install libmpv-dev mpv 
-```
-
-对于0.9.2及以上版本，需要安装 `keybinder-3.0` 以使用全局快捷键
-
-例如 **Ubuntu/Debian**
-
-``` bash
-sudo apt install keybinder-3.0
-```
-
-## 🎶 桌面歌词
-由于 [Flutter](https://flutter.dev/) 暂不支持多窗口功能，因此暂未提供桌面歌词。
-可使用以下第三方工具替代：
-
-* [Lyricify Lite](https://apps.microsoft.com/detail/9nltpsv395k2)
-* [BetterLyrics](https://apps.microsoft.com/detail/9p1wcd1p597r)
-
-> 以上软件非本人开发，请支持原作者 🙏
 
 ## 🌐 歌词
 
@@ -144,8 +115,8 @@ sudo apt install keybinder-3.0
 
 ### 环境要求
 
-* 安装 **Rust** 环境
 * 安装 **Flutter SDK**，**Dart** 版本需 ≥ 3.10.0，**Flutter** 版本需 ≥ 3.41.0
+* 安装 **Android SDK**
 
 ### 安装依赖
 
@@ -161,16 +132,16 @@ flutter run
 
 ### 构建项目
 ```bash
-flutter build windows --release # 或对应平台名
+flutter build apk --release
 ```
 
 ## 🧱 使用的依赖与致谢
 
 | 插件                                                                      | 功能             |
 | ----------------------------------------------------------------------- | -------------- |
-| [lofty-rs](https://github.com/serial-ata/lofty-rs) | 读取音频元信息        |
-| [media_kit](https://pub.dev/packages/media_kit)                         | 音频播放支持         |
-| [anni_mpris_service](https://pub.dev/packages/anni_mpris_service)       | D-Bus MPRIS 控件 |
+| [mpv_audio_kit](https://pub.dev/packages/mpv_audio_kit)                 | 音频播放与 Android 媒体控制 |
+| [audio_metadata_reader](https://pub.dev/packages/audio_metadata_reader) | 音频元数据与内嵌封面读取 |
+| [permission_handler](https://pub.dev/packages/permission_handler)       | Android 音频文件权限 |
 
 更多依赖请查看 [pubspec.yaml](pubspec.yaml)。
 
