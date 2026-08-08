@@ -89,6 +89,7 @@ class AudioService {
     required List<double> eqGains,
     required List<int> eqFrequencies,
     bool exclusiveMode = false,
+    bool play = true,
   }) async {
     try {
       await _player.setAudioExclusive(exclusiveMode);
@@ -100,7 +101,7 @@ class AudioService {
     await setRate(rate);
     await applyEqualizer(gains: eqGains, frequencies: eqFrequencies);
 
-    await _player.open(Media(filePath), play: true);
+    await _player.open(Media(filePath), play: play);
   }
 
   // 启用无缝播放模式：设置 Gapless.yes + 开启 prefetch
@@ -132,6 +133,7 @@ class AudioService {
     required List<double> eqGains,
     required List<int> eqFrequencies,
     bool exclusiveMode = false,
+    bool play = true,
   }) async {
     try {
       await _player.setAudioExclusive(exclusiveMode);
@@ -147,7 +149,7 @@ class AudioService {
     if (nextPath != null) {
       tracks.add(Media(nextPath));
     }
-    await _player.openAll(tracks, play: true);
+    await _player.openAll(tracks, play: play);
   }
 
   // 替换 mpv playlist 中的预备项（index 1）

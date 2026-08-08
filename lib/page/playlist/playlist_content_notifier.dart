@@ -161,6 +161,13 @@ class PlaylistContentNotifier extends ChangeNotifier {
   bool _isPlaying = false; // 播放器状态
   bool get isPlaying => _isPlaying;
 
+  // 播放器的 playing 流表示实际输出状态，在加载和缓冲时可能短暂为 false，
+  // 因此不能用它判断用户是否仍希望播放。请求序号保证异步切歌时仅最后一次
+  // 选择可以真正打开文件。
+  bool _playbackIntent = false;
+  int _playbackRequestRevision = 0;
+  int? _activeTrackChangeRevision;
+
   int _currentSongIndex = -1; // 当前播放歌曲的索引（在当前歌单中）
   Song? _currentSong; // 当前播放的歌曲
   Song? get currentSong => _currentSong;
@@ -734,7 +741,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
     });
 
     _audioService.player.stream.completed.listen((completed) async {
-      if (completed) {
+      if (completed && _playbackIntent && _activeTrackChangeRevision == null) {
         _isPlaying = false; // 更新内部状态
         notifyListeners();
         _isAutoPlaying = true; // 标记为自动播放
@@ -744,7 +751,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
     });
 
     _audioService.player.stream.playlist.listen((playlist) {
-      if (!_gaplessEnabled) return;
+      if (!_gaplessEnabled || _activeTrackChangeRevision != null) return;
       // 检测 mpv 是否自动过渡到了 playlist 的第二首
       // playlist.index 变为 1 说明 mpv 切了歌
       if (playlist.index == 1 && playlist.items.length >= 2) {
@@ -765,7 +772,32 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
     // 监听系统媒体控制的指令
     _audioService.player.stream.mediaSessionCommands.listen((command) {
-      if (command is MediaSessionCommandNext) {
+      if (command is MediaSessionCommandPlay) {
+        _playbackIntent = true;
+        if (_activeTrackChangeRevision != null) {
+          // 系统已经乐观执行了 play；切歌尚未完成时立即压回暂停，等最终
+          // 文件加载完再按播放意图启动，避免通知栏操作恢复旧曲。
+          unawaited(_audioService.pause());
+        }
+        PlaybackTracker().resumeTracking();
+      } else if (command is MediaSessionCommandPause) {
+        _setPlaybackPaused();
+        PlaybackTracker().pauseTracking();
+      } else if (command is MediaSessionCommandPlayPause) {
+        if (_audioService.player.state.playWhenReady) {
+          _playbackIntent = true;
+          if (_activeTrackChangeRevision != null) {
+            unawaited(_audioService.pause());
+          }
+          PlaybackTracker().resumeTracking();
+        } else {
+          _setPlaybackPaused();
+          PlaybackTracker().pauseTracking();
+        }
+      } else if (command is MediaSessionCommandStop) {
+        _cancelPendingTrackChange();
+        PlaybackTracker().pauseTracking();
+      } else if (command is MediaSessionCommandNext) {
         playNext();
       } else if (command is MediaSessionCommandPrevious) {
         playPrevious();
@@ -2184,35 +2216,38 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
   // --- 播放控制 ---
   Future<void> play() async {
-    if (!_isPlaying) {
-      if (_gaplessEnabled &&
-          _audioService.player.state.playlist.items.length <= 1) {
-        _refreshGaplessNext();
-      }
-      await _audioService.player.play(); // 开始播放
-      _isPlaying = true; // 立即更新状态
-
-      // 恢复播放跟踪
-      PlaybackTracker().resumeTracking();
+    _playbackIntent = true;
+    // 新曲正在加载时只记录播放意图，避免短暂恢复旧曲。加载完成后会
+    // 根据该意图启动最终选中的歌曲。
+    if (_activeTrackChangeRevision != null) {
+      notifyListeners();
+      return;
     }
+    if (_gaplessEnabled &&
+        _audioService.player.state.playlist.items.length <= 1) {
+      _refreshGaplessNext();
+    }
+    // 无论 playing 流当前值如何都下发播放命令；该流在缓冲时可能为 false。
+    await _audioService.play();
+    _isPlaying = true;
+    PlaybackTracker().resumeTracking();
 
     notifyListeners();
   }
 
   Future<void> pause() async {
-    if (_isPlaying) {
-      await _audioService.player.pause();
-      _isPlaying = false; // 立即更新状态
-
-      // 暂停播放跟踪
-      PlaybackTracker().pauseTracking();
-    }
+    _setPlaybackPaused();
+    // 即使 UI 状态已是暂停也必须下发命令，以覆盖正在进行的播放命令。
+    await _audioService.pause();
+    _isPlaying = false;
+    PlaybackTracker().pauseTracking();
 
     notifyListeners();
   }
 
   Future<void> stop() async {
-    await _audioService.player.stop();
+    _cancelPendingTrackChange();
+    await _audioService.stop();
     if (_currentSong != null) {
       final oldPath = _currentSong!.normalizedPath;
       _currentSong = null;
@@ -2230,6 +2265,16 @@ class PlaylistContentNotifier extends ChangeNotifier {
     _totalDuration = Duration.zero;
     _isPlaying = false;
     notifyListeners();
+  }
+
+  void _setPlaybackPaused() {
+    _playbackIntent = false;
+  }
+
+  void _cancelPendingTrackChange() {
+    _playbackIntent = false;
+    _playbackRequestRevision++;
+    _activeTrackChangeRevision = null;
   }
 
   Future<void> setPitch(double pitch) async {
@@ -2430,6 +2475,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
   Future<void> _handleGaplessTransition() async {
     if (_isGaplessTransitioning) return;
+    final transitionRevision = _playbackRequestRevision;
     _isGaplessTransitioning = true;
     _isAutoPlaying = true;
 
@@ -2475,6 +2521,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
       if (songFilePath != null) {
         final songToPlay = await _prepareSongForPlayback(songFilePath);
+        if (!_isGaplessTransitionCurrent(transitionRevision)) return;
         final oldSongPath = _currentSong?.normalizedPath;
         final newSongPath = songToPlay.normalizedPath;
 
@@ -2489,6 +2536,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
         final session = _buildMediaSession(songToPlay);
         await _audioService.player.setMediaSession(session);
+        if (!_isGaplessTransitionCurrent(transitionRevision)) return;
 
         _currentLyrics = [];
         _currentLyricLineIndex = -1;
@@ -2501,6 +2549,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
         savePlaybackState();
       }
 
+      if (!_isGaplessTransitionCurrent(transitionRevision)) return;
       await _audioService.removeFirst();
 
       final newNextPath = _peekNextPath();
@@ -2515,6 +2564,11 @@ class PlaylistContentNotifier extends ChangeNotifier {
       _isAutoPlaying = false;
       _isGaplessTransitioning = false;
     }
+  }
+
+  bool _isGaplessTransitionCurrent(int revision) {
+    return revision == _playbackRequestRevision &&
+        _activeTrackChangeRevision == null;
   }
 
   // 根据播放模式播放下一首
@@ -2955,7 +3009,10 @@ class PlaylistContentNotifier extends ChangeNotifier {
   }
 
   Future<void> _startPlaybackNow() async {
-    Song? songToPlay;
+    final requestRevision = ++_playbackRequestRevision;
+    _activeTrackChangeRevision = requestRevision;
+    _playbackIntent = true;
+
     String? songFilePath;
 
     if (_isUsingQueue &&
@@ -2965,42 +3022,36 @@ class PlaylistContentNotifier extends ChangeNotifier {
       if (_currentQueueIndex >= 0 &&
           _currentQueueIndex < _currentPlayingQueue!.length) {
         songFilePath = _currentPlayingQueueFilePaths![_currentQueueIndex];
-        songToPlay = await _prepareSongForPlayback(songFilePath);
       }
     } else {
       // 使用原播放列表中的歌曲
       if (_playingSongIndex >= 0 &&
           _playingPlaylist != null &&
           _playingSongIndex < _playingPlaylist!.songFilePaths.length) {
-        await _ensurePlaylistSongs(_playingPlaylist!);
-        if (_playingPlaylist!.songs != null &&
-            _playingSongIndex < _playingPlaylist!.songs!.length) {
-          songFilePath = _playingPlaylist!.songFilePaths[_playingSongIndex];
-          songToPlay = await _prepareSongForPlayback(songFilePath);
-        }
+        songFilePath = _playingPlaylist!.songFilePaths[_playingSongIndex];
       }
     }
 
-    if (songToPlay == null || songFilePath == null) {
+    if (songFilePath == null) {
+      if (_activeTrackChangeRevision == requestRevision) {
+        _activeTrackChangeRevision = null;
+      }
       return;
     }
 
-    // 切换播放歌曲时管理封面缓存
-    final oldSongPath = _currentSong?.normalizedPath;
-    final newSongPath = songToPlay.normalizedPath;
-
-    _currentSong = songToPlay;
-    _evictableCoverPaths.remove(newSongPath);
-    if (oldSongPath != null &&
-        oldSongPath != newSongPath &&
-        !_visibleCoverPaths.contains(oldSongPath)) {
-      _evictableCoverPaths.add(oldSongPath);
-      _scheduleCoverEviction();
-    }
-
     try {
+      // 立即停止旧曲，避免解析新歌曲元数据期间两首歌状态重叠。
+      await _audioService.pause();
+      _isPlaying = false;
+      notifyListeners();
+
+      if (!_isPlaybackRequestCurrent(requestRevision)) return;
+      final songToPlay = await _prepareSongForPlayback(songFilePath);
+      if (!_isPlaybackRequestCurrent(requestRevision)) return;
+
       final session = _buildMediaSession(songToPlay);
       await _audioService.player.setMediaSession(session);
+      if (!_isPlaybackRequestCurrent(requestRevision)) return;
 
       if (_gaplessEnabled) {
         await _audioService.playSongGapless(
@@ -3011,6 +3062,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
           eqGains: _equalizerGains,
           eqFrequencies: equalizerFrequencies,
           exclusiveMode: _isExclusiveModeEnabled,
+          play: false,
         );
       } else {
         await _audioService.playSong(
@@ -3020,7 +3072,30 @@ class PlaylistContentNotifier extends ChangeNotifier {
           eqGains: _equalizerGains,
           eqFrequencies: equalizerFrequencies,
           exclusiveMode: _isExclusiveModeEnabled,
+          play: false,
         );
+      }
+      if (!_isPlaybackRequestCurrent(requestRevision)) return;
+
+      // 新文件已成功加载，至此才提交 UI 和播放上下文，避免较早请求或
+      // 加载失败的文件覆盖当前歌曲。
+      final oldSongPath = _currentSong?.normalizedPath;
+      final newSongPath = songToPlay.normalizedPath;
+
+      _currentSong = songToPlay;
+      _evictableCoverPaths.remove(newSongPath);
+      if (oldSongPath != null &&
+          oldSongPath != newSongPath &&
+          !_visibleCoverPaths.contains(oldSongPath)) {
+        _evictableCoverPaths.add(oldSongPath);
+        _scheduleCoverEviction();
+      }
+
+      if (_playbackIntent) {
+        await _audioService.play();
+        _isPlaying = true;
+      } else {
+        _isPlaying = false;
       }
 
       _currentLyrics = [];
@@ -3033,6 +3108,9 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
       // 开始跟踪播放
       PlaybackTracker().startTracking(songToPlay);
+      if (!_playbackIntent) {
+        PlaybackTracker().pauseTracking();
+      }
 
       // 保存播放状态
       savePlaybackState();
@@ -3041,7 +3119,15 @@ class PlaylistContentNotifier extends ChangeNotifier {
     } catch (e) {
       // 捕获所有播放相关的异常
       // _errorStreamController.add('无法播放${p.basename(songFilePath)}，可能文件已经损坏');
+    } finally {
+      if (_activeTrackChangeRevision == requestRevision) {
+        _activeTrackChangeRevision = null;
+      }
     }
+  }
+
+  bool _isPlaybackRequestCurrent(int revision) {
+    return revision == _playbackRequestRevision;
   }
 
   // 启用独占模式
@@ -3177,8 +3263,10 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
   // 恢复播放状态
   Future<void> _restorePlaybackState() async {
+    final restoreRevision = _playbackRequestRevision;
     final playbackState = await _playlistManager.loadPlaybackState();
     final playbackQueue = await _playlistManager.loadPlaybackQueue();
+    if (restoreRevision != _playbackRequestRevision) return;
 
     if (playbackState != null) {
       // 查找对应的播放列表
@@ -3207,9 +3295,11 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
         // 确保播放列表的歌曲已被解析
         await _ensurePlaylistSongs(_playingPlaylist!);
+        if (restoreRevision != _playbackRequestRevision) return;
 
         final songFilePath = _playingPlaylist!.songFilePaths[_playingSongIndex];
         _currentSong = await _prepareSongForPlayback(songFilePath);
+        if (restoreRevision != _playbackRequestRevision) return;
 
         // 钉选当前播放歌曲的封面
         _evictableCoverPaths.remove(_normalizePath(songFilePath));
@@ -3228,6 +3318,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
           // 检查文件是否存在
           final songFile = File(songFilePath);
           if (await songFile.exists()) {
+            if (restoreRevision != _playbackRequestRevision) return;
             await _audioService.player.open(
               Media(songFilePath),
               play: false, // 不自动播放
