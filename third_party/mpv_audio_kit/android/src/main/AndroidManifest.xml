@@ -1,0 +1,37 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+  <!-- The OS media session runs in a foreground service of type
+       mediaPlayback so the now-playing notification and lock-screen
+       controls persist while the screen is off. FOREGROUND_SERVICE_MEDIA_PLAYBACK
+       is mandatory on Android 14+ (API 34) for this service type. -->
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+  <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+  <!-- Android 13+ (API 33) runtime permission. Media-session notifications
+       are exempt from the grant for lock-screen / Bluetooth, but the in-shade
+       media player only shows once the consumer app requests it at runtime. -->
+  <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
+  <application>
+    <service
+      android:name=".media_session.MpvMediaSessionService"
+      android:exported="true"
+      android:foregroundServiceType="mediaPlayback">
+      <intent-filter>
+        <action android:name="androidx.media3.session.MediaSessionService" />
+      </intent-filter>
+    </service>
+
+    <!-- Media-button target. While the session is live Media3 self-registers a
+         runtime receiver, but once the foreground service is demoted/destroyed
+         (pause timeout, swipe-away, disable) there is no manifest target to
+         cold-start the service for a Bluetooth/headset key. This declares it.
+         A standalone consumer ships none otherwise. -->
+    <receiver
+      android:name="androidx.media3.session.MediaButtonReceiver"
+      android:exported="true">
+      <intent-filter>
+        <action android:name="android.intent.action.MEDIA_BUTTON" />
+      </intent-filter>
+    </receiver>
+  </application>
+</manifest>

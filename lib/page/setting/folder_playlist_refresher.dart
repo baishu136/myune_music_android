@@ -223,10 +223,7 @@ class _FolderPlaylistRefresherState extends State<FolderPlaylistRefresher> {
                 padding: const EdgeInsets.only(left: 24),
                 child: Text(
                   '• $name',
-                  style: TextStyle(
-                    color: Colors.orange.shade700,
-                    fontSize: 14,
-                  ),
+                  style: TextStyle(color: Colors.orange.shade700, fontSize: 14),
                 ),
               ),
             ),

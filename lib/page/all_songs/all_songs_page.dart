@@ -143,49 +143,57 @@ class _AllSongsPageState extends State<AllSongsPage> {
                           silkyScrollDuration: ScrollConfig.duration,
                           scrollSpeed: ScrollConfig.speed,
                           animationCurve: ScrollConfig.curve,
-                          builder: (context, controller, physics, _) => CustomScrollView(
-                            controller: controller,
-                            physics: physics,
-                            slivers: [
-                              SliverReorderableList(
-                                proxyDecorator: (child, index, animation) =>
-                                    Material(
-                                      elevation: 4,
-                                      color: colorScheme.surface,
-                                      borderRadius: BorderRadius.circular(8),
-                                      child: child,
-                                    ),
-                                itemCount: songs.length,
-                                itemBuilder: (context, index) {
-                                  final song = songs[index];
-                                  return SongTileWidget(
-                                    key: ValueKey(song.filePath),
-                                    song: song,
-                                    index: index,
-                                    contextPlaylist:
-                                        notifier.allSongsVirtualPlaylist,
-                                    enableContextMenu: false,
-                                    onTap: () {
-                                      if (notifier.isSearching) {
-                                        // 搜索模式下使用当前渲染列表快照，避免索引错位
-                                        notifier.playFromDynamicList(
-                                          List<Song>.from(songs),
-                                          index,
-                                        );
-                                      } else {
-                                        notifier.playSongFromAllSongs(index);
-                                      }
+                          builder: (context, controller, physics, _) =>
+                              CustomScrollView(
+                                controller: controller,
+                                physics: physics,
+                                slivers: [
+                                  SliverReorderableList(
+                                    proxyDecorator: (child, index, animation) =>
+                                        Material(
+                                          elevation: 4,
+                                          color: colorScheme.surface,
+                                          borderRadius: BorderRadius.circular(
+                                            8,
+                                          ),
+                                          child: child,
+                                        ),
+                                    itemCount: songs.length,
+                                    itemBuilder: (context, index) {
+                                      final song = songs[index];
+                                      return SongTileWidget(
+                                        key: ValueKey(song.filePath),
+                                        song: song,
+                                        index: index,
+                                        contextPlaylist:
+                                            notifier.allSongsVirtualPlaylist,
+                                        enableContextMenu: false,
+                                        onTap: () {
+                                          if (notifier.isSearching) {
+                                            // 搜索模式下使用当前渲染列表快照，避免索引错位
+                                            notifier.playFromDynamicList(
+                                              List<Song>.from(songs),
+                                              index,
+                                            );
+                                          } else {
+                                            notifier.playSongFromAllSongs(
+                                              index,
+                                            );
+                                          }
+                                        },
+                                      );
                                     },
-                                  );
-                                },
-                                onReorderItem: (oldIndex, newIndex) {
-                                  // 在搜索时，不执行排序操作
-                                  if (isSearching) return;
-                                  notifier.reorderAllSongs(oldIndex, newIndex);
-                                },
+                                    onReorderItem: (oldIndex, newIndex) {
+                                      // 在搜索时，不执行排序操作
+                                      if (isSearching) return;
+                                      notifier.reorderAllSongs(
+                                        oldIndex,
+                                        newIndex,
+                                      );
+                                    },
+                                  ),
+                                ],
                               ),
-                            ],
-                          ),
                         );
                       },
                     ),

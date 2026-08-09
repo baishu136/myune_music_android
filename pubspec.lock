@@ -519,10 +519,9 @@ packages:
   mpv_audio_kit:
     dependency: "direct main"
     description:
-      name: mpv_audio_kit
-      sha256: "98c61d1cc9a8ef88f615dc5ba73a29ae57fc4d51af7dbd952bb7ea6a83c796e7"
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/mpv_audio_kit"
+      relative: true
+    source: path
     version: "0.4.4"
   nested:
     dependency: transitive

@@ -43,12 +43,14 @@ class SettingsProvider with ChangeNotifier {
   static const _audioDeviceIsAutoKey = 'audio_device_is_auto';
   static const _ignorePlaybackErrorsKey = 'ignorePlaybackErrors';
   static const _preferExternalLyricsKey = 'preferExternalLyrics';
-  static const _autoAdjustLyricLayoutKey = 'autoAdjustLyricLayout'; // 自动调节歌词字体与间距设置的 key
+  static const _autoAdjustLyricLayoutKey =
+      'autoAdjustLyricLayout'; // 自动调节歌词字体与间距设置的 key
 
   static const _enableLyricElasticScrollKey = 'enableLyricElasticScroll';
   static const _enableLoudnessKey = 'enableLoudness';
   static const _enableReplayGainKey = 'enableReplayGain';
   static const _enableGaplessPlaybackKey = 'enableGaplessPlayback';
+  static const _showAudioAnalysisKey = 'showAudioAnalysis';
 
   int _maxLinesPerLyric = 2;
   double _fontSize = 22.0; // 默认字体大小
@@ -74,6 +76,7 @@ class SettingsProvider with ChangeNotifier {
   bool _enableLoudness = false;
   bool _enableReplayGain = false;
   bool _enableGaplessPlayback = false; // 默认不启用无缝播放
+  bool _showAudioAnalysis = false; // 默认保持播放页底栏简洁
 
   bool _enableGlobalHotkeys = true;
   HotKey? _playPauseHotKey;
@@ -128,6 +131,7 @@ class SettingsProvider with ChangeNotifier {
   bool get enableLoudness => _enableLoudness;
   bool get enableReplayGain => _enableReplayGain;
   bool get enableGaplessPlayback => _enableGaplessPlayback;
+  bool get showAudioAnalysis => _showAudioAnalysis;
 
   bool get enableGlobalHotkeys => _enableGlobalHotkeys;
   HotKey? get playPauseHotKey => _playPauseHotKey;
@@ -180,6 +184,7 @@ class SettingsProvider with ChangeNotifier {
     _enableLoudness = prefs.getBool(_enableLoudnessKey) ?? false;
     _enableReplayGain = prefs.getBool(_enableReplayGainKey) ?? false;
     _enableGaplessPlayback = prefs.getBool(_enableGaplessPlaybackKey) ?? false;
+    _showAudioAnalysis = prefs.getBool(_showAudioAnalysisKey) ?? false;
     if (_enableLoudness && _enableReplayGain) {
       _enableReplayGain = false;
       await prefs.setBool(_enableReplayGainKey, false);
@@ -206,11 +211,26 @@ class SettingsProvider with ChangeNotifier {
         : TextAlign.center;
 
     _enableGlobalHotkeys = prefs.getBool(_enableGlobalHotkeysKey) ?? true;
-    _playPauseHotKey = _parseHotKey(prefs.getString(_playPauseHotKeyKey), 'play_pause');
-    _nextTrackHotKey = _parseHotKey(prefs.getString(_nextTrackHotKeyKey), 'next_track');
-    _prevTrackHotKey = _parseHotKey(prefs.getString(_prevTrackHotKeyKey), 'prev_track');
-    _volumeUpHotKey = _parseHotKey(prefs.getString(_volumeUpHotKeyKey), 'volume_up');
-    _volumeDownHotKey = _parseHotKey(prefs.getString(_volumeDownHotKeyKey), 'volume_down');
+    _playPauseHotKey = _parseHotKey(
+      prefs.getString(_playPauseHotKeyKey),
+      'play_pause',
+    );
+    _nextTrackHotKey = _parseHotKey(
+      prefs.getString(_nextTrackHotKeyKey),
+      'next_track',
+    );
+    _prevTrackHotKey = _parseHotKey(
+      prefs.getString(_prevTrackHotKeyKey),
+      'prev_track',
+    );
+    _volumeUpHotKey = _parseHotKey(
+      prefs.getString(_volumeUpHotKeyKey),
+      'volume_up',
+    );
+    _volumeDownHotKey = _parseHotKey(
+      prefs.getString(_volumeDownHotKeyKey),
+      'volume_down',
+    );
 
     notifyListeners(); // 读取完毕后刷新界面
   }
@@ -449,6 +469,13 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setBool(_enableGaplessPlaybackKey, value);
   }
 
+  void setShowAudioAnalysis(bool value) async {
+    _showAudioAnalysis = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_showAudioAnalysisKey, value);
+  }
+
   HotKey? _parseHotKey(String? jsonStr, String type) {
     if (jsonStr != null && jsonStr.isNotEmpty) {
       try {
@@ -553,10 +580,25 @@ class SettingsProvider with ChangeNotifier {
     _volumeUpHotKey = _getDefaultHotKey('volume_up');
     _volumeDownHotKey = _getDefaultHotKey('volume_down');
     notifyListeners();
-    await prefs.setString(_playPauseHotKeyKey, jsonEncode(_playPauseHotKey!.toJson()));
-    await prefs.setString(_nextTrackHotKeyKey, jsonEncode(_nextTrackHotKey!.toJson()));
-    await prefs.setString(_prevTrackHotKeyKey, jsonEncode(_prevTrackHotKey!.toJson()));
-    await prefs.setString(_volumeUpHotKeyKey, jsonEncode(_volumeUpHotKey!.toJson()));
-    await prefs.setString(_volumeDownHotKeyKey, jsonEncode(_volumeDownHotKey!.toJson()));
+    await prefs.setString(
+      _playPauseHotKeyKey,
+      jsonEncode(_playPauseHotKey!.toJson()),
+    );
+    await prefs.setString(
+      _nextTrackHotKeyKey,
+      jsonEncode(_nextTrackHotKey!.toJson()),
+    );
+    await prefs.setString(
+      _prevTrackHotKeyKey,
+      jsonEncode(_prevTrackHotKey!.toJson()),
+    );
+    await prefs.setString(
+      _volumeUpHotKeyKey,
+      jsonEncode(_volumeUpHotKey!.toJson()),
+    );
+    await prefs.setString(
+      _volumeDownHotKeyKey,
+      jsonEncode(_volumeDownHotKey!.toJson()),
+    );
   }
 }

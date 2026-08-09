@@ -39,41 +39,45 @@ class About extends StatelessWidget {
             onPressed: () {
               showAboutDialog(
                 context: context,
-                applicationName: 'Myune Music',
+                applicationName: 'Myune music for Android',
                 applicationVersion: 'v$appVersion',
                 applicationIcon: Image.asset(
                   'assets/images/icon/logo.png',
                   width: 48,
                   height: 48,
                 ),
-                applicationLegalese: '© 2025 Myune Music · Apache License 2.0',
+                applicationLegalese:
+                    '© 2026 Myune music for Android · Apache License 2.0',
                 children: [
                   const SizedBox(height: 8),
-                  const Text('一个简洁的本地音乐播放器', style: TextStyle(fontSize: 14)),
+                  const Text(
+                    '专为 Android 手机设计的本地音乐播放器，提供本地曲库、歌词、通知栏控制、均衡器、音频效果与实时音频分析。',
+                    style: TextStyle(fontSize: 14),
+                  ),
                   const SizedBox(height: 12),
                   Text.rich(
                     TextSpan(
                       children: [
                         const TextSpan(
-                          text: '本软件基于 ',
+                          text: '本项目基于 ',
                           style: TextStyle(fontSize: 14),
                         ),
                         linkTextSpan(
                           context,
-                          'Apache License 2.0',
-                          'https://www.apache.org/licenses/LICENSE-2.0',
+                          'xiaobaimc/myune_music',
+                          'https://github.com/xiaobaimc/myune_music',
                         ),
                         const TextSpan(
-                          text: ' 开源，可在 ',
+                          text: ' 构建并进行 Android 手机端适配，可在 ',
                           style: TextStyle(fontSize: 14),
                         ),
                         linkTextSpan(
                           context,
                           'GitHub',
-                          'https://github.com/xiaobaimc/myune_music',
+                          'https://github.com/baishu136/myune_music_android',
                         ),
                         const TextSpan(
-                          text: ' 查看代码',
+                          text: ' 查看本项目代码。软件继续遵循 Apache License 2.0。',
                           style: TextStyle(fontSize: 14),
                         ),
                       ],
@@ -90,7 +94,7 @@ class About extends StatelessWidget {
                         linkTextSpan(
                           context,
                           'GitHub Issue',
-                          'https://github.com/xiaobaimc/myune_music/issues',
+                          'https://github.com/baishu136/myune_music_android/issues',
                         ),
                         const TextSpan(
                           text: ' 反馈',
@@ -101,12 +105,12 @@ class About extends StatelessWidget {
                   ),
                   const SizedBox(height: 12),
                   const Text(
-                    '软件在出现问题时，可能会将相关歌曲信息记录到本地 /log 目录，但不会将其上传',
+                    '诊断日志仅保存在设备的应用数据目录中，不会由软件自动上传。',
                     style: TextStyle(fontSize: 14),
                   ),
                   const SizedBox(height: 4),
                   const Text(
-                    '软件中的所有联网操作都可以在设置中控制是否开启',
+                    '网络歌词与更新检查仅在用户启用或主动操作时访问网络。',
                     style: TextStyle(fontSize: 14),
                   ),
                   const SizedBox(height: 12),

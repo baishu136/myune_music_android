@@ -121,6 +121,78 @@ class PlaylistContentNotifier extends ChangeNotifier {
     notifyListeners();
   }
 
+  Future<void> addSongsToFavorites(Iterable<Song> songs) async {
+    final playlist = favoritePlaylist;
+    if (playlist == null) {
+      _errorStreamController.add('未找到收藏歌单');
+      return;
+    }
+    final existing = playlist.songFilePaths
+        .map((path) => p.normalize(path).toLowerCase())
+        .toSet();
+    var added = 0;
+    for (final song in songs) {
+      if (!existing.add(song.normalizedPath.toLowerCase())) continue;
+      playlist.songFilePaths.add(song.filePath);
+      playlist.songs?.add(song);
+      added++;
+    }
+    if (added == 0) {
+      _infoStreamController.add('所选歌曲均已收藏');
+      return;
+    }
+    await _savePlaylists();
+    await _updateAllSongsList();
+    _infoStreamController.add('已收藏 $added 首歌曲');
+    notifyListeners();
+  }
+
+  Future<void> hideSongsFromLibrary(Iterable<Song> songs) async {
+    final selectedSongs = songs.toList();
+    if (selectedSongs.isEmpty) return;
+    final selectedIdentities = selectedSongs.map(_libraryDedupKey).toSet();
+    final pathsToHide = selectedSongs
+        .map((song) => song.normalizedPath.toLowerCase())
+        .toSet();
+
+    // 曲库会按歌曲标签去重，因此同一显示项可能对应多个文件。隐藏全部
+    // 同身份副本，避免移除后另一份副本立刻顶替显示。
+    final allPlaylistPaths = _playlists
+        .expand((playlist) => playlist.songFilePaths)
+        .map(p.normalize)
+        .toSet();
+    for (final path in allPlaylistPaths) {
+      if (pathsToHide.contains(path.toLowerCase())) continue;
+      final candidate = await _parseSongMetadata(path);
+      if (selectedIdentities.contains(_libraryDedupKey(candidate))) {
+        pathsToHide.add(path.toLowerCase());
+      }
+    }
+
+    final pathsChanged = pathsToHide
+        .where(_hiddenLibrarySongPaths.add)
+        .isNotEmpty;
+    final identitiesChanged = selectedIdentities
+        .where(_hiddenLibrarySongIdentities.add)
+        .isNotEmpty;
+    final changed = pathsChanged || identitiesChanged;
+    if (!changed) return;
+    final currentSong = _currentSong;
+    if (currentSong != null &&
+        (_hiddenLibrarySongPaths.contains(
+              currentSong.normalizedPath.toLowerCase(),
+            ) ||
+            _hiddenLibrarySongIdentities.contains(
+              _libraryDedupKey(currentSong),
+            ))) {
+      await stop();
+    }
+    await _saveHiddenLibrarySongs();
+    await _updateAllSongsList();
+    _infoStreamController.add('已从音乐库移除 ${selectedSongs.length} 首歌曲');
+    notifyListeners();
+  }
+
   int _selectedIndex = -1; // 当前选中的歌单索引
   int get selectedIndex => _selectedIndex;
   Playlist? _playingPlaylist; // 当前正在播放的歌单
@@ -136,6 +208,11 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
   List<Song> _allSongs = []; // 所有不重复歌曲的集合
   List<Song> get allSongs => _allSongs;
+  static const _hiddenLibrarySongsKey = 'hidden_library_song_paths';
+  static const _hiddenLibrarySongIdentitiesKey =
+      'hidden_library_song_identities';
+  final Set<String> _hiddenLibrarySongPaths = {};
+  final Set<String> _hiddenLibrarySongIdentities = {};
 
   // --- 元数据缓存 ---
   final Map<String, SongMetadataCacheEntry> _songMetadataCache = {};
@@ -168,6 +245,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
   bool _playbackIntent = false;
   int _playbackRequestRevision = 0;
   int? _activeTrackChangeRevision;
+  Future<void> _mediaNavigationChain = Future<void>.value();
 
   int _currentSongIndex = -1; // 当前播放歌曲的索引（在当前歌单中）
   Song? _currentSong; // 当前播放的歌曲
@@ -442,6 +520,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
     _artistSortOrders = await _playlistManager.loadArtistSortOrders();
     _albumSortOrders = await _playlistManager.loadAlbumSortOrders();
     await _loadSongMetadataCache();
+    await _loadHiddenLibrarySongs();
 
     // 加载现有的播放列表
     await _loadPlaylists();
@@ -457,6 +536,47 @@ class PlaylistContentNotifier extends ChangeNotifier {
     await _restorePlaybackState();
     // 恢复无缝播放设置
     updateGaplessMode(_settingsProvider.enableGaplessPlayback);
+  }
+
+  Future<void> _loadHiddenLibrarySongs() async {
+    final prefs = await SharedPreferences.getInstance();
+    _hiddenLibrarySongPaths
+      ..clear()
+      ..addAll(prefs.getStringList(_hiddenLibrarySongsKey) ?? const []);
+    _hiddenLibrarySongIdentities
+      ..clear()
+      ..addAll(
+        prefs.getStringList(_hiddenLibrarySongIdentitiesKey) ?? const [],
+      );
+  }
+
+  Future<void> _saveHiddenLibrarySongs() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _hiddenLibrarySongsKey,
+      _hiddenLibrarySongPaths.toList()..sort(),
+    );
+    await prefs.setStringList(
+      _hiddenLibrarySongIdentitiesKey,
+      _hiddenLibrarySongIdentities.toList()..sort(),
+    );
+  }
+
+  Future<bool> _unhideImportedSongPaths(Iterable<String> paths) async {
+    var changed = false;
+    for (final path in paths) {
+      final normalizedPath = p.normalize(path).toLowerCase();
+      final pathWasHidden = _hiddenLibrarySongPaths.remove(normalizedPath);
+      changed = pathWasHidden || changed;
+      if (pathWasHidden || _hiddenLibrarySongIdentities.isNotEmpty) {
+        final song = await _parseSongMetadata(path);
+        changed =
+            _hiddenLibrarySongIdentities.remove(_libraryDedupKey(song)) ||
+            changed;
+      }
+    }
+    if (changed) await _saveHiddenLibrarySongs();
+    return changed;
   }
 
   // 获取规范化的路径
@@ -755,10 +875,18 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
   MediaSession _buildMediaSession(Song song) {
     return MediaSession(
-      appName: 'MyuneMusic',
+      appName: 'Myune music for Android',
       title: song.title,
       artist: song.artist,
       album: song.album,
+      actions: const {
+        MediaAction.previous,
+        MediaAction.play,
+        MediaAction.pause,
+        MediaAction.playPause,
+        MediaAction.next,
+        MediaAction.seek,
+      },
       // Regaining Android audio focus must not start music by itself. The
       // player resumes only after an explicit user play command.
       interruptionPolicy: InterruptionPolicy.pauseOnly,
@@ -830,9 +958,9 @@ class PlaylistContentNotifier extends ChangeNotifier {
         _cancelPendingTrackChange();
         PlaybackTracker().pauseTracking();
       } else if (command is MediaSessionCommandNext) {
-        playNext();
+        _queueMediaNavigation(next: true);
       } else if (command is MediaSessionCommandPrevious) {
-        playPrevious();
+        _queueMediaNavigation(next: false);
       }
     });
 
@@ -883,6 +1011,23 @@ class PlaylistContentNotifier extends ChangeNotifier {
   }
 
   Future<void> _cleanupSmtc() async {}
+
+  void _queueMediaNavigation({required bool next}) {
+    final resumeAfterNavigation =
+        _playbackIntent || _audioService.player.state.playWhenReady;
+    _mediaNavigationChain = _mediaNavigationChain
+        .then((_) async {
+          if (next) {
+            await playNext(playAfterLoad: resumeAfterNavigation);
+          } else {
+            await playPrevious(playAfterLoad: resumeAfterNavigation);
+          }
+        })
+        .catchError((Object error, StackTrace stackTrace) {
+          debugPrint('通知栏切歌失败: $error\n$stackTrace');
+          _errorStreamController.add('通知栏切歌失败，请重试');
+        });
+  }
 
   // --- 歌单相关 ---
 
@@ -1509,15 +1654,20 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
     final currentPlaylist = _playlists[_selectedIndex];
     final List<String> newSongPaths = [];
+    final selectedSongPaths = <String>[];
 
     for (final platformFile in result.files) {
       if (platformFile.path != null) {
         final pathToAdd = p.normalize(platformFile.path!);
+        selectedSongPaths.add(pathToAdd);
         if (!currentPlaylist.songFilePaths.contains(pathToAdd)) {
           newSongPaths.add(pathToAdd);
         }
       }
     }
+    final restoredHiddenSongs = await _unhideImportedSongPaths(
+      selectedSongPaths,
+    );
     // 如果不为空，说明有新歌曲被添加
     if (newSongPaths.isNotEmpty) {
       // 后台异步处理歌曲添加
@@ -1526,6 +1676,11 @@ class PlaylistContentNotifier extends ChangeNotifier {
     }
     // 如果确实选择了文件，但 newSongPaths 为空，说明选择是重复歌曲
     else if (result.files.isNotEmpty) {
+      if (restoredHiddenSongs) {
+        await _updateAllSongsList();
+        _infoStreamController.add('已恢复重新导入的歌曲');
+        return true;
+      }
       _infoStreamController.add('所选歌曲已存在于当前歌单中');
       return false;
     }
@@ -1571,6 +1726,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
         .map((path) => p.normalize(path).toLowerCase())
         .toSet();
     final newSongPaths = <String>[];
+    final discoveredSongPaths = <String>[];
 
     try {
       await for (final entity in directory.list(
@@ -1581,6 +1737,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
         final extension = p.extension(entity.path).toLowerCase();
         if (!_supportedAudioExtensions.contains(extension)) continue;
         final normalizedPath = p.normalize(entity.path);
+        discoveredSongPaths.add(normalizedPath);
         if (existingPaths.add(normalizedPath.toLowerCase())) {
           newSongPaths.add(normalizedPath);
         }
@@ -1590,7 +1747,16 @@ class PlaylistContentNotifier extends ChangeNotifier {
       return false;
     }
 
+    final restoredHiddenSongs = await _unhideImportedSongPaths(
+      discoveredSongPaths,
+    );
+
     if (newSongPaths.isEmpty) {
+      if (restoredHiddenSongs) {
+        await _updateAllSongsList();
+        _infoStreamController.add('已恢复重新导入的歌曲');
+        return true;
+      }
       _infoStreamController.add('文件夹中没有可导入的新歌曲');
       return false;
     }
@@ -1788,6 +1954,8 @@ class PlaylistContentNotifier extends ChangeNotifier {
           }
         }
       }
+
+      await _unhideImportedSongPaths(songPaths);
 
       // 使用跨平台路径差异计算
       final diff = _computePathDiff(playlist.songFilePaths, songPaths);
@@ -2019,6 +2187,38 @@ class PlaylistContentNotifier extends ChangeNotifier {
     _infoStreamController.add('已删除歌单 “$deletedPlaylistName”');
 
     return true; // 表示删除成功
+  }
+
+  Future<bool> pinPlaylist(int index) async {
+    if (index < 0 || index >= _playlists.length) return false;
+
+    final playlist = _playlists[index];
+    if (playlist.isDefault) {
+      _infoStreamController.add('默认歌单已固定在顶部');
+      return false;
+    }
+
+    final firstUserPlaylistIndex = _playlists.indexWhere(
+      (item) => !item.isDefault,
+    );
+    if (firstUserPlaylistIndex < 0 || index == firstUserPlaylistIndex) {
+      _infoStreamController.add('“${playlist.name}”已经置顶');
+      return false;
+    }
+
+    final selectedId = _selectedIndex >= 0
+        ? _playlists[_selectedIndex].id
+        : null;
+    final pinned = _playlists.removeAt(index);
+    _playlists.insert(firstUserPlaylistIndex, pinned);
+    if (selectedId != null) {
+      _selectedIndex = _playlists.indexWhere((item) => item.id == selectedId);
+    }
+
+    await _savePlaylists();
+    _infoStreamController.add('已置顶歌单“${playlist.name}”');
+    notifyListeners();
+    return true;
   }
 
   bool editPlaylistName(int index, String newName) {
@@ -2799,7 +2999,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
   }
 
   // 根据播放模式播放下一首
-  Future<void> _playNextLogic() async {
+  Future<void> _playNextLogic({bool playAfterLoad = true}) async {
     // 独立队列
     if (_isUsingQueue &&
         _currentPlayingQueue != null &&
@@ -2852,7 +3052,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
       }
 
       _currentQueueIndex = nextIndex; // 更新队列索引
-      await _startPlaybackNow();
+      await _startPlaybackNow(playAfterLoad: playAfterLoad);
       return;
     }
 
@@ -2911,15 +3111,15 @@ class PlaylistContentNotifier extends ChangeNotifier {
     }
 
     _playingSongIndex = nextIndex; // 更新播放索引
-    await _startPlaybackNow();
+    await _startPlaybackNow(playAfterLoad: playAfterLoad);
   }
 
-  Future<void> playNext() async {
-    await _playNextLogic();
+  Future<void> playNext({bool playAfterLoad = true}) async {
+    await _playNextLogic(playAfterLoad: playAfterLoad);
   }
 
   // 播放上一首
-  Future<void> playPrevious() async {
+  Future<void> playPrevious({bool playAfterLoad = true}) async {
     // 独立队列
     if (_isUsingQueue &&
         _currentPlayingQueue != null &&
@@ -2952,7 +3152,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
       // 更新队列索引
       _currentQueueIndex = prevIndex;
       _isAutoPlaying = false;
-      await _startPlaybackNow();
+      await _startPlaybackNow(playAfterLoad: playAfterLoad);
       return;
     }
 
@@ -2987,7 +3187,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
     // 更新播放索引
     _playingSongIndex = prevIndex;
     _isAutoPlaying = false;
-    await _startPlaybackNow();
+    await _startPlaybackNow(playAfterLoad: playAfterLoad);
   }
 
   // 这个方法专门用于播放抽屉内的点击事件
@@ -3235,10 +3435,10 @@ class PlaylistContentNotifier extends ChangeNotifier {
     await _startPlaybackNow();
   }
 
-  Future<void> _startPlaybackNow() async {
+  Future<void> _startPlaybackNow({bool playAfterLoad = true}) async {
     final requestRevision = ++_playbackRequestRevision;
     _activeTrackChangeRevision = requestRevision;
-    _playbackIntent = true;
+    _playbackIntent = playAfterLoad;
 
     String? songFilePath;
 
@@ -5872,7 +6072,13 @@ class PlaylistContentNotifier extends ChangeNotifier {
     // 从所有歌单中获取当前所有可用的、不重复的歌曲路径集合
     final allAvailablePaths = <String>{};
     for (final playlist in _playlists) {
-      allAvailablePaths.addAll(playlist.songFilePaths);
+      allAvailablePaths.addAll(
+        playlist.songFilePaths.where(
+          (path) => !_hiddenLibrarySongPaths.contains(
+            p.normalize(path).toLowerCase(),
+          ),
+        ),
+      );
     }
     _pruneMetadataCache(allAvailablePaths);
 
@@ -5894,13 +6100,9 @@ class PlaylistContentNotifier extends ChangeNotifier {
     for (final path in savedOrder) {
       final song = await _parseSongMetadata(path);
 
-      final artist = song.artist.trim().toLowerCase();
-      final title = song.title.trim().toLowerCase();
-      final album = song.album.trim().toLowerCase();
-      final hasUsableAlbum = album.isNotEmpty && album != '未知专辑';
-      final key = hasUsableAlbum ? '$artist|$title|$album' : '$artist|$title';
-
-      if (seen.add(key)) {
+      final identity = _libraryDedupKey(song);
+      if (!_hiddenLibrarySongIdentities.contains(identity) &&
+          seen.add(identity)) {
         dedupedSongs.add(song);
       }
     }
@@ -5915,6 +6117,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
     _allSongsVirtualPlaylist.songFilePaths = _allSongs
         .map((s) => s.filePath)
         .toList();
+    _allSongsVirtualPlaylist.songs = List<Song>.from(_allSongs);
     unawaited(
       _verifySongMetadataInBackground(_allSongsVirtualPlaylist.songFilePaths),
     );
@@ -5927,6 +6130,14 @@ class PlaylistContentNotifier extends ChangeNotifier {
     // 标记加载完成
     _allSongsLoaded = true;
     notifyListeners();
+  }
+
+  static String _libraryDedupKey(Song song) {
+    final artist = song.artist.trim().toLowerCase();
+    final title = song.title.trim().toLowerCase();
+    final album = song.album.trim().toLowerCase();
+    final hasUsableAlbum = album.isNotEmpty && album != '未知专辑';
+    return hasUsableAlbum ? '$artist|$title|$album' : '$artist|$title';
   }
 
   Future<void> reorderAllSongs(int oldIndex, int newIndex) async {
@@ -5964,6 +6175,13 @@ class PlaylistContentNotifier extends ChangeNotifier {
     if (index < 0 || index >= _allSongs.length) {
       return;
     }
+
+    // 恢复播放状态可能保存的是旧队列，进入曲库播放时必须按当前曲库
+    // 重新建立完整上下文，否则通知栏上一曲/下一曲只能反复播放旧曲。
+    _allSongsVirtualPlaylist.songFilePaths = _allSongs
+        .map((song) => song.filePath)
+        .toList();
+    _allSongsVirtualPlaylist.songs = List<Song>.from(_allSongs);
 
     // 设置播放上下文为虚拟歌单
     _playingPlaylist = _allSongsVirtualPlaylist;

@@ -268,8 +268,7 @@ class _PlaylistCleanerState extends State<PlaylistCleaner> {
       children: [
         Text('清理无效文件', style: Theme.of(context).textTheme.titleMedium),
         ElevatedButton.icon(
-          onPressed:
-              (_isScanning || _isApplying) ? null : _showCleanDialog,
+          onPressed: (_isScanning || _isApplying) ? null : _showCleanDialog,
           icon: (_isScanning || _isApplying)
               ? const SizedBox(
                   width: 20,
@@ -368,7 +367,10 @@ class _PlaylistSelectionDialogState extends State<_PlaylistSelectionDialog> {
                     return CheckboxListTile(
                       value: _selectedIds.contains(playlist.id),
                       onChanged: (_) => _togglePlaylist(playlist.id),
-                      title: Text(playlist.name, overflow: TextOverflow.ellipsis),
+                      title: Text(
+                        playlist.name,
+                        overflow: TextOverflow.ellipsis,
+                      ),
                       subtitle: Text('${playlist.songFilePaths.length} 首歌曲'),
                       controlAffinity: ListTileControlAffinity.leading,
                       dense: true,

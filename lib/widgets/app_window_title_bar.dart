@@ -35,7 +35,7 @@ class AppWindowTitleBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 const Text(
-                  "MyuneMusic",
+                  "Myune music for Android",
                   style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
                 ),
               ],

@@ -18,6 +18,17 @@ class PlaybackSettingsTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('playback_settings'),
       children: [
+        SwitchListTile(
+          title: const Row(
+            children: [
+              Text('显示音频分析入口'),
+              SizedBox(width: 4),
+              InfoIcon('启用后在播放页底部显示实时音频分析按钮\n默认关闭以保持操作栏简洁'),
+            ],
+          ),
+          value: settings.showAudioAnalysis,
+          onChanged: settings.setShowAudioAnalysis,
+        ),
         // 音频设备选择
         if (!Platform.isAndroid)
           Padding(

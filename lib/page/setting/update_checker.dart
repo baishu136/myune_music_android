@@ -1,14 +1,9 @@
 import 'dart:convert';
+
 import 'package:http/http.dart' as http;
 
-// 定义更新检查结果类型
-enum UpdateCheckResultType {
-  successUpdateAvailable, // 有可用更新
-  successNoUpdate, // 无可用更新
-  error, // 检查出错
-}
+enum UpdateCheckResultType { successUpdateAvailable, successNoUpdate, error }
 
-// 更新检查结果
 class UpdateCheckResult {
   final UpdateCheckResultType type;
   final UpdateInfo? updateInfo;
@@ -29,71 +24,92 @@ class UpdateCheckResult {
 }
 
 class UpdateChecker {
-  static const String _repoOwner = 'xiaobaimc';
-  static const String _repoName = 'myune_music';
+  static const String projectUrl =
+      'https://github.com/baishu136/myune_music_android';
   static const String _apiUrl =
-      'https://api.github.com/repos/$_repoOwner/$_repoName/releases/latest';
+      'https://api.github.com/repos/baishu136/myune_music_android/releases?per_page=20';
 
-  // 检查是否有新版本
   static Future<UpdateCheckResult> checkForUpdates(
     String currentVersion,
   ) async {
     try {
       final response = await http
-          .get(Uri.parse(_apiUrl))
-          .timeout(const Duration(seconds: 5));
-      if (response.statusCode == 200) {
-        final data = json.decode(response.body);
-        final latestVersion = data['tag_name'].toString().replaceAll('v', '');
-        final releaseNotes = data['body'] as String? ?? '';
-        final htmlUrl = data['html_url'] as String? ?? '';
+          .get(
+            Uri.parse(_apiUrl),
+            headers: const {
+              'Accept': 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28',
+            },
+          )
+          .timeout(const Duration(seconds: 8));
 
-        // 比较版本号
-        if (_isVersionNewer(latestVersion, currentVersion)) {
-          final updateInfo = UpdateInfo(
-            latestVersion: latestVersion,
-            releaseNotes: releaseNotes,
-            downloadUrl: htmlUrl,
-          );
-          return UpdateCheckResult.successUpdateAvailable(updateInfo);
-        } else {
-          return UpdateCheckResult.successNoUpdate();
-        }
+      if (response.statusCode != 200) {
+        return UpdateCheckResult.error('GitHub 返回 ${response.statusCode}');
       }
-      // 如果响应状态码不是200，返回错误
-      return UpdateCheckResult.error('服务器响应错误: ${response.statusCode}');
-    } catch (e) {
-      return UpdateCheckResult.error(e.toString());
+
+      final releases = json.decode(response.body);
+      if (releases is! List) {
+        return UpdateCheckResult.error('GitHub 返回了无效数据');
+      }
+
+      final published = releases.whereType<Map<String, dynamic>>().where(
+        (release) => release['draft'] != true,
+      );
+      if (published.isEmpty) {
+        return UpdateCheckResult.successNoUpdate();
+      }
+
+      final release = published.first;
+      final latestVersion = _normalizeVersion(
+        release['tag_name']?.toString() ?? '',
+      );
+      if (latestVersion.isEmpty) {
+        return UpdateCheckResult.error('GitHub 版本号无效');
+      }
+
+      if (!isVersionNewer(latestVersion, currentVersion)) {
+        return UpdateCheckResult.successNoUpdate();
+      }
+
+      return UpdateCheckResult.successUpdateAvailable(
+        UpdateInfo(
+          latestVersion: latestVersion,
+          releaseNotes: release['body'] as String? ?? '',
+          downloadUrl: release['html_url'] as String? ?? projectUrl,
+        ),
+      );
+    } catch (error) {
+      return UpdateCheckResult.error(error.toString());
     }
   }
 
-  // 比较版本号，判断是否有新版本
-  static bool _isVersionNewer(String latest, String current) {
-    final latestParts = latest.split('.').map(int.tryParse).toList();
-    final currentParts = current.split('.').map(int.tryParse).toList();
+  /// 比较包括 `0.9.3-android.2` 在内的项目版本号。
+  static bool isVersionNewer(String latest, String current) {
+    final latestParts = _versionNumbers(latest);
+    final currentParts = _versionNumbers(current);
+    final length = latestParts.length > currentParts.length
+        ? latestParts.length
+        : currentParts.length;
 
-    // 如果解析失败，则认为没有更新
-    if (latestParts.any((element) => element == null) ||
-        currentParts.any((element) => element == null)) {
-      return false;
-    }
-
-    // 按照主版本号.次版本号.修订号的顺序比较
-    for (int i = 0; i < latestParts.length && i < currentParts.length; i++) {
-      final latestNum = latestParts[i]!;
-      final currentNum = currentParts[i]!;
-
-      if (latestNum > currentNum) {
-        return true;
-      } else if (latestNum < currentNum) {
-        return false;
+    for (var index = 0; index < length; index++) {
+      final latestNumber = index < latestParts.length ? latestParts[index] : 0;
+      final currentNumber = index < currentParts.length
+          ? currentParts[index]
+          : 0;
+      if (latestNumber != currentNumber) {
+        return latestNumber > currentNumber;
       }
-      // 如果相等，继续比较下一个部分
     }
-
-    // 如果所有部分都相等，或者latest版本号段更少，则认为没有新版本
-    return latestParts.length > currentParts.length;
+    return false;
   }
+
+  static String _normalizeVersion(String version) =>
+      version.trim().replaceFirst(RegExp(r'^[vV]'), '');
+
+  static List<int> _versionNumbers(String version) =>
+      RegExp(r'\d+').allMatches(_normalizeVersion(version)).map((match) {
+        return int.tryParse(match.group(0) ?? '') ?? 0;
+      }).toList();
 }
 
 class UpdateInfo {

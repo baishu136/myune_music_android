@@ -34,12 +34,12 @@ class _ArtistListState extends State<ArtistList> {
   void _closeArtistDetail() {
     final notifier = context.read<PlaylistContentNotifier>();
     final navNotifier = context.read<NavigationNotifier>();
-    
+
     if (notifier.isSearching) {
       notifier.stopSearch();
     }
     notifier.clearActiveDetailView();
-    
+
     if (navNotifier.canPop) {
       navNotifier.popRoute();
     }
@@ -224,40 +224,45 @@ class _ArtistListState extends State<ArtistList> {
                             silkyScrollDuration: ScrollConfig.duration,
                             scrollSpeed: ScrollConfig.speed,
                             animationCurve: ScrollConfig.curve,
-                            builder: (context, controller, physics, _) => ListView.builder(
-                              controller: controller,
-                              physics: physics,
-                              itemCount: artistNames.length,
-                              itemBuilder: (context, index) {
-                                final artistName = artistNames[index];
-                                final songs = artists[artistName]!;
-                                final representativeSong = songs.firstWhere(
-                                  (s) => s.albumArt != null,
-                                  orElse: () => songs.first,
-                                );
-                                final representativeArt =
-                                    representativeSong.albumArt;
+                            builder: (context, controller, physics, _) =>
+                                ListView.builder(
+                                  controller: controller,
+                                  physics: physics,
+                                  itemCount: artistNames.length,
+                                  itemBuilder: (context, index) {
+                                    final artistName = artistNames[index];
+                                    final songs = artists[artistName]!;
+                                    final representativeSong = songs.firstWhere(
+                                      (s) => s.albumArt != null,
+                                      orElse: () => songs.first,
+                                    );
+                                    final representativeArt =
+                                        representativeSong.albumArt;
 
-                                return ListTile(
-                                  leading: _ArtistCoverAvatar(
-                                    filePath: representativeSong.filePath,
-                                    representativeArt: representativeArt,
-                                  ),
-                                  title: Text(artistName),
-                                  subtitle: Text('共 ${songs.length} 首歌曲'),
-                                  onTap: () {
-                                    if (_scrollController.hasClients) {
-                                      _savedScrollOffset =
-                                          _scrollController.offset;
-                                    }
-                                    notifier.setActiveArtistView(artistName);
+                                    return ListTile(
+                                      leading: _ArtistCoverAvatar(
+                                        filePath: representativeSong.filePath,
+                                        representativeArt: representativeArt,
+                                      ),
+                                      title: Text(artistName),
+                                      subtitle: Text('共 ${songs.length} 首歌曲'),
+                                      onTap: () {
+                                        if (_scrollController.hasClients) {
+                                          _savedScrollOffset =
+                                              _scrollController.offset;
+                                        }
+                                        notifier.setActiveArtistView(
+                                          artistName,
+                                        );
+                                      },
+                                      shape: RoundedRectangleBorder(
+                                        borderRadius: BorderRadius.circular(
+                                          12.0,
+                                        ),
+                                      ),
+                                    );
                                   },
-                                  shape: RoundedRectangleBorder(
-                                    borderRadius: BorderRadius.circular(12.0),
-                                  ),
-                                );
-                              },
-                            ),
+                                ),
                           );
                         },
                       ),

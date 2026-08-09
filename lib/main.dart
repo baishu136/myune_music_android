@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:system_fonts/system_fonts.dart';
 import 'package:window_manager/window_manager.dart';
@@ -27,6 +28,12 @@ import 'services/notification_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  if (Platform.isAndroid) {
+    await SystemChrome.setPreferredOrientations(const [
+      DeviceOrientation.portraitUp,
+    ]);
+  }
 
   // 初始化全局快捷键管理器
   final isDesktop = Platform.isWindows || Platform.isLinux;
@@ -66,7 +73,7 @@ void main() async {
   // 初始化系统托盘
   if (isDesktop) await trayManager.setIcon('assets/images/icon/tray_icon.ico');
   if (isDesktop && !Platform.isLinux) {
-    await trayManager.setToolTip('MyuneMusic');
+    await trayManager.setToolTip('Myune music for Android');
   }
 
   final Menu menu = Menu(
@@ -95,7 +102,7 @@ void main() async {
     size: initialSize,
     minimumSize: minPossibleSize,
     center: true,
-    title: "MyuneMusic",
+    title: "Myune music for Android",
     titleBarStyle: TitleBarStyle.hidden,
     // backgroundColor: Colors.transparent, // 让原生窗口背景透明
   );
@@ -251,7 +258,7 @@ class _MyAppState extends State<MyApp> with TrayListener {
     if (!_taskbarReady) return;
 
     try {
-      WindowsTaskbar.setWindowTitle('MyuneMusic');
+      WindowsTaskbar.setWindowTitle('Myune music for Android');
       await WindowsTaskbar.setThumbnailToolbar([
         ThumbnailToolbarButton(
           ThumbnailToolbarAssetIcon('assets/images/icon/prev.ico'),
@@ -436,7 +443,7 @@ class _MyAppState extends State<MyApp> with TrayListener {
           locale: const Locale('zh', 'CH'),
 
           debugShowCheckedModeBanner: false,
-          title: 'MyuneMusic',
+          title: 'Myune music for Android',
           theme: themeProvider.lightThemeData,
           darkTheme: themeProvider.darkThemeData,
           themeMode: themeProvider.themeMode,

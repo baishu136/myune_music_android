@@ -69,7 +69,7 @@ class AudioService {
 
   Future<void> init() async {
     try {
-      await _player.setAudioClientName('MyuneMusic');
+      await _player.setAudioClientName('Myune music for Android');
       // Disable auto subtitles if possible
       await _player.setRawProperty('sub-auto', 'no');
     } catch (e) {

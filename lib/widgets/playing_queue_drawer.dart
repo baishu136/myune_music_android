@@ -94,30 +94,31 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer> {
                         silkyScrollDuration: ScrollConfig.duration,
                         scrollSpeed: ScrollConfig.speed,
                         animationCurve: ScrollConfig.curve,
-                        builder: (context, controller, physics, _) => ListView.builder(
-                          controller: controller,
-                          physics: physics,
-                          itemCount: queue.length,
-                          itemBuilder: (context, index) {
-                            final song = queue[index];
+                        builder: (context, controller, physics, _) =>
+                            ListView.builder(
+                              controller: controller,
+                              physics: physics,
+                              itemCount: queue.length,
+                              itemBuilder: (context, index) {
+                                final song = queue[index];
 
-                            // 再次复用 SongTileWidget
-                            return SongTileWidget(
-                              key: ValueKey(song.filePath),
-                              song: song,
-                              index: index,
-                              enableContextMenu: false, // 禁用右键菜单
-                              // 传入当前播放的歌单作为上下文
-                              contextPlaylist:
-                                  playingPlaylist ??
-                                  notifier.allSongsVirtualPlaylist,
-                              onTap: () {
-                                // 这里的index正好就是歌曲在队列中的索引
-                                notifier.playSongFromQueue(index);
+                                // 再次复用 SongTileWidget
+                                return SongTileWidget(
+                                  key: ValueKey(song.filePath),
+                                  song: song,
+                                  index: index,
+                                  enableContextMenu: false, // 禁用右键菜单
+                                  // 传入当前播放的歌单作为上下文
+                                  contextPlaylist:
+                                      playingPlaylist ??
+                                      notifier.allSongsVirtualPlaylist,
+                                  onTap: () {
+                                    // 这里的index正好就是歌曲在队列中的索引
+                                    notifier.playSongFromQueue(index);
+                                  },
+                                );
                               },
-                            );
-                          },
-                        ),
+                            ),
                       ),
                     ),
                   ),

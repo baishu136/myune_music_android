@@ -37,6 +37,7 @@ mpv_audio_kit.md
 .pub/
 /build/
 /release/
+**/.cxx/
 
 
 # Symbolication related

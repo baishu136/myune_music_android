@@ -47,11 +47,12 @@ class _SongDetailsState extends State<SongDetails> {
               silkyScrollDuration: ScrollConfig.duration,
               scrollSpeed: ScrollConfig.speed,
               animationCurve: ScrollConfig.curve,
-              builder: (context, controller, physics, _) => SingleChildScrollView(
-                controller: controller,
-                physics: physics,
-                child: const SongDetailsPage(),
-              ),
+              builder: (context, controller, physics, _) =>
+                  SingleChildScrollView(
+                    controller: controller,
+                    physics: physics,
+                    child: const SongDetailsPage(),
+                  ),
             ),
           ),
         ],

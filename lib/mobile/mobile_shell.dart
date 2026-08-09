@@ -7,6 +7,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../page/playlist/playlist_content_notifier.dart';
 import '../page/playlist/playlist_models.dart';
@@ -30,13 +31,35 @@ class MobileShell extends StatefulWidget {
 }
 
 class _MobileShellState extends State<MobileShell> {
+  static const _notificationPromptedKey = 'notification_permission_prompted';
   int _tab = 0;
   String _query = '';
   StreamSubscription<String>? _errorSubscription;
   StreamSubscription<String>? _infoSubscription;
   bool _noticeStreamsBound = false;
+  bool _animateLibraryEntrance = true;
+  bool _librarySelectionMode = false;
+  final Set<String> _selectedLibrarySongPaths = {};
 
   static const _titles = ['音乐库', '歌单', '歌手', '专辑', '设置'];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _requestNotificationPermissionOnFirstLaunch();
+    });
+  }
+
+  Future<void> _requestNotificationPermissionOnFirstLaunch() async {
+    if (!Platform.isAndroid) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_notificationPromptedKey) ?? false) return;
+    await prefs.setBool(_notificationPromptedKey, true);
+    final status = await Permission.notification.request();
+    if (!mounted || status.isGranted) return;
+    context.read<NotificationService>().warning('未授予通知权限，后台播放时可能无法显示播放器控制栏');
+  }
 
   @override
   void didChangeDependencies() {
@@ -67,35 +90,92 @@ class _MobileShellState extends State<MobileShell> {
   @override
   Widget build(BuildContext context) {
     final notifier = context.watch<PlaylistContentNotifier>();
+    final selecting = _tab == 0 && _librarySelectionMode;
     return Scaffold(
       appBar: AppBar(
-        title: Text(_titles[_tab]),
+        leading: selecting
+            ? IconButton(
+                tooltip: '退出多选',
+                icon: const Icon(Icons.close),
+                onPressed: _exitLibrarySelection,
+              )
+            : null,
+        title: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 180),
+          child: Text(
+            selecting
+                ? '已选择 ${_selectedLibrarySongPaths.length} 首'
+                : _titles[_tab],
+            key: ValueKey(selecting ? 'selection' : 'title-$_tab'),
+          ),
+        ),
         actions: [
-          if (_tab == 0 || _tab == 1)
-            IconButton(
-              tooltip: '排序歌曲',
-              icon: const Icon(Icons.sort),
-              onPressed: _showSortDialog,
-            ),
-          if (_tab != 4)
-            IconButton(
-              tooltip: '搜索',
-              icon: const Icon(Icons.search),
-              onPressed: () => _showSearch(context),
-            ),
-          IconButton(
-            tooltip: '播放队列',
-            icon: const Icon(Icons.queue_music),
-            onPressed: () => showModalBottomSheet<void>(
-              context: context,
-              isScrollControlled: true,
-              builder: (_) => const SafeArea(child: PlayingQueueDrawer()),
-            ),
+          AnimatedSwitcher(
+            duration: const Duration(milliseconds: 180),
+            transitionBuilder: (child, animation) =>
+                FadeTransition(opacity: animation, child: child),
+            child: selecting
+                ? Row(
+                    key: const ValueKey('selection-actions'),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      IconButton(
+                        tooltip: '全选',
+                        icon: const Icon(Icons.select_all),
+                        onPressed: _selectAllLibrarySongs,
+                      ),
+                      IconButton(
+                        tooltip: '移除歌曲',
+                        icon: const Icon(Icons.delete_outline),
+                        onPressed: _removeSelectedLibrarySongs,
+                      ),
+                      IconButton(
+                        tooltip: '收藏',
+                        icon: const Icon(Icons.favorite_border),
+                        onPressed: _favoriteSelectedLibrarySongs,
+                      ),
+                    ],
+                  )
+                : Row(
+                    key: ValueKey('default-actions-$_tab'),
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (_tab == 0 || _tab == 1)
+                        IconButton(
+                          tooltip: '排序歌曲',
+                          icon: const Icon(Icons.sort),
+                          onPressed: _showSortDialog,
+                        ),
+                      if (_tab != 4)
+                        IconButton(
+                          tooltip: '搜索',
+                          icon: const Icon(Icons.search),
+                          onPressed: () => _showSearch(context),
+                        ),
+                      IconButton(
+                        tooltip: '播放队列',
+                        icon: const Icon(Icons.queue_music),
+                        onPressed: () => showModalBottomSheet<void>(
+                          context: context,
+                          isScrollControlled: true,
+                          builder: (_) =>
+                              const SafeArea(child: PlayingQueueDrawer()),
+                        ),
+                      ),
+                    ],
+                  ),
           ),
         ],
       ),
       body: switch (_tab) {
-        0 => _LibraryTab(query: _query),
+        0 => _LibraryTab(
+          query: _query,
+          animateEntrance: _animateLibraryEntrance,
+          onEntranceFinished: () => _animateLibraryEntrance = false,
+          selectionMode: _librarySelectionMode,
+          selectedPaths: _selectedLibrarySongPaths,
+          onToggleSelection: _toggleLibrarySongSelection,
+        ),
         1 => const _PlaylistsTab(),
         2 => _GroupTab(groups: notifier.songsByArtist, kind: '歌手'),
         3 => _GroupTab(groups: notifier.songsByAlbum, kind: '专辑'),
@@ -116,7 +196,13 @@ class _MobileShellState extends State<MobileShell> {
             const _MiniPlayer(),
             NavigationBar(
               selectedIndex: _tab,
-              onDestinationSelected: (index) => setState(() => _tab = index),
+              onDestinationSelected: (index) => setState(() {
+                if (index != 0) {
+                  _librarySelectionMode = false;
+                  _selectedLibrarySongPaths.clear();
+                }
+                _tab = index;
+              }),
               destinations: const [
                 NavigationDestination(
                   icon: Icon(Icons.library_music_outlined),
@@ -149,6 +235,81 @@ class _MobileShellState extends State<MobileShell> {
         ),
       ),
     );
+  }
+
+  void _toggleLibrarySongSelection(Song song) {
+    setState(() {
+      _librarySelectionMode = true;
+      final path = song.normalizedPath.toLowerCase();
+      if (!_selectedLibrarySongPaths.add(path)) {
+        _selectedLibrarySongPaths.remove(path);
+      }
+      if (_selectedLibrarySongPaths.isEmpty) _librarySelectionMode = false;
+    });
+  }
+
+  void _exitLibrarySelection() {
+    setState(() {
+      _librarySelectionMode = false;
+      _selectedLibrarySongPaths.clear();
+    });
+  }
+
+  void _selectAllLibrarySongs() {
+    final songs = context.read<PlaylistContentNotifier>().allSongs;
+    setState(() {
+      _selectedLibrarySongPaths
+        ..clear()
+        ..addAll(songs.map((song) => song.normalizedPath.toLowerCase()));
+    });
+  }
+
+  Future<void> _removeSelectedLibrarySongs() async {
+    if (_selectedLibrarySongPaths.isEmpty) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('移除歌曲'),
+        content: Text(
+          '将从音乐库隐藏 ${_selectedLibrarySongPaths.length} 首歌曲。再次导入相同文件后会恢复显示。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final notifier = context.read<PlaylistContentNotifier>();
+    final selectedSongs = notifier.allSongs
+        .where(
+          (song) => _selectedLibrarySongPaths.contains(
+            song.normalizedPath.toLowerCase(),
+          ),
+        )
+        .toList();
+    await notifier.hideSongsFromLibrary(selectedSongs);
+    if (mounted) _exitLibrarySelection();
+  }
+
+  Future<void> _favoriteSelectedLibrarySongs() async {
+    if (_selectedLibrarySongPaths.isEmpty) return;
+    final notifier = context.read<PlaylistContentNotifier>();
+    final selected = notifier.allSongs
+        .where(
+          (song) => _selectedLibrarySongPaths.contains(
+            song.normalizedPath.toLowerCase(),
+          ),
+        )
+        .toList();
+    await notifier.addSongsToFavorites(selected);
+    if (mounted) _exitLibrarySelection();
   }
 
   Future<void> _showSortDialog() async {
@@ -232,28 +393,66 @@ class _MobileShellState extends State<MobileShell> {
   }
 }
 
-class _LibraryTab extends StatelessWidget {
-  const _LibraryTab({required this.query});
+class _LibraryTab extends StatefulWidget {
+  const _LibraryTab({
+    required this.query,
+    required this.animateEntrance,
+    required this.onEntranceFinished,
+    required this.selectionMode,
+    required this.selectedPaths,
+    required this.onToggleSelection,
+  });
   final String query;
+  final bool animateEntrance;
+  final VoidCallback onEntranceFinished;
+  final bool selectionMode;
+  final Set<String> selectedPaths;
+  final ValueChanged<Song> onToggleSelection;
+
+  @override
+  State<_LibraryTab> createState() => _LibraryTabState();
+}
+
+class _LibraryTabState extends State<_LibraryTab>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _entranceController = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 720),
+    value: widget.animateEntrance ? 0 : 1,
+  );
+  bool _entranceStarted = false;
+
+  @override
+  void dispose() {
+    _entranceController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final songs = context.watch<PlaylistContentNotifier>().allSongs;
-    final filtered = query.isEmpty
+    final notifier = context.watch<PlaylistContentNotifier>();
+    final songs = notifier.allSongs;
+    final filtered = widget.query.isEmpty
         ? songs
-        : songs
-              .where(
-                (song) => '${song.title} ${song.artist} ${song.album}'
-                    .toLowerCase()
-                    .contains(query.toLowerCase()),
-              )
-              .toList();
+        : notifier.searchSongs(widget.query, songs);
+    if (widget.animateEntrance && songs.isNotEmpty && !_entranceStarted) {
+      _entranceStarted = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) async {
+        if (!mounted) return;
+        await _entranceController.forward();
+        widget.onEntranceFinished();
+      });
+    }
     if (songs.isEmpty) return const _EmptyLibrary();
     return _SongList(
       songs: filtered,
+      entranceAnimation: widget.animateEntrance ? _entranceController : null,
+      selectionMode: widget.selectionMode,
+      selectedPaths: widget.selectedPaths,
+      onToggleSelection: widget.onToggleSelection,
       onPlay: (index) {
         final notifier = context.read<PlaylistContentNotifier>();
-        return query.isEmpty
+        return widget.query.isEmpty
             ? notifier.playSongFromAllSongs(index)
             : notifier.playFromDynamicList(List<Song>.from(filtered), index);
       },
@@ -289,6 +488,11 @@ class _PlaylistsTab extends StatelessWidget {
                 selected: index == notifier.selectedIndex,
                 subtitle: '${playlist.songFilePaths.length} 首',
                 onTap: () => notifier.setSelectedIndex(index),
+                onLongPress: () => _showPlaylistActions(
+                  context,
+                  index: index,
+                  playlist: playlist,
+                ),
               );
             },
           ),
@@ -304,6 +508,69 @@ class _PlaylistsTab extends StatelessWidget {
         ),
       ],
     );
+  }
+
+  Future<void> _showPlaylistActions(
+    BuildContext context, {
+    required int index,
+    required Playlist playlist,
+  }) async {
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: const Icon(Icons.vertical_align_top),
+              title: const Text('置顶歌单'),
+              subtitle: playlist.isDefault ? const Text('默认歌单已固定在顶部') : null,
+              enabled: !playlist.isDefault,
+              onTap: playlist.isDefault
+                  ? null
+                  : () => Navigator.pop(sheetContext, 'pin'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('移除歌单'),
+              subtitle: playlist.isDefault ? const Text('默认歌单不可移除') : null,
+              enabled: !playlist.isDefault,
+              onTap: playlist.isDefault
+                  ? null
+                  : () => Navigator.pop(sheetContext, 'remove'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted || action == null) return;
+
+    final notifier = context.read<PlaylistContentNotifier>();
+    if (action == 'pin') {
+      await notifier.pinPlaylist(index);
+      return;
+    }
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('移除歌单'),
+        content: Text('确定移除歌单“${playlist.name}”吗？歌曲文件不会从设备中删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true && context.mounted) {
+      await notifier.deletePlaylist(index);
+    }
   }
 
   Future<void> _newPlaylist(BuildContext context) async {
@@ -421,10 +688,18 @@ class _SongList extends StatelessWidget {
     required this.songs,
     required this.onPlay,
     this.showRemove = false,
+    this.entranceAnimation,
+    this.selectionMode = false,
+    this.selectedPaths = const {},
+    this.onToggleSelection,
   });
   final List<Song> songs;
   final Future<void> Function(int index) onPlay;
   final bool showRemove;
+  final Animation<double>? entranceAnimation;
+  final bool selectionMode;
+  final Set<String> selectedPaths;
+  final ValueChanged<Song>? onToggleSelection;
 
   @override
   Widget build(BuildContext context) {
@@ -433,23 +708,72 @@ class _SongList extends StatelessWidget {
       itemCount: songs.length,
       itemBuilder: (context, index) {
         final song = songs[index];
-        return ListTile(
-          contentPadding: const EdgeInsets.symmetric(
-            horizontal: 16,
-            vertical: 3,
+        final selected = selectedPaths.contains(
+          song.normalizedPath.toLowerCase(),
+        );
+        final tile = AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          color: selected
+              ? Theme.of(context).colorScheme.secondaryContainer
+              : Colors.transparent,
+          child: ListTile(
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 16,
+              vertical: 3,
+            ),
+            leading: _Cover(song: song),
+            title: Text(
+              song.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              '${song.artist} · ${song.album}',
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: selectionMode
+                ? Checkbox(
+                    value: selected,
+                    onChanged: (_) => onToggleSelection?.call(song),
+                  )
+                : IconButton(
+                    icon: const Icon(Icons.more_vert),
+                    onPressed: () => _songActions(context, song, index),
+                  ),
+            onLongPress: () => onToggleSelection?.call(song),
+            onTap: () =>
+                selectionMode ? onToggleSelection?.call(song) : onPlay(index),
           ),
-          leading: _Cover(song: song),
-          title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text(
-            '${song.artist} · ${song.album}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-          ),
-          trailing: IconButton(
-            icon: const Icon(Icons.more_vert),
-            onPressed: () => _songActions(context, song, index),
-          ),
-          onTap: () => onPlay(index),
+        );
+        final animation = entranceAnimation;
+        if (animation == null) return tile;
+        final group = index.clamp(0, 4);
+        final start = group * 0.08;
+        final end = (start + 0.55).clamp(0.0, 1.0);
+        final distance = switch (group) {
+          0 => 100.0,
+          1 => 75.0,
+          2 => 50.0,
+          3 => 25.0,
+          _ => 25.0,
+        };
+        return AnimatedBuilder(
+          animation: animation,
+          child: tile,
+          builder: (context, child) {
+            final progress = Curves.easeOutCubic.transform(
+              Interval(start, end).transform(animation.value),
+            );
+            return Opacity(
+              opacity: progress,
+              child: Transform.translate(
+                offset: Offset(0, distance * (1 - progress)),
+                child: child,
+              ),
+            );
+          },
         );
       },
     );
@@ -555,6 +879,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   @override
   Widget build(BuildContext context) {
     final notifier = context.watch<PlaylistContentNotifier>();
+    final settings = context.watch<SettingsProvider>();
     final song = notifier.currentSong;
     if (song == null) {
       return const Scaffold(body: Center(child: Text('尚未播放歌曲')));
@@ -779,21 +1104,23 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
                         onPressed: () => _showAudioEffects(context),
                       ),
                     ),
-                    const SizedBox(
-                      height: 30,
-                      child: VerticalDivider(width: 1),
-                    ),
-                    Expanded(
-                      child: IconButton(
-                        tooltip: '音频分析',
-                        icon: const Icon(Icons.graphic_eq),
-                        onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute<void>(
-                            builder: (_) => const AudioAnalysisPage(),
+                    if (settings.showAudioAnalysis) ...[
+                      const SizedBox(
+                        height: 30,
+                        child: VerticalDivider(width: 1),
+                      ),
+                      Expanded(
+                        child: IconButton(
+                          tooltip: '音频分析',
+                          icon: const Icon(Icons.graphic_eq),
+                          onPressed: () => Navigator.of(context).push(
+                            MaterialPageRoute<void>(
+                              builder: (_) => const AudioAnalysisPage(),
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
               ),
@@ -1378,12 +1705,14 @@ class _PlaylistCard extends StatelessWidget {
     this.subtitle,
     this.selected = false,
     this.icon = Icons.queue_music,
+    this.onLongPress,
   });
   final String name;
   final String? subtitle;
   final bool selected;
   final IconData icon;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -1395,6 +1724,7 @@ class _PlaylistCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           onTap: onTap,
+          onLongPress: onLongPress,
           borderRadius: BorderRadius.circular(14),
           child: SizedBox(
             width: 120,

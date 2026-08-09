@@ -10,7 +10,10 @@ class GlobalHotkeyManager {
 
   bool _isInitialized = false;
 
-  Future<void> init(PlaylistContentNotifier notifier, SettingsProvider settings) async {
+  Future<void> init(
+    PlaylistContentNotifier notifier,
+    SettingsProvider settings,
+  ) async {
     if (_isInitialized) {
       await unregisterAll();
     }
@@ -28,7 +31,10 @@ class GlobalHotkeyManager {
     }
   }
 
-  Future<void> registerAll(PlaylistContentNotifier notifier, SettingsProvider settings) async {
+  Future<void> registerAll(
+    PlaylistContentNotifier notifier,
+    SettingsProvider settings,
+  ) async {
     if (!settings.enableGlobalHotkeys) return;
 
     if (settings.playPauseHotKey != null) {
@@ -82,7 +88,9 @@ class GlobalHotkeyManager {
       try {
         await hotKeyManager.unregister(oldHotKey);
       } catch (e) {
-        debugPrint('Failed to unregister hotkey: ${oldHotKey.toJson()}, error: $e');
+        debugPrint(
+          'Failed to unregister hotkey: ${oldHotKey.toJson()}, error: $e',
+        );
       }
     }
 
@@ -90,7 +98,8 @@ class GlobalHotkeyManager {
       VoidCallback? callback;
       switch (type) {
         case 'play_pause':
-          callback = () => notifier.isPlaying ? notifier.pause() : notifier.play();
+          callback = () =>
+              notifier.isPlaying ? notifier.pause() : notifier.play();
           break;
         case 'next_track':
           callback = () => notifier.playNext();
@@ -99,10 +108,12 @@ class GlobalHotkeyManager {
           callback = () => notifier.playPrevious();
           break;
         case 'volume_up':
-          callback = () => notifier.setVolume((notifier.volume + 3).clamp(0.0, 100.0));
+          callback = () =>
+              notifier.setVolume((notifier.volume + 3).clamp(0.0, 100.0));
           break;
         case 'volume_down':
-          callback = () => notifier.setVolume((notifier.volume - 3).clamp(0.0, 100.0));
+          callback = () =>
+              notifier.setVolume((notifier.volume - 3).clamp(0.0, 100.0));
           break;
       }
       if (callback != null) {
