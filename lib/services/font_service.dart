@@ -5,6 +5,7 @@ import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_fonts/system_fonts.dart';
 
@@ -80,7 +81,7 @@ class FontService {
   static const _cacheVersionKey = 'font_meta_cache_version';
 
   /// 当前缓存版本号，用于缓存失效管理
-  static const _cacheVersion = 3;
+  static const _cacheVersion = 4;
 
   /// 系统字体库实例，用于访问系统字体
   final SystemFonts _systemFonts = SystemFonts();
@@ -209,8 +210,9 @@ class FontService {
   Future<Map<String, String>> _collectFontFiles() async {
     final fontMap = _systemFonts.getFontMap();
     final ttcPaths = await _scanTtcFiles();
+    final importedFonts = await _collectImportedFontFiles();
 
-    final files = <String, String>{...fontMap};
+    final files = <String, String>{...fontMap, ...importedFonts};
     for (final ttcPath in ttcPaths) {
       final fileName = p.basenameWithoutExtension(ttcPath);
       if (!files.containsKey(fileName)) {
@@ -218,6 +220,74 @@ class FontService {
       }
     }
     return files;
+  }
+
+  Future<Directory> _importedFontsDirectory() async {
+    final support = await getApplicationSupportDirectory();
+    return Directory(p.join(support.path, 'fonts'));
+  }
+
+  Future<Map<String, String>> _collectImportedFontFiles() async {
+    final directory = await _importedFontsDirectory();
+    if (!await directory.exists()) return {};
+    final fonts = <String, String>{};
+    await for (final entity in directory.list()) {
+      if (entity is! File) continue;
+      final extension = p.extension(entity.path).toLowerCase();
+      if (!const {'.ttf', '.otf', '.ttc'}.contains(extension)) continue;
+      final base = p
+          .basenameWithoutExtension(entity.path)
+          .replaceAll(RegExp(r'[^a-zA-Z0-9_-]'), '_');
+      fonts['imported_$base'] = entity.path;
+    }
+    return fonts;
+  }
+
+  Future<FontMeta> importFontFile(String sourcePath) async {
+    final source = File(sourcePath);
+    if (!await source.exists()) {
+      throw const FileSystemException('字体文件不存在');
+    }
+    final extension = p.extension(sourcePath).toLowerCase();
+    if (!const {'.ttf', '.otf', '.ttc'}.contains(extension)) {
+      throw const FormatException('仅支持 TTF、OTF 和 TTC 字体');
+    }
+    if (await source.length() > 100 * 1024 * 1024) {
+      throw const FormatException('字体文件不能超过 100 MB');
+    }
+
+    final directory = await _importedFontsDirectory();
+    await directory.create(recursive: true);
+    final destination = p.join(directory.path, p.basename(sourcePath));
+    if (p.normalize(sourcePath) != p.normalize(destination)) {
+      await source.copy(destination);
+    }
+
+    await rescan();
+    final scanned = await scanFonts();
+    final normalizedDestination = p.normalize(destination);
+    final meta = scanned.firstWhere(
+      (font) => p.normalize(font.filePath) == normalizedDestination,
+      orElse: () => throw const FormatException('无法读取该字体文件'),
+    );
+    await loadFont(meta);
+    if (!meta.isLoaded) throw const FormatException('字体加载失败');
+    return meta;
+  }
+
+  Future<bool> loadFontByName(String fontName) async {
+    if (fontName == 'Misans') return true;
+    final fonts = await scanFonts();
+    FontMeta? meta;
+    for (final font in fonts) {
+      if (font.fileName == fontName) {
+        meta = font;
+        break;
+      }
+    }
+    if (meta == null) return false;
+    await loadFont(meta);
+    return meta.isLoaded;
   }
 
   /// 分批处理字体文件并生成元数据
@@ -290,53 +360,31 @@ class FontService {
   /// [meta] 要加载的字体元数据
   Future<void> loadFont(FontMeta meta) async {
     if (meta.fileName == 'Misans' || meta.isLoaded) return;
-
-    if (meta.filePath.endsWith('.ttc')) {
-      try {
-        final file = File(meta.filePath);
-        final fileSize = await file.length();
-        // 限制 TTC 文件大小为 100MB，防止内存占用过高
-        const maxFileSize = 100 * 1024 * 1024;
-        if (fileSize > maxFileSize) {
-          debugPrint(
-            'TTC font file too large: ${meta.fileName} (${fileSize ~/ (1024 * 1024)}MB)',
-          );
-          meta.isLoaded = false;
-          return;
-        }
-
-        final bytes = await file.readAsBytes();
-        final familyName = meta.fontFamily.isNotEmpty
-            ? meta.fontFamily
-            : meta.fileName;
-        final loader = FontLoader(familyName)
-          ..addFont(
-            Future.value(
-              ByteData.view(
-                bytes.buffer,
-                bytes.offsetInBytes,
-                bytes.lengthInBytes,
-              ),
+    try {
+      final file = File(meta.filePath);
+      final fileSize = await file.length();
+      const maxFileSize = 100 * 1024 * 1024;
+      if (fileSize > maxFileSize) {
+        debugPrint('Font file too large: ${meta.fileName}');
+        meta.isLoaded = false;
+        return;
+      }
+      final bytes = await file.readAsBytes();
+      final loader = FontLoader(meta.fileName)
+        ..addFont(
+          Future.value(
+            ByteData.view(
+              bytes.buffer,
+              bytes.offsetInBytes,
+              bytes.lengthInBytes,
             ),
-          );
-        await loader.load();
-        meta.isLoaded = true;
-      } catch (e) {
-        debugPrint('Failed to load TTC font ${meta.fileName}: $e');
-        meta.isLoaded = false;
-      }
-    } else {
-      try {
-        final loadedName = await _systemFonts.loadFont(meta.fileName);
-        if (loadedName != null) {
-          meta.isLoaded = true;
-        } else {
-          meta.isLoaded = false;
-        }
-      } catch (e) {
-        debugPrint('Failed to load font ${meta.fileName}: $e');
-        meta.isLoaded = false;
-      }
+          ),
+        );
+      await loader.load();
+      meta.isLoaded = true;
+    } catch (e) {
+      debugPrint('Failed to load font ${meta.fileName}: $e');
+      meta.isLoaded = false;
     }
   }
 

@@ -5,6 +5,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
 class SettingsProvider with ChangeNotifier {
+  static const double defaultLyricFontSize = 20.0;
   static const _enableGlobalHotkeysKey = 'enableGlobalHotkeys';
   static const _playPauseHotKeyKey = 'playPauseHotKey';
   static const _nextTrackHotKeyKey = 'nextTrackHotKey';
@@ -53,7 +54,7 @@ class SettingsProvider with ChangeNotifier {
   static const _showAudioAnalysisKey = 'showAudioAnalysis';
 
   int _maxLinesPerLyric = 2;
-  double _fontSize = 22.0; // 默认字体大小
+  double _fontSize = defaultLyricFontSize;
   TextAlign _lyricAlignment = TextAlign.center; // 默认居中对齐
   bool _useBlurBackground = true; // 默认启用模糊背景
   bool _useDynamicColor = true; // 默认启用动态颜色
@@ -62,7 +63,7 @@ class SettingsProvider with ChangeNotifier {
   double _lyricVerticalSpacing = 6.0; // 默认歌词垂直间距为6.0
   bool _addLyricPadding = true; // 默认启用歌词上下补位
   bool _minimizeToTray = false; // 默认不启用最小化到托盘
-  bool _enableLyricBlur = true; // 默认启用歌词模糊效果
+  bool _enableLyricBlur = false; // Android 版已移除歌词模糊效果
   double _lyricBlurStrength = 2.5; // 歌词模糊强度，范围 1.0~4.0
   bool _showAlbumName = false; // 默认不显示专辑名称
   bool _enableDynamicBackground = false; // 默认不启用动态背景
@@ -149,7 +150,7 @@ class SettingsProvider with ChangeNotifier {
   Future<void> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     _maxLinesPerLyric = prefs.getInt(_prefsKey) ?? 2;
-    _fontSize = prefs.getDouble(_fontSizeKey) ?? 20.0;
+    _fontSize = prefs.getDouble(_fontSizeKey) ?? defaultLyricFontSize;
     _useBlurBackground = prefs.getBool(_useBlurBackgroundKey) ?? true;
     _useDynamicColor = prefs.getBool(_useDynamicColorKey) ?? true; // 加载动态颜色设置
     _allowAnyFormat = prefs.getBool(_allowAnyFormatKey) ?? false; // 加载允许任何格式设置
@@ -161,7 +162,7 @@ class SettingsProvider with ChangeNotifier {
         prefs.getDouble(_lyricVerticalSpacingKey) ?? 6.0; // 加载歌词垂直间距设置
     _addLyricPadding = prefs.getBool(_addLyricPaddingKey) ?? true; // 加载歌词上下补位设置
     _minimizeToTray = prefs.getBool(_minimizeToTrayKey) ?? false; // 加载最小化到托盘设置
-    _enableLyricBlur = prefs.getBool(_enableLyricBlurKey) ?? true; // 加载歌词模糊效果设置
+    _enableLyricBlur = false;
     _lyricBlurStrength =
         prefs.getDouble(_lyricBlurStrengthKey) ?? 2.5; // 加载歌词模糊强度设置
     _primaryLyricSource =
@@ -170,15 +171,17 @@ class SettingsProvider with ChangeNotifier {
         prefs.getString(_secondaryLyricSourceKey) ?? 'netease'; // 加载备用歌词源设置
     _showTaskbarProgress =
         prefs.getBool(_showTaskbarProgressKey) ?? false; // 加载任务栏进度显示设置
-    _enableDynamicBackground =
-        prefs.getBool(_enableDynamicBackgroundKey) ?? false; // 加载动态背景设置
+    _enableDynamicBackground = false;
 
     _audioDeviceIsAuto = prefs.getBool(_audioDeviceIsAutoKey) ?? true;
     _audioDeviceName = prefs.getString(_audioDeviceNameKey);
     _audioDeviceDesc = prefs.getString(_audioDeviceDescKey);
     _ignorePlaybackErrors = prefs.getBool(_ignorePlaybackErrorsKey) ?? false;
     _preferExternalLyrics = prefs.getBool(_preferExternalLyricsKey) ?? false;
-    _autoAdjustLyricLayout = prefs.getBool(_autoAdjustLyricLayoutKey) ?? false;
+    _autoAdjustLyricLayout = false;
+    await prefs.remove(_enableLyricBlurKey);
+    await prefs.remove(_enableDynamicBackgroundKey);
+    await prefs.remove(_autoAdjustLyricLayoutKey);
     _enableLyricElasticScroll =
         prefs.getBool(_enableLyricElasticScrollKey) ?? false;
     _enableLoudness = prefs.getBool(_enableLoudnessKey) ?? false;
@@ -243,10 +246,17 @@ class SettingsProvider with ChangeNotifier {
   }
 
   void setFontSize(double size) async {
-    _fontSize = size.clamp(12.0, 32.0); // 限制字体大小范围
-    notifyListeners();
+    previewFontSize(size);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_fontSizeKey, _fontSize);
+  }
+
+  /// 更新歌词字号但暂不写入磁盘，供连续缩放手势预览使用。
+  void previewFontSize(double size) {
+    final next = size.clamp(12.0, 32.0);
+    if ((_fontSize - next).abs() < 0.01) return;
+    _fontSize = next;
+    notifyListeners();
   }
 
   void setLyricAlignment(TextAlign alignment) async {

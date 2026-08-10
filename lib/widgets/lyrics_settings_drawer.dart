@@ -76,102 +76,49 @@ class LyricsSettingsDrawer extends StatelessWidget {
 
               // 歌词字体大小设置
               Text('歌词字体大小', style: Theme.of(context).textTheme.titleMedium),
-              Tooltip(
-                message: settings.autoAdjustLyricLayout
-                    ? '已启用 "自动调节歌词字体与间距" '
-                    : '',
-                child: IgnorePointer(
-                  ignoring: settings.autoAdjustLyricLayout,
-                  child: Opacity(
-                    opacity: settings.autoAdjustLyricLayout ? 0.5 : 1.0,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Slider(
-                          value: settings.fontSize,
-                          min: 12.0,
-                          max: 32.0,
-                          divisions: 20,
-                          label: settings.fontSize.toStringAsFixed(1),
-                          onChanged: (value) {
-                            context.read<SettingsProvider>().setFontSize(value);
-                          },
-                        ),
-                        Text(
-                          '当前大小: ${settings.fontSize.toStringAsFixed(1)}',
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                      ],
-                    ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Slider(
+                    value: settings.fontSize,
+                    min: 12.0,
+                    max: 32.0,
+                    divisions: 20,
+                    label: settings.fontSize.toStringAsFixed(1),
+                    onChanged: (value) {
+                      context.read<SettingsProvider>().setFontSize(value);
+                    },
                   ),
-                ),
+                  Text(
+                    '当前大小: ${settings.fontSize.toStringAsFixed(1)}',
+                    style: Theme.of(context).textTheme.bodyMedium,
+                  ),
+                ],
               ),
               const Divider(),
 
               // 歌词垂直间距设置
               Text('歌词垂直间距', style: Theme.of(context).textTheme.titleMedium),
-              Tooltip(
-                message: settings.autoAdjustLyricLayout
-                    ? '已启用 "自动调节歌词字体与间距" '
-                    : '',
-                child: IgnorePointer(
-                  ignoring: settings.autoAdjustLyricLayout,
-                  child: Opacity(
-                    opacity: settings.autoAdjustLyricLayout ? 0.5 : 1.0,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Slider(
-                          value: settings.lyricVerticalSpacing,
-                          min: 0.0,
-                          max: 20.0,
-                          divisions: 20,
-                          label: settings.lyricVerticalSpacing.toStringAsFixed(
-                            1,
-                          ),
-                          onChanged: (value) {
-                            context
-                                .read<SettingsProvider>()
-                                .setLyricVerticalSpacing(value);
-                          },
-                        ),
-                        Text(
-                          '当前间距: ${settings.lyricVerticalSpacing.toStringAsFixed(1)}',
-                          style: Theme.of(context).textTheme.bodyMedium,
-                        ),
-                      ],
-                    ),
+              Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Slider(
+                    value: settings.lyricVerticalSpacing,
+                    min: 0.0,
+                    max: 20.0,
+                    divisions: 20,
+                    label: settings.lyricVerticalSpacing.toStringAsFixed(1),
+                    onChanged: (value) {
+                      context.read<SettingsProvider>().setLyricVerticalSpacing(
+                        value,
+                      );
+                    },
                   ),
-                ),
-              ),
-              const Divider(),
-
-              // 歌词模糊强度设置
-              Text('歌词模糊强度', style: Theme.of(context).textTheme.titleMedium),
-              Tooltip(
-                message: settings.enableLyricBlur ? '' : '需启用 "歌词模糊效果" ',
-                child: IgnorePointer(
-                  ignoring: !settings.enableLyricBlur,
-                  child: Opacity(
-                    opacity: settings.enableLyricBlur ? 1.0 : 0.5,
-                    child: Slider(
-                      value: settings.lyricBlurStrength,
-                      min: 1.0,
-                      max: 4.0,
-                      divisions: 12,
-                      label: settings.lyricBlurStrength.toStringAsFixed(1),
-                      onChanged: (value) {
-                        context.read<SettingsProvider>().setLyricBlurStrength(
-                          value,
-                        );
-                      },
-                    ),
+                  Text(
+                    '当前间距: ${settings.lyricVerticalSpacing.toStringAsFixed(1)}',
+                    style: Theme.of(context).textTheme.bodyMedium,
                   ),
-                ),
-              ),
-              Text(
-                '当前强度: ${settings.lyricBlurStrength.toStringAsFixed(1)}',
-                style: Theme.of(context).textTheme.bodyMedium,
+                ],
               ),
               const Divider(),
 

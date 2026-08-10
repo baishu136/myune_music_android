@@ -197,7 +197,7 @@ internal object MediaSessionManager :
             // covers lock-screen, Bluetooth and OEM notification controls
             // that arrive as ACTION_MEDIA_BUTTON instead of Player commands.
             if (event.action == KeyEvent.ACTION_DOWN && event.repeatCount == 0) {
-                forwardCommand(mapOf("type" to command))
+                onNavigationCommand(command)
             }
             return true
         }
@@ -271,6 +271,31 @@ internal object MediaSessionManager :
         } else {
             if (pendingCommands.size >= 8) pendingCommands.removeFirst()
             pendingCommands.addLast(command)
+        }
+    }
+
+    /**
+     * Gives notification and lock-screen controls immediate visual feedback
+     * while Dart resolves metadata and opens the requested file. Media3 then
+     * animates the native control surface into its buffering state instead of
+     * leaving the pressed button looking unresponsive.
+     */
+    fun onNavigationCommand(command: String) = runOnMain {
+        playback = playback.copy(
+            playing = true,
+            actualPlaying = false,
+            buffering = true,
+            completed = false,
+            positionMs = 0,
+        )
+        publish()
+        val sink = eventSink
+        val event = mapOf<String, Any?>("type" to command)
+        if (sink != null) {
+            sink.success(event)
+        } else {
+            if (pendingCommands.size >= 8) pendingCommands.removeFirst()
+            pendingCommands.addLast(event)
         }
     }
 

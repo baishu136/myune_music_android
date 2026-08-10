@@ -8,10 +8,14 @@ class MobileLyricsList extends StatefulWidget {
     super.key,
     required this.lines,
     required this.active,
+    this.fontSize = 20,
+    this.fontFamily,
   });
 
   final List<LyricLine> lines;
   final int active;
+  final double fontSize;
+  final String? fontFamily;
 
   @override
   State<MobileLyricsList> createState() => _MobileLyricsListState();
@@ -57,22 +61,30 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
       : ScrollablePositionedList.builder(
           itemScrollController: _scrollController,
           itemCount: widget.lines.length,
-          itemBuilder: (_, index) => Padding(
-            key: ValueKey('mobile_lyric_$index'),
-            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 5),
-            child: Text(
-              widget.lines[index].texts.join('\n'),
-              textAlign: TextAlign.center,
-              style: TextStyle(
-                fontSize: index == widget.active ? 18 : 15,
-                fontWeight: index == widget.active
-                    ? FontWeight.w700
-                    : FontWeight.w400,
-                color: index == widget.active
-                    ? Theme.of(context).colorScheme.primary
-                    : null,
+          itemBuilder: (itemContext, index) {
+            final style = DefaultTextStyle.of(itemContext).style.copyWith(
+              fontFamily: widget.fontFamily,
+              fontSize: index == widget.active
+                  ? widget.fontSize
+                  : (widget.fontSize * 0.84).clamp(12.0, 32.0),
+              fontWeight: index == widget.active
+                  ? FontWeight.w700
+                  : FontWeight.w400,
+              color: index == widget.active
+                  ? Theme.of(itemContext).colorScheme.primary
+                  : null,
+            );
+            return Padding(
+              key: ValueKey('mobile_lyric_$index'),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 5),
+              child: AnimatedDefaultTextStyle(
+                duration: const Duration(milliseconds: 260),
+                curve: Curves.easeOutCubic,
+                style: style,
+                textAlign: TextAlign.center,
+                child: Text(widget.lines[index].texts.join('\n')),
               ),
-            ),
-          ),
+            );
+          },
         );
 }

@@ -3,6 +3,8 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_fonts/system_fonts.dart';
 import 'package:flutter/foundation.dart';
 
+import '../services/font_service.dart';
+
 class ThemeProvider with ChangeNotifier {
   static const TextStyle defaultStyle = TextStyle(fontWeight: FontWeight.w400);
 
@@ -41,7 +43,9 @@ class ThemeProvider with ChangeNotifier {
       'user_last_manual_seed_color'; // 用户手动选择的种子色，用于在关闭动态配色时恢复
 
   static const String _fontFamilyKey = 'user_font_family';
+  static const String _fontOnlyLyricsKey = 'user_font_only_lyrics';
   String _currentFontFamily = 'Misans'; // 默认字体
+  bool _fontOnlyLyrics = false;
 
   ThemeProvider() {
     initialize();
@@ -53,6 +57,11 @@ class ThemeProvider with ChangeNotifier {
 
   String get currentFontFamily => _currentFontFamily;
 
+  bool get fontOnlyLyrics => _fontOnlyLyrics;
+
+  String get _interfaceFontFamily =>
+      _fontOnlyLyrics ? 'Misans' : _currentFontFamily;
+
   ColorScheme get currentColorScheme {
     return ColorScheme.fromSeed(seedColor: _currentSeedColor);
   }
@@ -63,7 +72,7 @@ class ThemeProvider with ChangeNotifier {
       seedColor: _currentSeedColor,
       brightness: Brightness.light,
     ),
-    fontFamily: _currentFontFamily,
+    fontFamily: _interfaceFontFamily,
     textTheme: misansTextTheme,
   ).makeMouseClickable();
 
@@ -73,7 +82,7 @@ class ThemeProvider with ChangeNotifier {
       seedColor: _currentSeedColor,
       brightness: Brightness.dark,
     ),
-    fontFamily: _currentFontFamily,
+    fontFamily: _interfaceFontFamily,
     textTheme: misansTextTheme,
   ).makeMouseClickable();
 
@@ -204,6 +213,11 @@ class ThemeProvider with ChangeNotifier {
     }
   }
 
+  Future<void> _loadFontOnlyLyrics() async {
+    final prefs = await SharedPreferences.getInstance();
+    _fontOnlyLyrics = prefs.getBool(_fontOnlyLyricsKey) ?? false;
+  }
+
   void setFontFamily(String fontFamily) async {
     if (_currentFontFamily == fontFamily) return; // 没变就直接退出
     _currentFontFamily = fontFamily;
@@ -219,10 +233,27 @@ class ThemeProvider with ChangeNotifier {
     await prefs.remove(_fontFamilyKey);
   }
 
+  Future<void> setFontOnlyLyrics(bool value) async {
+    if (_fontOnlyLyrics == value) return;
+    _fontOnlyLyrics = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_fontOnlyLyricsKey, value);
+  }
+
   Future<void> initialize() async {
-    await Future.wait([_loadSeedColor(), _loadDarkMode(), _loadFontFamily()]);
+    await Future.wait([
+      _loadSeedColor(),
+      _loadDarkMode(),
+      _loadFontFamily(),
+      _loadFontOnlyLyrics(),
+    ]);
     await _migrateManualColorKey();
     await _loadLastManualSeedColor();
+    if (_currentFontFamily != 'Misans') {
+      final loaded = await FontService().loadFontByName(_currentFontFamily);
+      if (!loaded) _currentFontFamily = 'Misans';
+    }
     notifyListeners();
   }
 

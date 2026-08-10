@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:silky_scroll/silky_scroll.dart';
 import '../theme/scroll_config.dart';
@@ -46,6 +47,9 @@ class _FontSelectorDialogState extends State<FontSelectorDialog> {
 
   /// 是否正在扫描字体
   bool _isScanning = true;
+
+  /// 搜索框默认折叠，避免在手机宽度上挤压标题和操作按钮。
+  bool _showSearch = false;
 
   /// 搜索防抖定时器
   Timer? _debounce;
@@ -163,16 +167,32 @@ class _FontSelectorDialogState extends State<FontSelectorDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final screen = MediaQuery.sizeOf(context);
+    final isTablet = screen.shortestSide >= 600;
     return AlertDialog(
-      title: _buildTitle(context),
+      insetPadding: EdgeInsets.symmetric(
+        horizontal: isTablet ? 56 : 16,
+        vertical: isTablet ? 40 : 24,
+      ),
+      title: const Text('选择字体'),
       content: SizedBox(
-        width: 520,
-        height: 540,
+        width: isTablet ? 640 : 420,
+        height: (screen.height * (isTablet ? 0.72 : 0.68)).clamp(420.0, 620.0),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // 搜索栏
-            _buildSearchBar(context),
+            _buildToolbar(context),
+            AnimatedSize(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              alignment: Alignment.topCenter,
+              child: _showSearch
+                  ? Padding(
+                      padding: const EdgeInsets.only(top: 8),
+                      child: _buildSearchBar(context),
+                    )
+                  : const SizedBox(width: double.infinity),
+            ),
             const SizedBox(height: 8),
             // 字体预览区
             _buildPreviewArea(context),
@@ -186,28 +206,34 @@ class _FontSelectorDialogState extends State<FontSelectorDialog> {
     );
   }
 
-  /// 构建对话框标题栏
-  ///
-  /// 包含标题、刷新按钮和重置默认字体按钮
-  Widget _buildTitle(BuildContext context) {
+  Widget _buildToolbar(BuildContext context) {
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        const Text('选择字体'),
-        Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            IconButton(
-              onPressed: _isScanning ? null : _refreshFonts,
-              icon: const Icon(Icons.refresh, size: 20),
-              tooltip: '刷新字体列表',
-            ),
-            TextButton.icon(
-              onPressed: _resetToDefault,
-              icon: const Icon(Icons.restore, size: 18),
-              label: const Text('默认字体'),
-            ),
-          ],
+        IconButton.filledTonal(
+          onPressed: () {
+            setState(() => _showSearch = !_showSearch);
+            if (!_showSearch) _searchController.clear();
+          },
+          isSelected: _showSearch,
+          selectedIcon: const Icon(Icons.search_off),
+          icon: const Icon(Icons.search),
+          tooltip: _showSearch ? '收起搜索' : '搜索字体',
+        ),
+        const Spacer(),
+        IconButton(
+          onPressed: _isScanning ? null : _refreshFonts,
+          icon: const Icon(Icons.refresh),
+          tooltip: '刷新字体列表',
+        ),
+        IconButton(
+          onPressed: _isScanning ? null : _importFont,
+          icon: const Icon(Icons.file_open_outlined),
+          tooltip: '导入 TTF/OTF/TTC 字体',
+        ),
+        TextButton.icon(
+          onPressed: _resetToDefault,
+          icon: const Icon(Icons.restore, size: 18),
+          label: const Text('默认字体'),
         ),
       ],
     );
@@ -220,6 +246,29 @@ class _FontSelectorDialogState extends State<FontSelectorDialog> {
     setState(() => _isScanning = true);
     await _fontService.rescan();
     await _initFonts();
+  }
+
+  Future<void> _importFont() async {
+    final result = await FilePicker.platform.pickFiles(
+      dialogTitle: '导入字体文件',
+      type: FileType.custom,
+      allowedExtensions: const ['ttf', 'otf', 'ttc'],
+    );
+    final path = result?.files.single.path;
+    if (path == null || !mounted) return;
+    setState(() => _isScanning = true);
+    try {
+      final imported = await _fontService.importFontFile(path);
+      await _initFonts();
+      final selected = _fontsMap[imported.fileName] ?? imported;
+      await _selectFont(selected);
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _isScanning = false);
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('字体导入失败：$error')));
+    }
   }
 
   /// 构建搜索栏组件

@@ -245,7 +245,6 @@ class PlaylistContentNotifier extends ChangeNotifier {
   bool _playbackIntent = false;
   int _playbackRequestRevision = 0;
   int? _activeTrackChangeRevision;
-  Future<void> _mediaNavigationChain = Future<void>.value();
 
   int _currentSongIndex = -1; // 当前播放歌曲的索引（在当前歌单中）
   Song? _currentSong; // 当前播放的歌曲
@@ -1013,20 +1012,18 @@ class PlaylistContentNotifier extends ChangeNotifier {
   Future<void> _cleanupSmtc() async {}
 
   void _queueMediaNavigation({required bool next}) {
-    final resumeAfterNavigation =
-        _playbackIntent || _audioService.player.state.playWhenReady;
-    _mediaNavigationChain = _mediaNavigationChain
-        .then((_) async {
-          if (next) {
-            await playNext(playAfterLoad: resumeAfterNavigation);
-          } else {
-            await playPrevious(playAfterLoad: resumeAfterNavigation);
-          }
-        })
-        .catchError((Object error, StackTrace stackTrace) {
-          debugPrint('通知栏切歌失败: $error\n$stackTrace');
-          _errorStreamController.add('通知栏切歌失败，请重试');
-        });
+    // 与应用播放页保持一致：无论当前是播放还是暂停，主动点击上一首/
+    // 下一首都会切换并播放。不要串行等待旧请求；_startPlaybackNow 的
+    // revision 机制会取消过时加载，使快速连按只提交最后一次选择。
+    final navigation = next
+        ? playNext(playAfterLoad: true)
+        : playPrevious(playAfterLoad: true);
+    unawaited(
+      navigation.catchError((Object error, StackTrace stackTrace) {
+        debugPrint('通知栏切歌失败: $error\n$stackTrace');
+        _errorStreamController.add('通知栏切歌失败，请重试');
+      }),
+    );
   }
 
   // --- 歌单相关 ---
@@ -2529,12 +2526,24 @@ class PlaylistContentNotifier extends ChangeNotifier {
     if (index < 0 || index >= _equalizerGains.length) return;
     _equalizerGains[index] = _sanitizeEqualizerGain(gain);
     _equalizerPresetName = '自定义';
-    _equalizerApplyTimer?.cancel();
-    _equalizerApplyTimer = Timer(const Duration(milliseconds: 160), () {
-      _applyEqualizer();
-    });
+    _scheduleEqualizerPreview();
     _scheduleAudioControlSave();
     notifyListeners();
+  }
+
+  /// 为移动端滑块提供轻量实时预览，不触发整页 Provider 重建或磁盘保存。
+  void previewEqualizerBand(int index, double gain) {
+    if (index < 0 || index >= _equalizerGains.length) return;
+    _equalizerGains[index] = _sanitizeEqualizerGain(gain);
+    _equalizerPresetName = '自定义';
+    _scheduleEqualizerPreview();
+  }
+
+  void _scheduleEqualizerPreview() {
+    if (_equalizerApplyTimer?.isActive ?? false) return;
+    _equalizerApplyTimer = Timer(const Duration(milliseconds: 32), () {
+      unawaited(_applyEqualizer());
+    });
   }
 
   Future<void> commitEqualizerBand(int index, double gain) async {
