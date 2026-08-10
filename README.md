@@ -10,6 +10,15 @@
 > [!IMPORTANT]
 > 本仓库是基于 [xiaobaimc/myune_music](https://github.com/xiaobaimc/myune_music) `0.9.3` 构建的 Android 移植与手机端适配版本，并非原项目官方 Android 发行版。原始项目与代码版权归原作者及贡献者所有；本项目继续遵循 [Apache License 2.0](LICENSE)。详细说明见 [ATTRIBUTION.md](ATTRIBUTION.md)。
 
+## 💬 加入交流群
+
+> [!TIP]
+> 扫描下方二维码加入 **Myune music for Android 交流群**，交流使用经验、反馈问题或提出功能建议。
+
+<p align="center">
+  <img src="screenshot/qq-group.jpg" width="360" alt="Myune music for Android QQ 交流群二维码">
+</p>
+
 ## Android 端
 
 Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手、专辑、设置）、迷你播放条和全屏播放页，提供歌单、播放队列、播放模式、歌词解析/网络歌词、音调、倍速、均衡器、动态配色、统计和 ReplayGain 等功能：
@@ -113,20 +122,14 @@ Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手
 
 ![安卓播放页：封面与歌词](screenshot/android-now-playing.jpg)
 
-### 音频效果、歌曲详情与播放统计
+### 自定义均衡器与音频效果
 
-![安卓音频效果、歌曲详情与播放统计](screenshot/android-audio-effects-and-statistics.jpg)
+![安卓自定义均衡器与音频效果](screenshot/android-audio-effects.jpg)
 
-### 实时音频分析
-
-<p align="center">
-  <img src="screenshot/android-audio-analysis.jpg" width="360" alt="安卓实时音频分析">
-</p>
-
-### 个性化设置
+### 歌词源、均衡器预设与歌词字体大小
 
 <p align="center">
-  <img src="screenshot/android-settings.png" width="360" alt="安卓个性化设置">
+  <img src="screenshot/android-lyrics-controls.jpg" width="420" alt="安卓歌词源、均衡器预设与歌词字体设置">
 </p>
 
 ### 音乐库、歌单、歌手、专辑与设置

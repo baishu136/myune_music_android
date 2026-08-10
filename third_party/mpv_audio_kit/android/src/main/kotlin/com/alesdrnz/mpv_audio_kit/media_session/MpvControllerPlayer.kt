@@ -250,12 +250,12 @@ internal class MpvControllerPlayer(looper: Looper) : SimpleBasePlayer(looper) {
             Player.COMMAND_SEEK_TO_NEXT_MEDIA_ITEM,
             Player.COMMAND_SEEK_TO_NEXT,
             ->
-                mgr.forwardCommand(mapOf("type" to "next"))
+                mgr.onNavigationCommand("next")
 
             Player.COMMAND_SEEK_TO_PREVIOUS_MEDIA_ITEM,
             Player.COMMAND_SEEK_TO_PREVIOUS,
             ->
-                mgr.forwardCommand(mapOf("type" to "previous"))
+                mgr.onNavigationCommand("previous")
 
             Player.COMMAND_SEEK_FORWARD ->
                 mgr.forwardCommand(

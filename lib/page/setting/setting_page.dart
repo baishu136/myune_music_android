@@ -10,10 +10,12 @@ import 'tabs/hotkeys_tab.dart';
 import 'tabs/advanced_tab.dart';
 
 // 定义应用版本号常量
-const String appVersion = '0.9.3-android.4';
+const String appVersion = '0.9.3-android.13';
 
 class SettingPage extends StatefulWidget {
-  const SettingPage({super.key});
+  const SettingPage({super.key, this.onSectionChanged});
+
+  final ValueChanged<String>? onSectionChanged;
 
   @override
   State<SettingPage> createState() => _SettingPageState();
@@ -21,6 +23,28 @@ class SettingPage extends StatefulWidget {
 
 class _SettingPageState extends State<SettingPage> {
   int _selectedIndex = 0;
+
+  static const _androidDestinations = <(int, String, IconData)>[
+    (0, '常规', Icons.settings_outlined),
+    (1, '个性化', Icons.palette_outlined),
+    (3, '播放', Icons.volume_up_outlined),
+    (5, '高级', Icons.construction_outlined),
+  ];
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      widget.onSectionChanged?.call(_androidDestinations.first.$2);
+    });
+  }
+
+  void _selectAndroidSection((int, String, IconData) section) {
+    if (_selectedIndex != section.$1) {
+      setState(() => _selectedIndex = section.$1);
+    }
+    widget.onSectionChanged?.call(section.$2);
+  }
 
   Widget _contentFor(int index) {
     switch (index) {
@@ -49,30 +73,96 @@ class _SettingPageState extends State<SettingPage> {
   @override
   Widget build(BuildContext context) {
     if (Platform.isAndroid) {
-      const destinations = <(int, String, IconData)>[
-        (0, '常规', Icons.settings_outlined),
-        (1, '个性化', Icons.palette_outlined),
-        (3, '播放', Icons.volume_up_outlined),
-        (5, '高级', Icons.construction_outlined),
-      ];
+      final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
+      if (isTablet) {
+        final wideTablet = MediaQuery.sizeOf(context).width >= 1180;
+        final destinationIndex = _androidDestinations.indexWhere(
+          (section) => section.$1 == _selectedIndex,
+        );
+        return Row(
+          children: [
+            ColoredBox(
+              color: Theme.of(context).colorScheme.surfaceContainerLowest,
+              child: NavigationRail(
+                extended: wideTablet,
+                minExtendedWidth: 180,
+                selectedIndex: destinationIndex < 0 ? 0 : destinationIndex,
+                labelType: wideTablet
+                    ? NavigationRailLabelType.none
+                    : NavigationRailLabelType.selected,
+                groupAlignment: -0.75,
+                onDestinationSelected: (index) {
+                  _selectAndroidSection(_androidDestinations[index]);
+                },
+                destinations: _androidDestinations
+                    .map(
+                      (section) => NavigationRailDestination(
+                        icon: Icon(section.$3),
+                        selectedIcon: Icon(section.$3, size: 28),
+                        label: Text(section.$2),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ),
+            VerticalDivider(
+              width: 1,
+              color: Theme.of(context).colorScheme.outlineVariant,
+            ),
+            Expanded(
+              child: ColoredBox(
+                color: Theme.of(context).colorScheme.surface,
+                child: Align(
+                  alignment: Alignment.topCenter,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 920),
+                    child: _content(),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        );
+      }
       return Column(
         children: [
           SizedBox(
-            height: 58,
-            child: ListView.separated(
+            height: 64,
+            child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              scrollDirection: Axis.horizontal,
-              itemCount: destinations.length,
-              separatorBuilder: (_, __) => const SizedBox(width: 8),
-              itemBuilder: (context, index) {
-                final item = destinations[index];
-                return ChoiceChip(
-                  avatar: Icon(item.$3, size: 18),
-                  label: Text(item.$2),
-                  selected: _selectedIndex == item.$1,
-                  onSelected: (_) => setState(() => _selectedIndex = item.$1),
-                );
-              },
+              child: Row(
+                children: _androidDestinations.map((section) {
+                  final selected = _selectedIndex == section.$1;
+                  final colors = Theme.of(context).colorScheme;
+                  return Expanded(
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      child: Tooltip(
+                        message: section.$2,
+                        child: Material(
+                          color: selected
+                              ? colors.secondaryContainer
+                              : Colors.transparent,
+                          borderRadius: BorderRadius.circular(18),
+                          child: InkWell(
+                            borderRadius: BorderRadius.circular(18),
+                            onTap: () => _selectAndroidSection(section),
+                            child: Center(
+                              child: Icon(
+                                section.$3,
+                                size: 26,
+                                color: selected
+                                    ? colors.onSecondaryContainer
+                                    : colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                  );
+                }).toList(),
+              ),
             ),
           ),
           const Divider(height: 1),

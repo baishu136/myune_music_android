@@ -18,6 +18,18 @@ class PlaybackSettingsTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('playback_settings'),
       children: [
+        if (Platform.isAndroid)
+          SwitchListTile(
+            title: const Row(
+              children: [
+                Text('优先读取外置LRC歌词'),
+                SizedBox(width: 4),
+                InfoIcon('启用后会优先读取同名 .lrc 歌词，其次读取内嵌歌词；关闭时顺序相反'),
+              ],
+            ),
+            value: settings.preferExternalLyrics,
+            onChanged: settings.setPreferExternalLyrics,
+          ),
         SwitchListTile(
           title: const Row(
             children: [

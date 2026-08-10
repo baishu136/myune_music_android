@@ -1,5 +1,18 @@
 allprojects {
     repositories { google(); mavenCentral() }
+
+    // Flutter's integration_test plugin declares old AndroidX test libraries
+    // with dynamic versions (for example 1.2+). Pin those build-only
+    // dependencies so ordinary APK builds stay reproducible and do not need
+    // to query Maven metadata every time.
+    configurations.configureEach {
+        resolutionStrategy.force(
+            "androidx.test:runner:1.3.0",
+            "androidx.test:monitor:1.3.0",
+            "androidx.test:rules:1.2.0",
+            "androidx.test.espresso:espresso-core:3.3.0"
+        )
+    }
 }
 
 rootProject.buildDir = "../build"

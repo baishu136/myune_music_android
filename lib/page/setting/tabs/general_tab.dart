@@ -5,13 +5,12 @@ import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../playlist/playlist_content_notifier.dart';
-import '../theme_selection_screen.dart';
-import '../../../theme/theme_provider.dart';
 import '../settings_provider.dart';
 import '../update_checker.dart';
 import '../about.dart';
 import '../setting_page.dart';
 import 'info_icon.dart';
+import 'theme_settings_section.dart';
 
 class GeneralTab extends StatefulWidget {
   const GeneralTab({super.key});
@@ -84,8 +83,8 @@ class _GeneralTabState extends State<GeneralTab> {
     return ListView(
       key: const ValueKey('general'),
       children: [
-        // 主题配色选择
-        const ThemeSelectionScreen(),
+        // Android 将主题相关选项归入“个性化”。
+        if (!Platform.isAndroid) const ThemeSettingsSection(),
         // 检查更新按钮
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -109,70 +108,6 @@ class _GeneralTabState extends State<GeneralTab> {
               ),
             ],
           ),
-        ),
-        // 主题模式
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text('主题模式', style: Theme.of(context).textTheme.titleMedium),
-              Consumer<ThemeProvider>(
-                builder: (context, themeProvider, child) {
-                  return SegmentedButton<ThemeMode>(
-                    style: ButtonStyle(
-                      padding: WidgetStateProperty.all(EdgeInsets.zero),
-                      visualDensity: VisualDensity.compact,
-                      minimumSize: WidgetStateProperty.all(const Size(0, 0)),
-                    ),
-                    segments: const [
-                      ButtonSegment(value: ThemeMode.light, label: Text('浅色')),
-                      ButtonSegment(value: ThemeMode.dark, label: Text('深色')),
-                      ButtonSegment(value: ThemeMode.system, label: Text('自动')),
-                    ],
-                    selected: {themeProvider.themeMode},
-                    onSelectionChanged: (Set<ThemeMode> newSelection) {
-                      if (newSelection.isNotEmpty) {
-                        final selectedMode = newSelection.first;
-                        context.read<ThemeProvider>().setThemeMode(
-                          selectedMode,
-                        );
-                      }
-                    },
-                    showSelectedIcon: false,
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-        // 启用动态获取颜色
-        SwitchListTile(
-          title: Row(
-            children: [
-              Text('动态主题配色', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(width: 4),
-              const InfoIcon("启用后将使用当前播放歌曲的封面颜色作为主题配色"),
-            ],
-          ),
-          value: settings.useDynamicColor,
-          onChanged: (value) {
-            context.read<SettingsProvider>().setUseDynamicColor(value);
-            // 当启用动态颜色时，立即提取当前播放歌曲的封面颜色
-            if (value) {
-              final playlistNotifier = context.read<PlaylistContentNotifier>();
-              final currentSong = playlistNotifier.currentSong;
-              if (currentSong != null) {
-                playlistNotifier.extractAndApplyDynamicColor(
-                  currentSong.albumArt,
-                );
-              }
-            }
-            // 当关闭动态颜色时，恢复用户手动选择的种子色
-            if (!value) {
-              context.read<ThemeProvider>().restoreLastManualColor();
-            }
-          },
         ),
         // 是否启用从网络获取歌词
         if (!Platform.isAndroid)
