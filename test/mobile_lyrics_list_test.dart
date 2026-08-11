@@ -25,7 +25,14 @@ void main() {
 
     final active = find.byKey(const ValueKey('mobile_lyric_35'));
     expect(active, findsOneWidget);
-    expect(tester.getCenter(active).dy, inInclusiveRange(0, 220));
+    expect(tester.getCenter(active).dy, closeTo(110, 24));
+
+    hostKey.currentState!.setActive(49);
+    await tester.pumpAndSettle();
+
+    final finalLine = find.byKey(const ValueKey('mobile_lyric_49'));
+    expect(finalLine, findsOneWidget);
+    expect(tester.getCenter(finalLine).dy, closeTo(110, 24));
   });
 
   testWidgets('uses the configured lyric font size', (tester) async {

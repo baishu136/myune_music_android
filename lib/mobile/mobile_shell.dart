@@ -1,7 +1,9 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -18,9 +20,18 @@ import '../page/setting/settings_provider.dart';
 import '../page/statistics_page/statistics_manager.dart';
 import '../widgets/playing_queue_drawer.dart';
 import '../widgets/mobile_lyrics_list.dart';
+import '../widgets/play_pause_button.dart';
 import '../widgets/sort_dialog.dart';
 import '../services/notification_service.dart';
 import '../theme/theme_provider.dart';
+import '../widgets/custom_theme_background.dart';
+
+bool _hasPlaybackTheme(SettingsProvider settings) {
+  final path = settings.playbackThemeImagePath;
+  return settings.playbackThemeImageEnabled &&
+      path != null &&
+      File(path).existsSync();
+}
 
 /// Touch-first Android presentation. The desktop pages and their data model stay
 /// intact; this shell only changes navigation density and common actions.
@@ -40,10 +51,11 @@ class _MobileShellState extends State<MobileShell> {
   bool _noticeStreamsBound = false;
   bool _animateLibraryEntrance = true;
   bool _librarySelectionMode = false;
+  bool _isExiting = false;
   final Set<String> _selectedLibrarySongPaths = {};
   String? _pendingPlaylistName;
   String? _pendingPlaylistId;
-  String _settingsSectionTitle = '常规';
+  String _settingsSectionTitle = '个性化';
 
   static const _titles = ['音乐库', '歌单', '歌手', '专辑', '设置'];
 
@@ -91,12 +103,30 @@ class _MobileShellState extends State<MobileShell> {
     }
   }
 
+  Future<void> _exitAndroidApp() async {
+    if (_isExiting) return;
+    _isExiting = true;
+    final notifier = context.read<PlaylistContentNotifier>();
+    try {
+      await notifier.shutdownForAppExit();
+    } catch (error, stackTrace) {
+      debugPrint('Failed to shut down playback before exit: $error');
+      debugPrintStack(stackTrace: stackTrace);
+    }
+    await SystemNavigator.pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     final notifier = context.watch<PlaylistContentNotifier>();
+    final settings = context.watch<SettingsProvider>();
     final selecting = _tab == 0 && _librarySelectionMode;
     final screen = MediaQuery.sizeOf(context);
     final isTablet = screen.shortestSide >= 600;
+    final useHomeTheme =
+        settings.homeThemeImageEnabled &&
+        settings.homeThemeImagePath != null &&
+        File(settings.homeThemeImagePath!).existsSync();
     final page = switch (_tab) {
       0 => _LibraryTab(
         query: _query,
@@ -119,8 +149,11 @@ class _MobileShellState extends State<MobileShell> {
         },
       ),
     };
-    return Scaffold(
+    final scaffold = Scaffold(
+      backgroundColor: useHomeTheme ? Colors.transparent : null,
       appBar: AppBar(
+        backgroundColor: useHomeTheme ? Colors.transparent : null,
+        scrolledUnderElevation: useHomeTheme ? 0 : null,
         leading: selecting
             ? IconButton(
                 tooltip: '退出多选',
@@ -225,6 +258,11 @@ class _MobileShellState extends State<MobileShell> {
                   top: false,
                   right: false,
                   child: NavigationRail(
+                    backgroundColor: useHomeTheme
+                        ? Theme.of(
+                            context,
+                          ).colorScheme.surface.withValues(alpha: 0.78)
+                        : null,
                     selectedIndex: _tab,
                     onDestinationSelected: _selectTab,
                     extended: screen.width >= 1100,
@@ -272,7 +310,7 @@ class _MobileShellState extends State<MobileShell> {
                         child: Column(
                           children: [
                             Expanded(child: page),
-                            const _MiniPlayer(),
+                            _MiniPlayer(translucent: useHomeTheme),
                           ],
                         ),
                       ),
@@ -296,8 +334,13 @@ class _MobileShellState extends State<MobileShell> {
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  const _MiniPlayer(),
+                  _MiniPlayer(translucent: useHomeTheme),
                   NavigationBar(
+                    backgroundColor: useHomeTheme
+                        ? Theme.of(
+                            context,
+                          ).colorScheme.surface.withValues(alpha: 0.78)
+                        : null,
                     selectedIndex: _tab,
                     onDestinationSelected: _selectTab,
                     destinations: const [
@@ -331,6 +374,18 @@ class _MobileShellState extends State<MobileShell> {
                 ],
               ),
             ),
+    );
+    return PopScope<void>(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) unawaited(_exitAndroidApp());
+      },
+      child: CustomThemeBackground(
+        path: settings.homeThemeImagePath,
+        enabled: useHomeTheme,
+        dim: settings.homeThemeImageDim,
+        child: scaffold,
+      ),
     );
   }
 
@@ -1156,7 +1211,8 @@ class _SongList extends StatelessWidget {
 }
 
 class _MiniPlayer extends StatelessWidget {
-  const _MiniPlayer();
+  const _MiniPlayer({this.translucent = false});
+  final bool translucent;
   @override
   Widget build(BuildContext context) {
     final notifier = context.watch<PlaylistContentNotifier>();
@@ -1170,7 +1226,9 @@ class _MiniPlayer extends StatelessWidget {
         totalMs > 0 ? totalMs : 1,
       );
       return Material(
-        color: Theme.of(context).colorScheme.surfaceContainerHigh,
+        color: Theme.of(context).colorScheme.surfaceContainerHigh.withValues(
+          alpha: translucent ? 0.82 : 1,
+        ),
         child: InkWell(
           onTap: () => Navigator.of(context).push(
             MaterialPageRoute<void>(builder: (_) => const _NowPlayingPage()),
@@ -1215,11 +1273,13 @@ class _MiniPlayer extends StatelessWidget {
                     icon: const Icon(Icons.skip_previous),
                     onPressed: () => notifier.playPrevious(),
                   ),
-                  IconButton.filledTonal(
+                  PlayPauseButton(
+                    isPlaying: notifier.isPlaying,
                     tooltip: notifier.isPlaying ? '暂停' : '播放',
-                    icon: Icon(
-                      notifier.isPlaying ? Icons.pause : Icons.play_arrow,
-                    ),
+                    color: Theme.of(context).colorScheme.onSecondaryContainer,
+                    backgroundColor: Theme.of(
+                      context,
+                    ).colorScheme.secondaryContainer,
                     onPressed: notifier.isPlaying
                         ? notifier.pause
                         : notifier.play,
@@ -1237,7 +1297,9 @@ class _MiniPlayer extends StatelessWidget {
       );
     }
     return Material(
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      color: Theme.of(context).colorScheme.surfaceContainerHigh.withValues(
+        alpha: translucent ? 0.82 : 1,
+      ),
       child: ListTile(
         leading: _Cover(song: song),
         title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -1249,13 +1311,12 @@ class _MiniPlayer extends StatelessWidget {
         onTap: () => Navigator.of(context).push(
           MaterialPageRoute<void>(builder: (_) => const _NowPlayingPage()),
         ),
-        trailing: IconButton(
-          icon: Icon(
-            notifier.isPlaying
-                ? Icons.pause_circle_filled
-                : Icons.play_circle_fill,
-            size: 34,
-          ),
+        trailing: PlayPauseButton(
+          isPlaying: notifier.isPlaying,
+          size: 34,
+          padding: const EdgeInsets.all(5),
+          tooltip: notifier.isPlaying ? '暂停' : '播放',
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
           onPressed: notifier.isPlaying ? notifier.pause : notifier.play,
         ),
       ),
@@ -1351,13 +1412,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     final settings = context.watch<SettingsProvider>();
     final lyricFontFamily = context.watch<ThemeProvider>().currentFontFamily;
     final song = notifier.currentSong;
+    final usePlaybackTheme = _hasPlaybackTheme(settings);
     if (song == null) {
       return const Scaffold(body: Center(child: Text('尚未播放歌曲')));
     }
     if (_lastSongPath != song.filePath) {
       _lastSongPath = song.filePath;
       _resetSeekTracking();
-      _showLyrics = false;
+      _showLyrics = usePlaybackTheme;
     }
 
     final totalMs = notifier.totalDuration.inMilliseconds.toDouble();
@@ -1378,6 +1440,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
       settings: settings,
       song: song,
       lyricFontFamily: lyricFontFamily,
+      usePlaybackTheme: usePlaybackTheme,
       maxCoverSize: useSplitLayout
           ? 520
           : isTablet
@@ -1392,10 +1455,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
       totalMs: totalMs,
       displayPosition: displayPosition,
       tablet: isTablet,
+      usePlaybackTheme: usePlaybackTheme,
     );
 
-    return Scaffold(
+    final scaffold = Scaffold(
+      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       appBar: AppBar(
+        backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+        scrolledUnderElevation: usePlaybackTheme ? 0 : null,
         title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
         actions: [
           IconButton(
@@ -1429,9 +1496,12 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
                               constraints: const BoxConstraints(maxWidth: 480),
                               child: Card(
                                 elevation: 0,
-                                color: Theme.of(
-                                  context,
-                                ).colorScheme.surfaceContainerLow,
+                                color: Theme.of(context)
+                                    .colorScheme
+                                    .surfaceContainerLow
+                                    .withValues(
+                                      alpha: usePlaybackTheme ? 0.10 : 1,
+                                    ),
                                 child: Padding(
                                   padding: const EdgeInsets.all(24),
                                   child: controls,
@@ -1451,9 +1521,12 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
                             constraints: const BoxConstraints(maxWidth: 560),
                             child: Card(
                               elevation: 0,
-                              color: Theme.of(
-                                context,
-                              ).colorScheme.surfaceContainerLow,
+                              color: Theme.of(context)
+                                  .colorScheme
+                                  .surfaceContainerLow
+                                  .withValues(
+                                    alpha: usePlaybackTheme ? 0.10 : 1,
+                                  ),
                               child: Padding(
                                 padding: const EdgeInsets.all(20),
                                 child: controls,
@@ -1469,6 +1542,12 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
         ),
       ),
     );
+    return CustomThemeBackground(
+      path: settings.playbackThemeImagePath,
+      enabled: usePlaybackTheme,
+      dim: settings.playbackThemeImageDim,
+      child: scaffold,
+    );
   }
 
   Widget _buildNowPlayingVisual(
@@ -1477,6 +1556,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     required SettingsProvider settings,
     required Song song,
     required String? lyricFontFamily,
+    required bool usePlaybackTheme,
     required double maxCoverSize,
   }) {
     return GestureDetector(
@@ -1500,12 +1580,38 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
               ? Card(
                   key: const ValueKey('lyrics'),
                   clipBehavior: Clip.antiAlias,
-                  child: MobileLyricsList(
-                    lines: notifier.currentLyrics,
-                    active: notifier.currentLyricLineIndex,
-                    fontSize: settings.fontSize,
-                    fontFamily: lyricFontFamily,
-                  ),
+                  elevation: usePlaybackTheme ? 0 : null,
+                  color: usePlaybackTheme ? Colors.transparent : null,
+                  surfaceTintColor: usePlaybackTheme
+                      ? Colors.transparent
+                      : null,
+                  child: usePlaybackTheme
+                      ? ShaderMask(
+                          blendMode: BlendMode.dstIn,
+                          shaderCallback: (bounds) => const LinearGradient(
+                            begin: Alignment.topCenter,
+                            end: Alignment.bottomCenter,
+                            colors: [
+                              Colors.transparent,
+                              Colors.black,
+                              Colors.black,
+                              Colors.transparent,
+                            ],
+                            stops: [0, .09, .91, 1],
+                          ).createShader(bounds),
+                          child: MobileLyricsList(
+                            lines: notifier.currentLyrics,
+                            active: notifier.currentLyricLineIndex,
+                            fontSize: settings.fontSize,
+                            fontFamily: lyricFontFamily,
+                          ),
+                        )
+                      : MobileLyricsList(
+                          lines: notifier.currentLyrics,
+                          active: notifier.currentLyricLineIndex,
+                          fontSize: settings.fontSize,
+                          fontFamily: lyricFontFamily,
+                        ),
                 )
               : LayoutBuilder(
                   key: const ValueKey('cover'),
@@ -1534,6 +1640,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     required double totalMs,
     required double displayPosition,
     required bool tablet,
+    required bool usePlaybackTheme,
   }) {
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -1565,88 +1672,112 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
             ActionChip(
               avatar: const Icon(Icons.equalizer, size: 18),
               label: Text(notifier.equalizerPresetName),
+              backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+              surfaceTintColor: usePlaybackTheme ? Colors.transparent : null,
+              side: usePlaybackTheme
+                  ? BorderSide(color: Theme.of(context).colorScheme.outline)
+                  : null,
               onPressed: () => _showPresetPicker(context, notifier),
             ),
           ],
         ),
         SizedBox(height: tablet ? 12 : 6),
-        Slider(
-          value: displayPosition,
-          max: totalMs > 0 ? totalMs : 1,
-          onChangeStart: _beginSeek,
-          onChanged: _updateSeek,
-          onChangeEnd: (value) => _commitSeek(value, notifier),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        _playbackThemePanel(
+          context,
+          enabled: usePlaybackTheme,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(_duration(Duration(milliseconds: displayPosition.round()))),
-              Text(_duration(notifier.totalDuration)),
+              Slider(
+                value: displayPosition,
+                max: totalMs > 0 ? totalMs : 1,
+                onChangeStart: _beginSeek,
+                onChanged: _updateSeek,
+                onChangeEnd: (value) => _commitSeek(value, notifier),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _duration(
+                        Duration(milliseconds: displayPosition.round()),
+                      ),
+                    ),
+                    Text(_duration(notifier.totalDuration)),
+                  ],
+                ),
+              ),
             ],
           ),
         ),
         SizedBox(height: tablet ? 6 : 2),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            IconButton(
-              tooltip: notifier.isFavorite(song) ? '取消收藏' : '收藏',
-              icon: Icon(
-                notifier.isFavorite(song)
-                    ? Icons.favorite
-                    : Icons.favorite_border,
+        _playbackThemePanel(
+          context,
+          enabled: usePlaybackTheme,
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              IconButton(
+                tooltip: notifier.isFavorite(song) ? '取消收藏' : '收藏',
+                icon: Icon(
+                  notifier.isFavorite(song)
+                      ? Icons.favorite
+                      : Icons.favorite_border,
+                ),
+                color: notifier.isFavorite(song)
+                    ? Theme.of(context).colorScheme.primary
+                    : null,
+                onPressed: () => notifier.toggleFavorite(song),
               ),
-              color: notifier.isFavorite(song)
-                  ? Theme.of(context).colorScheme.primary
-                  : null,
-              onPressed: () => notifier.toggleFavorite(song),
-            ),
-            IconButton(
-              tooltip: '上一首',
-              icon: const Icon(Icons.skip_previous, size: 38),
-              onPressed: () {
-                setState(_resetSeekTracking);
-                notifier.playPrevious();
-              },
-            ),
-            FilledButton.tonal(
-              style: FilledButton.styleFrom(
-                shape: const CircleBorder(),
-                padding: const EdgeInsets.all(18),
-              ),
-              onPressed: () {
-                if (notifier.isPlaying) {
-                  notifier.pause();
-                } else {
+              IconButton(
+                tooltip: '上一首',
+                icon: const Icon(Icons.skip_previous, size: 38),
+                onPressed: () {
                   setState(_resetSeekTracking);
-                  notifier.play();
-                }
-              },
-              child: Icon(
-                notifier.isPlaying ? Icons.pause : Icons.play_arrow,
-                size: 42,
+                  notifier.playPrevious();
+                },
               ),
-            ),
-            IconButton(
-              tooltip: '下一首',
-              icon: const Icon(Icons.skip_next, size: 38),
-              onPressed: () {
-                setState(_resetSeekTracking);
-                notifier.playNext();
-              },
-            ),
-            IconButton(
-              tooltip: _modeLabel(notifier.playMode),
-              icon: Icon(_modeIcon(notifier.playMode), size: 28),
-              onPressed: notifier.togglePlayMode,
-            ),
-          ],
+              PlayPauseButton(
+                isPlaying: notifier.isPlaying,
+                size: 42,
+                padding: const EdgeInsets.all(18),
+                tooltip: notifier.isPlaying ? '暂停' : '播放',
+                color: Theme.of(context).colorScheme.onSecondaryContainer,
+                backgroundColor: Theme.of(
+                  context,
+                ).colorScheme.secondaryContainer,
+                onPressed: () {
+                  if (notifier.isPlaying) {
+                    notifier.pause();
+                  } else {
+                    setState(_resetSeekTracking);
+                    notifier.play();
+                  }
+                },
+              ),
+              IconButton(
+                tooltip: '下一首',
+                icon: const Icon(Icons.skip_next, size: 38),
+                onPressed: () {
+                  setState(_resetSeekTracking);
+                  notifier.playNext();
+                },
+              ),
+              IconButton(
+                tooltip: _modeLabel(notifier.playMode),
+                icon: Icon(_modeIcon(notifier.playMode), size: 28),
+                onPressed: notifier.togglePlayMode,
+              ),
+            ],
+          ),
         ),
         SizedBox(height: tablet ? 12 : 10),
         Material(
-          color: Theme.of(context).colorScheme.surfaceContainer,
+          color: Theme.of(context).colorScheme.surfaceContainer.withValues(
+            alpha: usePlaybackTheme ? 0.10 : 1,
+          ),
           shape: const StadiumBorder(),
           clipBehavior: Clip.antiAlias,
           child: Row(
@@ -1692,6 +1823,37 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _playbackThemePanel(
+    BuildContext context, {
+    required bool enabled,
+    required Widget child,
+  }) {
+    if (!enabled) return child;
+    final scheme = Theme.of(context).colorScheme;
+    final radius = BorderRadius.circular(22);
+    return ClipRRect(
+      borderRadius: radius,
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: scheme.surface.withValues(alpha: .10),
+            borderRadius: radius,
+            border: Border.all(
+              color: scheme.outlineVariant.withValues(alpha: .72),
+            ),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            borderRadius: radius,
+            clipBehavior: Clip.antiAlias,
+            child: child,
+          ),
+        ),
+      ),
     );
   }
 
@@ -1792,13 +1954,24 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   }
 
   void _showQueue(BuildContext context) {
+    final usePlaybackTheme = _hasPlaybackTheme(
+      context.read<SettingsProvider>(),
+    );
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (_) => const FractionallySizedBox(
-        heightFactor: .82,
-        child: PlayingQueueDrawer(),
-      ),
+      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+      shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
+      clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      builder: (sheetContext) {
+        final content = FractionallySizedBox(
+          heightFactor: .82,
+          child: PlayingQueueDrawer(transparentBackground: usePlaybackTheme),
+        );
+        return usePlaybackTheme
+            ? _playbackThemeSheetSurface(sheetContext, child: content)
+            : content;
+      },
     );
   }
 
@@ -1806,92 +1979,254 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     BuildContext context,
     PlaylistContentNotifier notifier,
   ) {
+    final usePlaybackTheme = _hasPlaybackTheme(
+      context.read<SettingsProvider>(),
+    );
+    var pitch = notifier.currentPitch;
+    var playbackRate = notifier.currentPlaybackRate;
     showModalBottomSheet<void>(
       context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('均衡器预设', style: Theme.of(context).textTheme.titleLarge),
-              const SizedBox(height: 14),
-              Wrap(
-                spacing: 8,
-                runSpacing: 8,
-                children: PlaylistContentNotifier.equalizerPresets
-                    .skip(1)
-                    .map(
-                      (preset) => ChoiceChip(
-                        label: Text(preset.name),
-                        selected: preset.name == notifier.equalizerPresetName,
-                        onSelected: (_) {
-                          notifier.applyEqualizerPreset(preset);
-                          Navigator.pop(sheetContext);
-                        },
-                      ),
-                    )
-                    .toList(),
+      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+      shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
+      clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      builder: (sheetContext) {
+        final content = SafeArea(
+          child: StatefulBuilder(
+            builder: (context, setSheetState) => Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('均衡器预设', style: Theme.of(context).textTheme.titleLarge),
+                  const SizedBox(height: 14),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: PlaylistContentNotifier.equalizerPresets
+                        .skip(1)
+                        .map(
+                          (preset) => ChoiceChip(
+                            label: Text(preset.name),
+                            selected:
+                                preset.name == notifier.equalizerPresetName,
+                            backgroundColor: usePlaybackTheme
+                                ? Colors.transparent
+                                : null,
+                            selectedColor: usePlaybackTheme
+                                ? Colors.transparent
+                                : null,
+                            side: usePlaybackTheme
+                                ? BorderSide(
+                                    color: Theme.of(
+                                      context,
+                                    ).colorScheme.outline,
+                                  )
+                                : null,
+                            onSelected: (_) {
+                              notifier.applyEqualizerPreset(preset);
+                              Navigator.pop(sheetContext);
+                            },
+                          ),
+                        )
+                        .toList(),
+                  ),
+                  const SizedBox(height: 18),
+                  _audioControlSlider(
+                    context,
+                    icon: Icons.music_note,
+                    label: '音高',
+                    value: pitch,
+                    valueLabel: pitch.toStringAsFixed(2),
+                    min: .5,
+                    max: 1.5,
+                    divisions: 20,
+                    onChanged: (value) {
+                      setSheetState(() => pitch = value);
+                      unawaited(notifier.setPitch(value));
+                    },
+                  ),
+                  const SizedBox(height: 8),
+                  _audioControlSlider(
+                    context,
+                    icon: Icons.speed,
+                    label: '倍速',
+                    value: playbackRate,
+                    valueLabel: '${playbackRate.toStringAsFixed(2)}x',
+                    min: .5,
+                    max: 2,
+                    divisions: 30,
+                    onChanged: (value) {
+                      setSheetState(() => playbackRate = value);
+                      unawaited(notifier.setPlaybackRate(value));
+                    },
+                  ),
+                ],
               ),
-            ],
+            ),
+          ),
+        );
+        return usePlaybackTheme
+            ? _playbackThemeSheetSurface(sheetContext, child: content)
+            : content;
+      },
+    );
+  }
+
+  Widget _audioControlSlider(
+    BuildContext context, {
+    required IconData icon,
+    required String label,
+    required double value,
+    required String valueLabel,
+    required double min,
+    required double max,
+    required int divisions,
+    required ValueChanged<double> onChanged,
+  }) {
+    return Row(
+      children: [
+        Icon(icon, size: 20),
+        const SizedBox(width: 8),
+        SizedBox(
+          width: 42,
+          child: Text(label, style: Theme.of(context).textTheme.titleSmall),
+        ),
+        Expanded(
+          child: Slider(
+            min: min,
+            max: max,
+            divisions: divisions,
+            value: value,
+            onChanged: onChanged,
           ),
         ),
-      ),
+        SizedBox(width: 54, child: Text(valueLabel, textAlign: TextAlign.end)),
+      ],
     );
   }
 
   void _showLyricSource(BuildContext context) {
+    final usePlaybackTheme = _hasPlaybackTheme(
+      context.read<SettingsProvider>(),
+    );
     showModalBottomSheet<void>(
       context: context,
-      builder: (sheetContext) => SafeArea(
-        child: Consumer<SettingsProvider>(
-          builder: (context, settings, _) => Padding(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text('歌词源设置', style: Theme.of(context).textTheme.titleLarge),
-                SwitchListTile(
-                  contentPadding: EdgeInsets.zero,
-                  title: const Text('从网络获取歌词'),
-                  value: settings.enableOnlineLyrics,
-                  onChanged: settings.setEnableOnlineLyrics,
-                ),
-                SegmentedButton<String>(
-                  segments: const [
-                    ButtonSegment(value: 'qq', label: Text('企鹅')),
-                    ButtonSegment(value: 'netease', label: Text('网抑')),
-                    ButtonSegment(value: 'kugou', label: Text('库狗')),
-                  ],
-                  selected: {settings.primaryLyricSource},
-                  onSelectionChanged: (selection) {
-                    if (selection.isEmpty) return;
-                    final primary = selection.first;
-                    settings.setPrimaryLyricSource(primary);
-                    settings.setSecondaryLyricSource(
-                      primary == 'qq' ? 'netease' : 'qq',
-                    );
-                  },
-                ),
-              ],
+      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+      shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
+      clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      builder: (sheetContext) {
+        final content = SafeArea(
+          child: Consumer<SettingsProvider>(
+            builder: (context, settings, _) => Padding(
+              padding: const EdgeInsets.all(20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('歌词源设置', style: Theme.of(context).textTheme.titleLarge),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('从网络获取歌词'),
+                    value: settings.enableOnlineLyrics,
+                    onChanged: settings.setEnableOnlineLyrics,
+                  ),
+                  SegmentedButton<String>(
+                    style: usePlaybackTheme
+                        ? ButtonStyle(
+                            backgroundColor: WidgetStateProperty.all(
+                              Colors.transparent,
+                            ),
+                            side: WidgetStateProperty.all(
+                              BorderSide(
+                                color: Theme.of(context).colorScheme.outline,
+                              ),
+                            ),
+                          )
+                        : null,
+                    segments: const [
+                      ButtonSegment(value: 'qq', label: Text('企鹅')),
+                      ButtonSegment(value: 'netease', label: Text('网抑')),
+                      ButtonSegment(value: 'kugou', label: Text('库狗')),
+                    ],
+                    selected: {settings.primaryLyricSource},
+                    onSelectionChanged: (selection) {
+                      if (selection.isEmpty) return;
+                      final primary = selection.first;
+                      settings.setPrimaryLyricSource(primary);
+                      settings.setSecondaryLyricSource(
+                        primary == 'qq' ? 'netease' : 'qq',
+                      );
+                    },
+                  ),
+                ],
+              ),
             ),
+          ),
+        );
+        return usePlaybackTheme
+            ? _playbackThemeSheetSurface(sheetContext, child: content)
+            : content;
+      },
+    );
+  }
+
+  void _showAudioEffects(BuildContext context) {
+    final usePlaybackTheme = _hasPlaybackTheme(
+      context.read<SettingsProvider>(),
+    );
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+      shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
+      clipBehavior: Clip.antiAlias,
+      builder: (sheetContext) {
+        final content = FractionallySizedBox(
+          heightFactor: .92,
+          child: _AudioEffectsSheet(transparentBackground: usePlaybackTheme),
+        );
+        return usePlaybackTheme
+            ? _playbackThemeSheetSurface(sheetContext, child: content)
+            : content;
+      },
+    );
+  }
+
+  Widget _playbackThemeSheetSurface(
+    BuildContext context, {
+    required Widget child,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    const radius = BorderRadius.vertical(top: Radius.circular(28));
+    return ClipRRect(
+      borderRadius: radius,
+      child: BackdropFilter(
+        filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: scheme.surface.withValues(alpha: .10),
+            borderRadius: radius,
+            border: Border.all(
+              color: scheme.outlineVariant.withValues(alpha: .72),
+            ),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            shape: const RoundedRectangleBorder(borderRadius: radius),
+            clipBehavior: Clip.antiAlias,
+            child: child,
           ),
         ),
       ),
     );
   }
 
-  void _showAudioEffects(BuildContext context) {
-    showModalBottomSheet<void>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (_) => const FractionallySizedBox(
-        heightFactor: .92,
-        child: _AudioEffectsSheet(),
-      ),
+  RoundedRectangleBorder _playbackSheetShape(BuildContext context) {
+    return RoundedRectangleBorder(
+      borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
+      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
     );
   }
 
@@ -1921,62 +2256,79 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     final estimatedListening = Duration(
       milliseconds: duration.inMilliseconds * playCount,
     );
+    final usePlaybackTheme = _hasPlaybackTheme(
+      context.read<SettingsProvider>(),
+    );
 
     showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        expand: false,
-        initialChildSize: .72,
-        minChildSize: .45,
-        maxChildSize: .92,
-        builder: (context, controller) => SafeArea(
-          child: ListView(
-            controller: controller,
-            padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-            children: [
-              Text('歌曲详情', style: Theme.of(context).textTheme.headlineSmall),
-              const SizedBox(height: 12),
-              _DetailRow(label: '歌曲名', value: song.title),
-              _DetailRow(label: '歌手', value: song.artist),
-              _DetailRow(label: '专辑', value: song.album),
-              _DetailRow(label: '收听次数', value: '$playCount 次'),
-              _DetailRow(
-                label: '累计收听时间',
-                value: '${_longDuration(estimatedListening)}（估算）',
-              ),
-              _DetailRow(
-                label: '比特率',
-                value: bitrate == null
-                    ? '未知'
-                    : '${(bitrate / 1000).round()} kbps',
-              ),
-              _DetailRow(
-                label: '采样率',
-                value: sampleRate == null
-                    ? '未知'
-                    : '${(sampleRate / 1000).toStringAsFixed(1)} kHz',
-              ),
-              _DetailRow(label: '时长', value: _duration(duration)),
-              _DetailRow(
-                label: '创建日期',
-                value: stat == null ? '未知' : _dateTime(stat.changed),
-              ),
-              _DetailRow(
-                label: '修改日期',
-                value: stat == null ? '未知' : _dateTime(stat.modified),
-              ),
-              _DetailRow(label: '文件路径', value: song.filePath, selectable: true),
-            ],
+      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+      shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
+      clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      builder: (sheetContext) {
+        final content = DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: .72,
+          minChildSize: .45,
+          maxChildSize: .92,
+          builder: (context, controller) => SafeArea(
+            child: ListView(
+              controller: controller,
+              padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+              children: [
+                Text('歌曲详情', style: Theme.of(context).textTheme.headlineSmall),
+                const SizedBox(height: 12),
+                _DetailRow(label: '歌曲名', value: song.title),
+                _DetailRow(label: '歌手', value: song.artist),
+                _DetailRow(label: '专辑', value: song.album),
+                _DetailRow(label: '收听次数', value: '$playCount 次'),
+                _DetailRow(
+                  label: '累计收听时间',
+                  value: '${_longDuration(estimatedListening)}（估算）',
+                ),
+                _DetailRow(
+                  label: '比特率',
+                  value: bitrate == null
+                      ? '未知'
+                      : '${(bitrate / 1000).round()} kbps',
+                ),
+                _DetailRow(
+                  label: '采样率',
+                  value: sampleRate == null
+                      ? '未知'
+                      : '${(sampleRate / 1000).toStringAsFixed(1)} kHz',
+                ),
+                _DetailRow(label: '时长', value: _duration(duration)),
+                _DetailRow(
+                  label: '创建日期',
+                  value: stat == null ? '未知' : _dateTime(stat.changed),
+                ),
+                _DetailRow(
+                  label: '修改日期',
+                  value: stat == null ? '未知' : _dateTime(stat.modified),
+                ),
+                _DetailRow(
+                  label: '文件路径',
+                  value: song.filePath,
+                  selectable: true,
+                ),
+              ],
+            ),
           ),
-        ),
-      ),
+        );
+        return usePlaybackTheme
+            ? _playbackThemeSheetSurface(sheetContext, child: content)
+            : content;
+      },
     );
   }
 }
 
 class _AudioEffectsSheet extends StatefulWidget {
-  const _AudioEffectsSheet();
+  const _AudioEffectsSheet({required this.transparentBackground});
+
+  final bool transparentBackground;
 
   @override
   State<_AudioEffectsSheet> createState() => _AudioEffectsSheetState();
@@ -2027,70 +2379,84 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
   Widget build(BuildContext context) {
     final notifier = context.watch<PlaylistContentNotifier>();
     final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.surface,
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Container(
-            width: 68,
-            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
-            decoration: BoxDecoration(
-              color: scheme.surfaceContainer,
-              border: Border(right: BorderSide(color: scheme.outlineVariant)),
-            ),
-            child: Column(
-              children: [
-                for (var index = 0; index < _sections.length; index++) ...[
-                  Tooltip(
-                    message: _sections[index].label,
-                    child: IconButton.filledTonal(
-                      isSelected: _section == index,
-                      selectedIcon: Icon(_sections[index].icon),
-                      icon: Icon(_sections[index].icon),
-                      onPressed: () => setState(() => _section = index),
+    final content = Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          width: 68,
+          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+          decoration: BoxDecoration(
+            color: widget.transparentBackground
+                ? Colors.transparent
+                : scheme.surfaceContainer,
+            border: Border(right: BorderSide(color: scheme.outlineVariant)),
+          ),
+          child: Column(
+            children: [
+              for (var index = 0; index < _sections.length; index++) ...[
+                Tooltip(
+                  message: _sections[index].label,
+                  child: IconButton.filledTonal(
+                    isSelected: _section == index,
+                    style: widget.transparentBackground
+                        ? IconButton.styleFrom(
+                            backgroundColor: Colors.transparent,
+                            side: BorderSide(color: scheme.outlineVariant),
+                          )
+                        : null,
+                    selectedIcon: Icon(_sections[index].icon),
+                    icon: Icon(_sections[index].icon),
+                    onPressed: () => setState(() => _section = index),
+                  ),
+                ),
+                const SizedBox(height: 6),
+              ],
+            ],
+          ),
+        ),
+        Expanded(
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(18, 16, 10, 8),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        _sections[_section].label,
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
                     ),
-                  ),
-                  const SizedBox(height: 6),
-                ],
-              ],
-            ),
-          ),
-          Expanded(
-            child: Column(
-              children: [
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(18, 16, 10, 8),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          _sections[_section].label,
-                          style: Theme.of(context).textTheme.titleLarge,
-                        ),
-                      ),
-                      TextButton.icon(
-                        onPressed: () {
-                          setState(_draggingEqualizerGains.clear);
-                          notifier.resetAudioControls();
-                        },
-                        icon: const Icon(Icons.restart_alt),
-                        label: const Text('重置'),
-                      ),
-                    ],
-                  ),
+                    TextButton.icon(
+                      onPressed: () {
+                        setState(_draggingEqualizerGains.clear);
+                        notifier.resetAudioControls();
+                      },
+                      icon: const Icon(Icons.restart_alt),
+                      label: const Text('重置'),
+                    ),
+                  ],
                 ),
-                const Divider(height: 1),
-                Expanded(
-                  child: _section == 0
-                      ? _equalizer(context, notifier)
-                      : _effectList(context, notifier),
-                ),
-              ],
-            ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: _section == 0
+                    ? _equalizer(context, notifier)
+                    : _effectList(context, notifier),
+              ),
+            ],
           ),
-        ],
+        ),
+      ],
+    );
+    return Material(
+      color: widget.transparentBackground ? Colors.transparent : scheme.surface,
+      surfaceTintColor: Colors.transparent,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
       ),
+      clipBehavior: Clip.antiAlias,
+      child: content,
     );
   }
 
@@ -2111,6 +2477,17 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
                     child: ChoiceChip(
                       label: Text(preset.name),
                       selected: preset.name == notifier.equalizerPresetName,
+                      backgroundColor: widget.transparentBackground
+                          ? Colors.transparent
+                          : null,
+                      selectedColor: widget.transparentBackground
+                          ? Colors.transparent
+                          : null,
+                      side: widget.transparentBackground
+                          ? BorderSide(
+                              color: Theme.of(context).colorScheme.outline,
+                            )
+                          : null,
                       onSelected: (_) {
                         setState(_draggingEqualizerGains.clear);
                         notifier.applyEqualizerPreset(preset);
@@ -2177,6 +2554,15 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
             return FilterChip(
               selected: selected,
               showCheckmark: true,
+              backgroundColor: widget.transparentBackground
+                  ? Colors.transparent
+                  : null,
+              selectedColor: widget.transparentBackground
+                  ? Colors.transparent
+                  : null,
+              side: widget.transparentBackground
+                  ? BorderSide(color: Theme.of(context).colorScheme.outline)
+                  : null,
               avatar: Icon(_effectIcon(effect.id), size: 18),
               label: Text(effect.label),
               onSelected: (enabled) async {
@@ -2390,7 +2776,7 @@ class _PlaylistCard extends StatelessWidget {
           child: SizedBox(
             width: 120,
             child: Padding(
-              padding: const EdgeInsets.all(12),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [

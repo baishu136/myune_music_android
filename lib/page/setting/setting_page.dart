@@ -10,7 +10,7 @@ import 'tabs/hotkeys_tab.dart';
 import 'tabs/advanced_tab.dart';
 
 // 定义应用版本号常量
-const String appVersion = '0.9.3-android.13';
+const String appVersion = '0.9.3-android.23';
 
 class SettingPage extends StatefulWidget {
   const SettingPage({super.key, this.onSectionChanged});
@@ -22,11 +22,11 @@ class SettingPage extends StatefulWidget {
 }
 
 class _SettingPageState extends State<SettingPage> {
-  int _selectedIndex = 0;
+  int _selectedIndex = 1;
 
   static const _androidDestinations = <(int, String, IconData)>[
-    (0, '常规', Icons.settings_outlined),
     (1, '个性化', Icons.palette_outlined),
+    (0, '常规', Icons.settings_outlined),
     (3, '播放', Icons.volume_up_outlined),
     (5, '高级', Icons.construction_outlined),
   ];

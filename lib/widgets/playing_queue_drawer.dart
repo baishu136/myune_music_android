@@ -8,7 +8,9 @@ import '../page/playlist/playlist_content_widget.dart';
 import '../page/playlist/playlist_models.dart';
 
 class PlayingQueueDrawer extends StatefulWidget {
-  const PlayingQueueDrawer({super.key});
+  const PlayingQueueDrawer({super.key, this.transparentBackground = false});
+
+  final bool transparentBackground;
 
   @override
   State<PlayingQueueDrawer> createState() => PlayingQueueDrawerState();
@@ -31,101 +33,114 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer> {
         final queue = notifier.playingQueueSongs;
         final playingPlaylist = notifier.playingPlaylist;
 
-        return Drawer(
-          width: 400,
-          child: SafeArea(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // 抽屉的标题栏
-                Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Row(
-                    children: [
-                      Text(
-                        '正在播放 (${queue.length})',
-                        style: Theme.of(context).textTheme.titleLarge,
-                      ),
-                      const Spacer(),
-                      IconButton(
-                        icon: Icon(
-                          Icons.pause_circle_outline,
-                          color: notifier.stopAfterQueue
-                              ? Theme.of(context).colorScheme.primary
-                              : Theme.of(context).disabledColor,
+        final queueContent = Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 抽屉的标题栏
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                children: [
+                  Text(
+                    '正在播放 (${queue.length})',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const Spacer(),
+                  IconButton(
+                    icon: Icon(
+                      Icons.pause_circle_outline,
+                      color: notifier.stopAfterQueue
+                          ? Theme.of(context).colorScheme.primary
+                          : Theme.of(context).disabledColor,
+                    ),
+                    onPressed: () {
+                      notifier.setStopAfterQueue(!notifier.stopAfterQueue);
+                    },
+                    tooltip:
+                        '播完当前队列后暂停${notifier.playMode == PlayMode.repeatOne ? '\n(单曲循环模式下只会播放当前歌曲)' : ''}\n${notifier.stopAfterQueue ? '当前: 启用' : '当前: 禁用'}',
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.playlist_add),
+                    onPressed: queue.isNotEmpty
+                        ? () => _showSaveQueueAsPlaylistDialog(
+                            context,
+                            notifier,
+                            queue,
+                          )
+                        : null,
+                    tooltip: '保存当前队列为歌单',
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close),
+                    onPressed: () => Navigator.of(context).pop(),
+                    tooltip: '关闭',
+                  ),
+                ],
+              ),
+            ),
+            const Divider(height: 1),
+
+            // 歌曲列表
+            if (queue.isEmpty)
+              const Expanded(child: Center(child: Text('当前没有播放任何歌曲')))
+            else
+              Expanded(
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+
+                  child: SilkyScroll(
+                    controller: scrollController,
+                    silkyScrollDuration: ScrollConfig.duration,
+                    scrollSpeed: ScrollConfig.speed,
+                    animationCurve: ScrollConfig.curve,
+                    builder: (context, controller, physics, _) =>
+                        ListView.builder(
+                          controller: controller,
+                          physics: physics,
+                          itemCount: queue.length,
+                          itemBuilder: (context, index) {
+                            final song = queue[index];
+
+                            // 再次复用 SongTileWidget
+                            return SongTileWidget(
+                              key: ValueKey(song.filePath),
+                              song: song,
+                              index: index,
+                              enableContextMenu: false, // 禁用右键菜单
+                              // 传入当前播放的歌单作为上下文
+                              contextPlaylist:
+                                  playingPlaylist ??
+                                  notifier.allSongsVirtualPlaylist,
+                              onTap: () {
+                                // 这里的index正好就是歌曲在队列中的索引
+                                notifier.playSongFromQueue(index);
+                              },
+                            );
+                          },
                         ),
-                        onPressed: () {
-                          notifier.setStopAfterQueue(!notifier.stopAfterQueue);
-                        },
-                        tooltip:
-                            '播完当前队列后暂停${notifier.playMode == PlayMode.repeatOne ? '\n(单曲循环模式下只会播放当前歌曲)' : ''}\n${notifier.stopAfterQueue ? '当前: 启用' : '当前: 禁用'}',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.playlist_add),
-                        onPressed: queue.isNotEmpty
-                            ? () => _showSaveQueueAsPlaylistDialog(
-                                context,
-                                notifier,
-                                queue,
-                              )
-                            : null,
-                        tooltip: '保存当前队列为歌单',
-                      ),
-                      IconButton(
-                        icon: const Icon(Icons.close),
-                        onPressed: () => Navigator.of(context).pop(),
-                        tooltip: '关闭',
-                      ),
-                    ],
                   ),
                 ),
-                const Divider(height: 1),
-
-                // 歌曲列表
-                if (queue.isEmpty)
-                  const Expanded(child: Center(child: Text('当前没有播放任何歌曲')))
-                else
-                  Expanded(
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-
-                      child: SilkyScroll(
-                        controller: scrollController,
-                        silkyScrollDuration: ScrollConfig.duration,
-                        scrollSpeed: ScrollConfig.speed,
-                        animationCurve: ScrollConfig.curve,
-                        builder: (context, controller, physics, _) =>
-                            ListView.builder(
-                              controller: controller,
-                              physics: physics,
-                              itemCount: queue.length,
-                              itemBuilder: (context, index) {
-                                final song = queue[index];
-
-                                // 再次复用 SongTileWidget
-                                return SongTileWidget(
-                                  key: ValueKey(song.filePath),
-                                  song: song,
-                                  index: index,
-                                  enableContextMenu: false, // 禁用右键菜单
-                                  // 传入当前播放的歌单作为上下文
-                                  contextPlaylist:
-                                      playingPlaylist ??
-                                      notifier.allSongsVirtualPlaylist,
-                                  onTap: () {
-                                    // 这里的index正好就是歌曲在队列中的索引
-                                    notifier.playSongFromQueue(index);
-                                  },
-                                );
-                              },
-                            ),
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
+              ),
+          ],
         );
+        final content = SafeArea(child: queueContent);
+        if (widget.transparentBackground) {
+          return Material(
+            color: Colors.transparent,
+            surfaceTintColor: Colors.transparent,
+            shape: RoundedRectangleBorder(
+              borderRadius: const BorderRadius.vertical(
+                top: Radius.circular(28),
+              ),
+              side: BorderSide(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: content,
+          );
+        }
+        return Drawer(width: 400, child: content);
       },
     );
   }

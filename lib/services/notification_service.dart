@@ -117,14 +117,26 @@ class _NoticeCard extends StatelessWidget {
       elevation: 8,
       color: scheme.surfaceContainerHigh,
       margin: const EdgeInsets.only(top: 8),
-      child: ListTile(
-        dense: true,
-        leading: Icon(icon, color: color),
-        title: Text(notice.message),
-        trailing: IconButton(
-          tooltip: '关闭',
-          icon: const Icon(Icons.close),
-          onPressed: context.read<NotificationService>().dismiss,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
+        child: Row(
+          children: [
+            Icon(icon, color: color),
+            const SizedBox(width: 12),
+            Expanded(child: Text(notice.message)),
+            Semantics(
+              button: true,
+              label: '关闭',
+              child: InkResponse(
+                radius: 24,
+                onTap: context.read<NotificationService>().dismiss,
+                child: const Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Icon(Icons.close),
+                ),
+              ),
+            ),
+          ],
         ),
       ),
     );

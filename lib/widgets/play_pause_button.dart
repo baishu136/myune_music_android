@@ -5,6 +5,9 @@ class PlayPauseButton extends StatefulWidget {
   final VoidCallback onPressed;
   final Color color;
   final double size;
+  final Color? backgroundColor;
+  final EdgeInsetsGeometry padding;
+  final String? tooltip;
 
   const PlayPauseButton({
     super.key,
@@ -12,6 +15,9 @@ class PlayPauseButton extends StatefulWidget {
     required this.onPressed,
     required this.color,
     this.size = 36.0,
+    this.backgroundColor,
+    this.padding = const EdgeInsets.all(8),
+    this.tooltip,
   });
 
   @override
@@ -27,7 +33,7 @@ class _PlayPauseButtonState extends State<PlayPauseButton>
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 180),
+      duration: const Duration(milliseconds: 320),
     );
 
     // 根据初始播放状态设置动画控制器的值
@@ -58,14 +64,26 @@ class _PlayPauseButtonState extends State<PlayPauseButton>
 
   @override
   Widget build(BuildContext context) {
-    return IconButton(
+    final button = IconButton(
       iconSize: widget.size,
+      padding: widget.padding,
+      tooltip: widget.tooltip,
       icon: AnimatedIcon(
         icon: AnimatedIcons.play_pause,
-        progress: _controller,
+        progress: CurvedAnimation(
+          parent: _controller,
+          curve: Curves.easeInOutCubic,
+        ),
         color: widget.color,
       ),
       onPressed: widget.onPressed,
+    );
+    if (widget.backgroundColor == null) return button;
+    return Material(
+      color: widget.backgroundColor,
+      shape: const CircleBorder(),
+      clipBehavior: Clip.antiAlias,
+      child: button,
     );
   }
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -52,6 +53,12 @@ class SettingsProvider with ChangeNotifier {
   static const _enableReplayGainKey = 'enableReplayGain';
   static const _enableGaplessPlaybackKey = 'enableGaplessPlayback';
   static const _showAudioAnalysisKey = 'showAudioAnalysis';
+  static const _homeThemeImagePathKey = 'homeThemeImagePath';
+  static const _playbackThemeImagePathKey = 'playbackThemeImagePath';
+  static const _homeThemeImageEnabledKey = 'homeThemeImageEnabled';
+  static const _playbackThemeImageEnabledKey = 'playbackThemeImageEnabled';
+  static const _homeThemeImageDimKey = 'homeThemeImageDim';
+  static const _playbackThemeImageDimKey = 'playbackThemeImageDim';
 
   int _maxLinesPerLyric = 2;
   double _fontSize = defaultLyricFontSize;
@@ -78,6 +85,13 @@ class SettingsProvider with ChangeNotifier {
   bool _enableReplayGain = false;
   bool _enableGaplessPlayback = false; // 默认不启用无缝播放
   bool _showAudioAnalysis = false; // 默认保持播放页底栏简洁
+
+  String? _homeThemeImagePath;
+  String? _playbackThemeImagePath;
+  bool _homeThemeImageEnabled = false;
+  bool _playbackThemeImageEnabled = false;
+  double _homeThemeImageDim = 0.62;
+  double _playbackThemeImageDim = 0.68;
 
   bool _enableGlobalHotkeys = true;
   HotKey? _playPauseHotKey;
@@ -133,6 +147,12 @@ class SettingsProvider with ChangeNotifier {
   bool get enableReplayGain => _enableReplayGain;
   bool get enableGaplessPlayback => _enableGaplessPlayback;
   bool get showAudioAnalysis => _showAudioAnalysis;
+  String? get homeThemeImagePath => _homeThemeImagePath;
+  String? get playbackThemeImagePath => _playbackThemeImagePath;
+  bool get homeThemeImageEnabled => _homeThemeImageEnabled;
+  bool get playbackThemeImageEnabled => _playbackThemeImageEnabled;
+  double get homeThemeImageDim => _homeThemeImageDim;
+  double get playbackThemeImageDim => _playbackThemeImageDim;
 
   bool get enableGlobalHotkeys => _enableGlobalHotkeys;
   HotKey? get playPauseHotKey => _playPauseHotKey;
@@ -188,6 +208,27 @@ class SettingsProvider with ChangeNotifier {
     _enableReplayGain = prefs.getBool(_enableReplayGainKey) ?? false;
     _enableGaplessPlayback = prefs.getBool(_enableGaplessPlaybackKey) ?? false;
     _showAudioAnalysis = prefs.getBool(_showAudioAnalysisKey) ?? false;
+    _homeThemeImagePath = prefs.getString(_homeThemeImagePathKey);
+    _playbackThemeImagePath = prefs.getString(_playbackThemeImagePathKey);
+    _homeThemeImageEnabled = prefs.getBool(_homeThemeImageEnabledKey) ?? false;
+    _playbackThemeImageEnabled =
+        prefs.getBool(_playbackThemeImageEnabledKey) ?? false;
+    final removedNotificationThemePath = prefs.getString(
+      'notificationThemeImagePath',
+    );
+    if (removedNotificationThemePath != null &&
+        removedNotificationThemePath.isNotEmpty) {
+      try {
+        final removedFile = File(removedNotificationThemePath);
+        if (await removedFile.exists()) await removedFile.delete();
+      } catch (_) {
+        // The removed feature must not block settings initialization.
+      }
+    }
+    await prefs.remove('notificationThemeImagePath');
+    await prefs.remove('notificationThemeImageEnabled');
+    _homeThemeImageDim = prefs.getDouble(_homeThemeImageDimKey) ?? 0.62;
+    _playbackThemeImageDim = prefs.getDouble(_playbackThemeImageDimKey) ?? 0.68;
     if (_enableLoudness && _enableReplayGain) {
       _enableReplayGain = false;
       await prefs.setBool(_enableReplayGainKey, false);
@@ -484,6 +525,63 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_showAudioAnalysisKey, value);
+  }
+
+  Future<void> setHomeThemeImage(String? path, {bool? enabled}) async {
+    _homeThemeImagePath = path;
+    _homeThemeImageEnabled = enabled ?? (path != null && path.isNotEmpty);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    if (path == null || path.isEmpty) {
+      await prefs.remove(_homeThemeImagePathKey);
+    } else {
+      await prefs.setString(_homeThemeImagePathKey, path);
+    }
+    await prefs.setBool(_homeThemeImageEnabledKey, _homeThemeImageEnabled);
+  }
+
+  Future<void> setPlaybackThemeImage(String? path, {bool? enabled}) async {
+    _playbackThemeImagePath = path;
+    _playbackThemeImageEnabled = enabled ?? (path != null && path.isNotEmpty);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    if (path == null || path.isEmpty) {
+      await prefs.remove(_playbackThemeImagePathKey);
+    } else {
+      await prefs.setString(_playbackThemeImagePathKey, path);
+    }
+    await prefs.setBool(
+      _playbackThemeImageEnabledKey,
+      _playbackThemeImageEnabled,
+    );
+  }
+
+  Future<void> setHomeThemeImageEnabled(bool value) async {
+    _homeThemeImageEnabled = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_homeThemeImageEnabledKey, value);
+  }
+
+  Future<void> setPlaybackThemeImageEnabled(bool value) async {
+    _playbackThemeImageEnabled = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_playbackThemeImageEnabledKey, value);
+  }
+
+  Future<void> setHomeThemeImageDim(double value) async {
+    _homeThemeImageDim = value.clamp(0.2, 0.9);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_homeThemeImageDimKey, _homeThemeImageDim);
+  }
+
+  Future<void> setPlaybackThemeImageDim(double value) async {
+    _playbackThemeImageDim = value.clamp(0.2, 0.9);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_playbackThemeImageDimKey, _playbackThemeImageDim);
   }
 
   HotKey? _parseHotKey(String? jsonStr, String type) {

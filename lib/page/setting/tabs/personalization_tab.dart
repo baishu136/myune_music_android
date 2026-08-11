@@ -10,6 +10,7 @@ import '../page_visibility_settings.dart';
 import 'info_icon.dart';
 import 'playback_page_tab.dart';
 import 'theme_settings_section.dart';
+import 'custom_theme_settings_section.dart';
 
 class PersonalizationTab extends StatelessWidget {
   const PersonalizationTab({super.key});
@@ -22,6 +23,7 @@ class PersonalizationTab extends StatelessWidget {
       key: const ValueKey('personalization'),
       children: [
         if (Platform.isAndroid) const ThemeSettingsSection(),
+        if (Platform.isAndroid) const CustomThemeSettingsSection(),
         // 系统字体选择器
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),

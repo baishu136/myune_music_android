@@ -232,6 +232,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
   // --- 播放器相关 ---
   final AudioService _audioService = AudioService();
   Player get mediaPlayer => _audioService.player;
+  bool _appExitShutdownStarted = false;
 
   StreamSubscription<bool>? _exclusiveModeSubscription; // 用于管理独占模式的流订阅
   StreamSubscription? _loudnessSubscription; // 用于管理音量响度平衡的流订阅
@@ -850,6 +851,18 @@ class PlaylistContentNotifier extends ChangeNotifier {
     _updateLoudnessSubscription();
   }
 
+  /// Stops playback and tears down Android's foreground media session before
+  /// the activity is explicitly closed from the root back action.
+  Future<void> shutdownForAppExit() async {
+    if (_appExitShutdownStarted) return;
+    _appExitShutdownStarted = true;
+    _cancelPendingTrackChange();
+    _isPlaying = false;
+    PlaybackTracker().pauseTracking();
+    await savePlaybackState();
+    await _audioService.dispose();
+  }
+
   @override
   // --- 播放器相关 ---
   void dispose() {
@@ -878,6 +891,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
       title: song.title,
       artist: song.artist,
       album: song.album,
+      artwork: MediaSessionArtwork.embedded,
       actions: const {
         MediaAction.previous,
         MediaAction.play,

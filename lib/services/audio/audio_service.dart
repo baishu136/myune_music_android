@@ -55,6 +55,7 @@ import 'package:mpv_audio_kit/mpv_audio_kit.dart';
 
 class AudioService {
   final Player _player;
+  bool _disposed = false;
 
   Player get player => _player;
 
@@ -78,8 +79,13 @@ class AudioService {
   }
 
   Future<void> dispose() async {
-    await _player.stop();
-    await _player.dispose();
+    if (_disposed) return;
+    _disposed = true;
+    try {
+      await _player.stop();
+    } finally {
+      await _player.dispose();
+    }
   }
 
   Future<void> playSong(
