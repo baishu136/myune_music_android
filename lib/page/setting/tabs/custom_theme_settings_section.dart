@@ -35,9 +35,52 @@ class CustomThemeSettingsSection extends StatelessWidget {
             style: Theme.of(context).textTheme.bodyMedium,
           ),
           const SizedBox(height: 12),
+          const _AlbumArtFollowCard(),
+          const SizedBox(height: 10),
           const _ThemeImageCard(surface: CustomThemeSurface.home),
           const SizedBox(height: 10),
           const _ThemeImageCard(surface: CustomThemeSurface.playback),
+        ],
+      ),
+    );
+  }
+}
+
+class _AlbumArtFollowCard extends StatelessWidget {
+  const _AlbumArtFollowCard();
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.watch<SettingsProvider>();
+    final scheme = Theme.of(context).colorScheme;
+    return Card(
+      elevation: 0,
+      color: scheme.surfaceContainerLow,
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        children: [
+          ListTile(
+            leading: Icon(Icons.album_outlined, color: scheme.primary),
+            title: const Text('背景风格跟随音乐封面'),
+            subtitle: const Text(
+              '播放歌曲且存在封面时，将封面铺满屏幕并模糊处理；无封面或未选择歌曲时自动使用自定义或默认背景。',
+            ),
+          ),
+          const Divider(height: 1),
+          SwitchListTile.adaptive(
+            secondary: const Icon(Icons.home_outlined),
+            title: const Text('应用到主界面'),
+            subtitle: const Text('同步作用于音乐库、歌单、歌手、专辑和设置页'),
+            value: settings.followAlbumArtOnHome,
+            onChanged: settings.setFollowAlbumArtOnHome,
+          ),
+          SwitchListTile.adaptive(
+            secondary: const Icon(Icons.play_circle_outline),
+            title: const Text('应用到播放页'),
+            subtitle: const Text('作用于封面、歌词和播放控制页面'),
+            value: settings.followAlbumArtOnPlayback,
+            onChanged: settings.setFollowAlbumArtOnPlayback,
+          ),
         ],
       ),
     );
@@ -197,9 +240,13 @@ class _ThemeImageCard extends StatelessWidget {
     );
     if (bytes == null || !context.mounted) return;
     try {
+      final settings = context.read<SettingsProvider>();
+      final previousPath = switch (surface) {
+        CustomThemeSurface.home => settings.homeThemeImagePath,
+        CustomThemeSurface.playback => settings.playbackThemeImagePath,
+      };
       final savedPath = await CustomThemeImageService.save(surface, bytes);
       if (!context.mounted) return;
-      final settings = context.read<SettingsProvider>();
       switch (surface) {
         case CustomThemeSurface.home:
           await settings.setHomeThemeImage(savedPath, enabled: true);
@@ -208,8 +255,12 @@ class _ThemeImageCard extends StatelessWidget {
           await settings.setPlaybackThemeImage(savedPath, enabled: true);
           break;
       }
+      if (previousPath != null && previousPath != savedPath) {
+        await FileImage(File(previousPath)).evict();
+        await CustomThemeImageService.remove(previousPath);
+      }
       if (context.mounted) {
-        context.read<NotificationService>().success('图片主题已应用');
+        context.read<NotificationService>().success('图片主题已立即应用');
       }
     } catch (_) {
       if (context.mounted) {

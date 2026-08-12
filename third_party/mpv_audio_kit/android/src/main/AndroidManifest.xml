@@ -6,6 +6,7 @@
        is mandatory on Android 14+ (API 34) for this service type. -->
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
   <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+  <uses-permission android:name="android.permission.WAKE_LOCK" />
   <!-- Android 13+ (API 33) runtime permission. Media-session notifications
        are exempt from the grant for lock-screen / Bluetooth, but the in-shade
        media player only shows once the consumer app requests it at runtime. -->

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:mpv_audio_kit/mpv_audio_kit.dart';
 
 // class FakePlayerStream implements PlayerStream {
@@ -55,6 +56,7 @@ import 'package:mpv_audio_kit/mpv_audio_kit.dart';
 
 class AudioService {
   final Player _player;
+  late final Future<void> _initialization;
   bool _disposed = false;
 
   Player get player => _player;
@@ -65,22 +67,46 @@ class AudioService {
         // Wait, default autoPlay is false anyway.
         configuration: const PlayerConfiguration(),
       ) {
-    init();
+    _initialization = _initialize();
   }
 
-  Future<void> init() async {
+  Future<void> init() => _initialization;
+
+  Future<void> _initialize() async {
+    // Apply every option independently. One unsupported option must not prevent
+    // the remaining Android stability settings from being installed.
+    await _bestEffort(
+      () => _player.setAudioClientName('Myune music for Android'),
+    );
+    if (Platform.isAndroid) {
+      // Keep enough decoded audio queued to absorb activity switches,
+      // scheduler jitter and short Doze transitions without audible gaps.
+      await _bestEffort(
+        () => _player.setAudioBuffer(const Duration(milliseconds: 500)),
+      );
+    }
+    await _bestEffort(() => _player.setRawProperty('sub-auto', 'no'));
+  }
+
+  Future<void> _bestEffort(Future<void> Function() operation) async {
     try {
-      await _player.setAudioClientName('Myune music for Android');
-      // Disable auto subtitles if possible
-      await _player.setRawProperty('sub-auto', 'no');
-    } catch (e) {
-      //
+      await operation();
+    } catch (_) {
+      // Optional player properties vary between platforms and mpv builds.
+    }
+  }
+
+  Future<void> _ensureReady() async {
+    await _initialization;
+    if (_disposed) {
+      throw StateError('AudioService has already been disposed.');
     }
   }
 
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    await _initialization;
     try {
       await _player.stop();
     } finally {
@@ -97,6 +123,7 @@ class AudioService {
     bool exclusiveMode = false,
     bool play = true,
   }) async {
+    await _ensureReady();
     try {
       await _player.setAudioExclusive(exclusiveMode);
     } catch (e) {
@@ -112,6 +139,7 @@ class AudioService {
 
   // 启用无缝播放模式：设置 Gapless.yes + 开启 prefetch
   Future<void> enableGapless() async {
+    await _ensureReady();
     try {
       await _player.setGapless(Gapless.yes);
       await _player.setPrefetchPlaylist(true);
@@ -122,6 +150,7 @@ class AudioService {
 
   // 关闭无缝播放模式：恢复默认 Gapless.weak + 关闭 prefetch
   Future<void> disableGapless() async {
+    await _ensureReady();
     try {
       await _player.setGapless(Gapless.weak);
       await _player.setPrefetchPlaylist(false);
@@ -141,6 +170,7 @@ class AudioService {
     bool exclusiveMode = false,
     bool play = true,
   }) async {
+    await _ensureReady();
     try {
       await _player.setAudioExclusive(exclusiveMode);
     } catch (e) {
@@ -160,6 +190,7 @@ class AudioService {
 
   // 替换 mpv playlist 中的预备项（index 1）
   Future<void> replaceNext(String? nextPath) async {
+    await _ensureReady();
     try {
       // 先移除旧的预备项（如果有）
       final playlist = _player.state.playlist;
@@ -177,6 +208,7 @@ class AudioService {
 
   // 移除 mpv playlist 中已播完的首项，使当前播放回到 index 0
   Future<void> removeFirst() async {
+    await _ensureReady();
     try {
       await _player.remove(0);
     } catch (e) {
@@ -185,30 +217,37 @@ class AudioService {
   }
 
   Future<void> stop() async {
+    await _ensureReady();
     await _player.stop();
   }
 
   Future<void> pause() async {
+    await _ensureReady();
     await _player.pause();
   }
 
   Future<void> play() async {
+    await _ensureReady();
     await _player.play();
   }
 
   Future<void> seek(Duration position) async {
+    await _ensureReady();
     await _player.seek(position);
   }
 
   Future<void> setVolume(double volume) async {
+    await _ensureReady();
     await _player.setVolume(volume);
   }
 
   Future<void> setPitch(double pitch) async {
+    await _ensureReady();
     await _player.setPitch(pitch);
   }
 
   Future<void> setRate(double rate) async {
+    await _ensureReady();
     await _player.setRate(rate);
   }
 
@@ -220,6 +259,7 @@ class AudioService {
     required List<double> gains,
     required List<int> frequencies,
   }) async {
+    await _ensureReady();
     if (_isEqualizerFlat(gains)) {
       // 只清除均衡器自定义滤镜，保留用户启用的其它音效。
       await _player.updateAudioEffects(

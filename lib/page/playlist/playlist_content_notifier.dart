@@ -61,7 +61,8 @@ class EqualizerPreset {
   const EqualizerPreset(this.name, this.gains);
 }
 
-class PlaylistContentNotifier extends ChangeNotifier {
+class PlaylistContentNotifier extends ChangeNotifier
+    with WidgetsBindingObserver {
   // --- 播放列表相关 ---
   final PlaylistManager _playlistManager = PlaylistManager();
   final SettingsProvider _settingsProvider;
@@ -233,6 +234,8 @@ class PlaylistContentNotifier extends ChangeNotifier {
   final AudioService _audioService = AudioService();
   Player get mediaPlayer => _audioService.player;
   bool _appExitShutdownStarted = false;
+  StreamSubscription<Duration>? _positionSubscription;
+  bool _isAppForeground = true;
 
   StreamSubscription<bool>? _exclusiveModeSubscription; // 用于管理独占模式的流订阅
   StreamSubscription? _loudnessSubscription; // 用于管理音量响度平衡的流订阅
@@ -245,6 +248,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
   // 选择可以真正打开文件。
   bool _playbackIntent = false;
   int _playbackRequestRevision = 0;
+  int _transportCommandRevision = 0;
   int? _activeTrackChangeRevision;
 
   int _currentSongIndex = -1; // 当前播放歌曲的索引（在当前歌单中）
@@ -464,6 +468,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
   static const Duration _audioDeviceErrorInterval = Duration(seconds: 5);
 
   PlaylistContentNotifier(this._settingsProvider, this._themeProvider) {
+    WidgetsBinding.instance.addObserver(this);
     _setupMediaPlayerListeners(); // 设置 media-kit 的监听器
     _initLogFile();
     _loadAllData(); // 使用一个统一的方法来加载所有数据
@@ -866,6 +871,8 @@ class PlaylistContentNotifier extends ChangeNotifier {
   @override
   // --- 播放器相关 ---
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _positionSubscription?.cancel();
     _lyricLineIndexController.close();
     _errorStreamController.close();
     _exclusiveModeSubscription?.cancel(); // 取消独占模式订阅
@@ -907,8 +914,46 @@ class PlaylistContentNotifier extends ChangeNotifier {
     );
   }
 
+  void _listenToPositionUpdates() {
+    _positionSubscription?.cancel();
+    _positionSubscription = null;
+    if (!_isAppForeground) return;
+
+    _positionSubscription = _audioService.player.stream.position.listen((
+      position,
+    ) {
+      _currentPosition = position;
+      updateLyricLine(position);
+      notifyListeners();
+    });
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final isForeground = state == AppLifecycleState.resumed;
+    if (_isAppForeground == isForeground) return;
+
+    _isAppForeground = isForeground;
+    if (isForeground) {
+      _currentPosition = _audioService.player.state.position;
+      updateLyricLine(_currentPosition);
+      _listenToPositionUpdates();
+      notifyListeners();
+      return;
+    }
+
+    // Background playback belongs to the native media session. Stop only the
+    // high-frequency UI position listener so app switching cannot compete with
+    // the audio output thread; playback itself is deliberately left untouched.
+    _positionSubscription?.cancel();
+    _positionSubscription = null;
+    _currentPosition = _audioService.player.state.position;
+  }
+
   void _setupMediaPlayerListeners() {
-    _audioService.player.stream.playing.listen((playing) {
+    // `playing` briefly becomes false while seeking or buffering. The stable
+    // playWhenReady signal matches the user's requested transport state.
+    _audioService.player.stream.playWhenReady.distinct().listen((playing) {
       _isPlaying = playing; // 更新内部状态
       notifyListeners();
     });
@@ -932,11 +977,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
       }
     });
 
-    _audioService.player.stream.position.listen((position) {
-      _currentPosition = position; // 更新当前位置
-      updateLyricLine(position);
-      notifyListeners();
-    });
+    _listenToPositionUpdates();
 
     _audioService.player.stream.duration.listen((duration) {
       _totalDuration = duration; // 更新总时长
@@ -997,10 +1038,9 @@ class PlaylistContentNotifier extends ChangeNotifier {
         return;
       }
 
-      final shouldNotifyUI =
-          !(_settingsProvider.ignorePlaybackErrors &&
-              (errorString.contains('Error decoding audio') ||
-                  errorString.contains('Failed to recognize file format')));
+      // “忽略错误警告”只控制面向用户的播放错误提示。错误仍会写入日志，
+      // 上方的设备回退等恢复逻辑也仍然执行，避免隐藏警告影响播放器状态。
+      final shouldNotifyUI = !_settingsProvider.ignorePlaybackErrors;
 
       if (_currentSong != null) {
         final errorMessage =
@@ -1013,7 +1053,9 @@ class PlaylistContentNotifier extends ChangeNotifier {
         debugPrint('播放${p.basename(_currentSong!.filePath)}出错: $error');
       } else {
         final errorMessage = '播放出错: $error';
-        _errorStreamController.add(errorMessage);
+        if (shouldNotifyUI) {
+          _errorStreamController.add(errorMessage);
+        }
         // 记录详细错误信息到日志文件
         _writeErrorToLog(errorMessage, error);
       }
@@ -2459,6 +2501,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
   // --- 播放控制 ---
   Future<void> play() async {
+    final commandRevision = ++_transportCommandRevision;
     _playbackIntent = true;
     // 新曲正在加载时只记录播放意图，避免短暂恢复旧曲。加载完成后会
     // 根据该意图启动最终选中的歌曲。
@@ -2472,6 +2515,9 @@ class PlaylistContentNotifier extends ChangeNotifier {
     }
     // 无论 playing 流当前值如何都下发播放命令；该流在缓冲时可能为 false。
     await _audioService.play();
+    if (commandRevision != _transportCommandRevision || !_playbackIntent) {
+      return;
+    }
     _isPlaying = true;
     PlaybackTracker().resumeTracking();
 
@@ -2479,9 +2525,11 @@ class PlaylistContentNotifier extends ChangeNotifier {
   }
 
   Future<void> pause() async {
+    final commandRevision = ++_transportCommandRevision;
     _setPlaybackPaused();
     // 即使 UI 状态已是暂停也必须下发命令，以覆盖正在进行的播放命令。
     await _audioService.pause();
+    if (commandRevision != _transportCommandRevision) return;
     _isPlaying = false;
     PlaybackTracker().pauseTracking();
 
@@ -2516,6 +2564,7 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
   void _cancelPendingTrackChange() {
     _playbackIntent = false;
+    _transportCommandRevision++;
     _playbackRequestRevision++;
     _activeTrackChangeRevision = null;
   }
@@ -3567,8 +3616,26 @@ class PlaylistContentNotifier extends ChangeNotifier {
 
       notifyListeners();
     } catch (e) {
-      // 捕获所有播放相关的异常
-      // _errorStreamController.add('无法播放${p.basename(songFilePath)}，可能文件已经损坏');
+      if (_isPlaybackRequestCurrent(requestRevision)) {
+        // Converge to one unambiguous paused state after a decoder or output
+        // failure. This prevents a late command for the previous song from
+        // continuing underneath a failed new-song request.
+        _playbackIntent = false;
+        _isPlaying = false;
+        PlaybackTracker().pauseTracking();
+        try {
+          await _audioService.pause();
+        } catch (_) {
+          // The native player may already be tearing down after the failure.
+        }
+
+        final errorMessage = '无法播放 ${p.basename(songFilePath)}，请检查文件或音频输出设备。';
+        if (!_settingsProvider.ignorePlaybackErrors) {
+          _errorStreamController.add(errorMessage);
+        }
+        _writeErrorToLog(errorMessage, e);
+        notifyListeners();
+      }
     } finally {
       if (_activeTrackChangeRevision == requestRevision) {
         _activeTrackChangeRevision = null;

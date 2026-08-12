@@ -26,12 +26,19 @@ import '../services/notification_service.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/custom_theme_background.dart';
 
-bool _hasPlaybackTheme(SettingsProvider settings) {
+bool _hasCustomPlaybackTheme(SettingsProvider settings) {
   final path = settings.playbackThemeImagePath;
   return settings.playbackThemeImageEnabled &&
       path != null &&
       File(path).existsSync();
 }
+
+bool _hasUsableAlbumArt(Song? song) =>
+    song?.albumArt != null && song!.albumArt!.isNotEmpty;
+
+bool _hasPlaybackTheme(SettingsProvider settings, {Song? song}) =>
+    _hasCustomPlaybackTheme(settings) ||
+    (settings.followAlbumArtOnPlayback && _hasUsableAlbumArt(song));
 
 /// Touch-first Android presentation. The desktop pages and their data model stay
 /// intact; this shell only changes navigation density and common actions.
@@ -123,10 +130,15 @@ class _MobileShellState extends State<MobileShell> {
     final selecting = _tab == 0 && _librarySelectionMode;
     final screen = MediaQuery.sizeOf(context);
     final isTablet = screen.shortestSide >= 600;
-    final useHomeTheme =
+    final useCustomHomeTheme =
         settings.homeThemeImageEnabled &&
         settings.homeThemeImagePath != null &&
         File(settings.homeThemeImagePath!).existsSync();
+    final currentAlbumArt = notifier.currentSong?.albumArt;
+    final useAlbumArtOnHome =
+        settings.followAlbumArtOnHome &&
+        _hasUsableAlbumArt(notifier.currentSong);
+    final useHomeTheme = useCustomHomeTheme || useAlbumArtOnHome;
     final page = switch (_tab) {
       0 => _LibraryTab(
         query: _query,
@@ -382,8 +394,11 @@ class _MobileShellState extends State<MobileShell> {
       },
       child: CustomThemeBackground(
         path: settings.homeThemeImagePath,
-        enabled: useHomeTheme,
+        enabled: useCustomHomeTheme,
         dim: settings.homeThemeImageDim,
+        coverBytes: currentAlbumArt,
+        coverEnabled: useAlbumArtOnHome,
+        coverDim: 0.56,
         child: scaffold,
       ),
     );
@@ -1337,6 +1352,15 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   bool _isDraggingSeek = false;
   int _seekSessionId = 0;
   Timer? _seekSettleTimer;
+  Timer? _edgeSeekTimer;
+  Stopwatch? _edgeSeekStopwatch;
+  double _edgeSeekOriginMs = 0;
+  double _edgeSeekTargetMs = 0;
+  int _edgeSeekDirection = 0;
+  bool _edgeSeekWasPlaying = false;
+  double _edgeSeekBaseRate = 1;
+  double _edgeSeekEffectiveRate = 2;
+  Future<void>? _edgePlaybackSetup;
   String? _lastSongPath;
   final Map<int, Offset> _lyricPointers = {};
   double? _lyricPinchStartDistance;
@@ -1345,7 +1369,115 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   @override
   void dispose() {
     _seekSettleTimer?.cancel();
+    _edgeSeekTimer?.cancel();
+    _edgeSeekStopwatch?.stop();
     super.dispose();
+  }
+
+  void _startEdgeSeek(int direction, PlaylistContentNotifier notifier) {
+    final totalMs = notifier.totalDuration.inMilliseconds.toDouble();
+    if (totalMs <= 0 || direction == 0) return;
+
+    _edgeSeekTimer?.cancel();
+    _edgeSeekStopwatch?.stop();
+    _seekSettleTimer?.cancel();
+    _seekSessionId++;
+    _edgeSeekDirection = direction.sign;
+    _edgeSeekWasPlaying = notifier.isPlaying;
+    _edgeSeekBaseRate = notifier.currentPlaybackRate;
+    _edgeSeekEffectiveRate = _edgeSeekBaseRate * 2;
+    _edgeSeekOriginMs = notifier.currentPosition.inMilliseconds
+        .toDouble()
+        .clamp(0, totalMs)
+        .toDouble();
+    _edgeSeekTargetMs = _edgeSeekOriginMs;
+    _edgeSeekStopwatch = Stopwatch()..start();
+    setState(() {
+      _isDraggingSeek = false;
+      _seekPositionMs = _edgeSeekTargetMs;
+    });
+    unawaited(HapticFeedback.mediumImpact());
+    _edgePlaybackSetup = _startEdgePlayback(notifier);
+    _tickEdgeSeek(notifier);
+    _edgeSeekTimer = Timer.periodic(
+      const Duration(milliseconds: 50),
+      (_) => _tickEdgeSeek(notifier),
+    );
+  }
+
+  Future<void> _startEdgePlayback(PlaylistContentNotifier notifier) async {
+    // A paused track remains paused and is seeked once on release. When the
+    // track is playing, mpv performs the accelerated playback itself so the
+    // user hears the scan instead of seeing only a moving progress preview.
+    if (!_edgeSeekWasPlaying || _edgeSeekDirection == 0) return;
+    final direction = _edgeSeekDirection < 0 ? 'backward' : 'forward';
+    final effectiveRate = _edgeSeekEffectiveRate;
+    await notifier.mediaPlayer.setRawProperty('play-direction', direction);
+    await notifier.mediaPlayer.setRate(effectiveRate);
+    await notifier.play();
+  }
+
+  void _tickEdgeSeek(PlaylistContentNotifier notifier) {
+    if (!mounted || _edgeSeekDirection == 0) return;
+    final totalMs = notifier.totalDuration.inMilliseconds.toDouble();
+    if (totalMs <= 0) return;
+
+    final elapsedMs = _edgeSeekStopwatch?.elapsedMilliseconds ?? 0;
+    final targetMs =
+        (_edgeSeekOriginMs +
+                (_edgeSeekDirection * elapsedMs * _edgeSeekEffectiveRate))
+            .clamp(0, totalMs)
+            .toDouble();
+    if ((targetMs - _edgeSeekTargetMs).abs() < 40) return;
+    _edgeSeekTargetMs = targetMs;
+    setState(() => _seekPositionMs = targetMs);
+
+    if (targetMs <= 0 || targetMs >= totalMs) {
+      _edgeSeekTimer?.cancel();
+    }
+  }
+
+  Future<void> _stopEdgeSeek(PlaylistContentNotifier notifier) async {
+    if (_edgeSeekDirection == 0) return;
+    final sessionId = _seekSessionId;
+    _edgeSeekTimer?.cancel();
+    _edgeSeekStopwatch?.stop();
+    _tickEdgeSeek(notifier);
+    final targetMs = _edgeSeekTargetMs;
+    final shouldResume = _edgeSeekWasPlaying;
+    final baseRate = _edgeSeekBaseRate;
+    final setup = _edgePlaybackSetup;
+    _edgeSeekDirection = 0;
+    _edgeSeekWasPlaying = false;
+    _edgePlaybackSetup = null;
+    if (mounted) setState(() => _seekPositionMs = targetMs);
+
+    if (!mounted || sessionId != _seekSessionId) return;
+    try {
+      await setup;
+    } catch (_) {
+      // The final seek below remains available as a safe fallback on files
+      // whose codec does not support mpv's reverse playback path.
+    }
+    if (!mounted || sessionId != _seekSessionId) return;
+    try {
+      await notifier.mediaPlayer.setRawProperty('play-direction', 'forward');
+      await notifier.mediaPlayer.setRate(baseRate);
+    } catch (_) {
+      // Even if direction control is unavailable, restore the user's rate and
+      // still commit the calculated position below.
+      await notifier.mediaPlayer.setRate(baseRate);
+    }
+    if (!mounted || sessionId != _seekSessionId) return;
+    await notifier.mediaPlayer.seek(Duration(milliseconds: targetMs.round()));
+    if (!mounted || sessionId != _seekSessionId) return;
+    // 某些 Android 音频后端在 seek 后会把 playWhenReady 留在暂停态。
+    // 操作前正在播放时显式重发播放命令；原本暂停则不改变状态。
+    if (shouldResume) {
+      await notifier.play();
+      if (!mounted || sessionId != _seekSessionId) return;
+    }
+    _waitForSeekPosition(notifier, sessionId, targetMs);
   }
 
   void _beginSeek(double value) {
@@ -1402,6 +1534,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   void _resetSeekTracking() {
     _seekSessionId++;
     _seekSettleTimer?.cancel();
+    _edgeSeekTimer?.cancel();
+    _edgeSeekStopwatch?.stop();
+    _edgeSeekDirection = 0;
+    _edgeSeekWasPlaying = false;
+    _edgePlaybackSetup = null;
     _isDraggingSeek = false;
     _seekPositionMs = null;
   }
@@ -1412,7 +1549,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     final settings = context.watch<SettingsProvider>();
     final lyricFontFamily = context.watch<ThemeProvider>().currentFontFamily;
     final song = notifier.currentSong;
-    final usePlaybackTheme = _hasPlaybackTheme(settings);
+    final useCustomPlaybackTheme = _hasCustomPlaybackTheme(settings);
+    final useAlbumArtOnPlayback =
+        settings.followAlbumArtOnPlayback && _hasUsableAlbumArt(song);
+    final usePlaybackTheme = useCustomPlaybackTheme || useAlbumArtOnPlayback;
     if (song == null) {
       return const Scaffold(body: Center(child: Text('尚未播放歌曲')));
     }
@@ -1544,8 +1684,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     );
     return CustomThemeBackground(
       path: settings.playbackThemeImagePath,
-      enabled: usePlaybackTheme,
+      enabled: useCustomPlaybackTheme,
       dim: settings.playbackThemeImageDim,
+      coverBytes: song.albumArt,
+      coverEnabled: useAlbumArtOnPlayback,
+      coverDim: 0.52,
       child: scaffold,
     );
   }
@@ -1562,9 +1705,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: () => setState(() => _showLyrics = !_showLyrics),
-      onLongPress: _showLyrics
-          ? () => _showLyricsFontSizeSheet(context, settings)
-          : null,
       child: Listener(
         onPointerDown: _showLyrics ? _onLyricPointerDown : null,
         onPointerMove: _showLyrics ? _onLyricPointerMove : null,
@@ -1574,59 +1714,158 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
         onPointerCancel: _showLyrics
             ? (event) => _onLyricPointerEnd(event, settings)
             : null,
-        child: AnimatedSwitcher(
-          duration: const Duration(milliseconds: 220),
-          child: _showLyrics
-              ? Card(
-                  key: const ValueKey('lyrics'),
-                  clipBehavior: Clip.antiAlias,
-                  elevation: usePlaybackTheme ? 0 : null,
-                  color: usePlaybackTheme ? Colors.transparent : null,
-                  surfaceTintColor: usePlaybackTheme
-                      ? Colors.transparent
-                      : null,
-                  child: usePlaybackTheme
-                      ? ShaderMask(
-                          blendMode: BlendMode.dstIn,
-                          shaderCallback: (bounds) => const LinearGradient(
-                            begin: Alignment.topCenter,
-                            end: Alignment.bottomCenter,
-                            colors: [
-                              Colors.transparent,
-                              Colors.black,
-                              Colors.black,
-                              Colors.transparent,
-                            ],
-                            stops: [0, .09, .91, 1],
-                          ).createShader(bounds),
-                          child: MobileLyricsList(
-                            lines: notifier.currentLyrics,
-                            active: notifier.currentLyricLineIndex,
-                            fontSize: settings.fontSize,
-                            fontFamily: lyricFontFamily,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            AnimatedSwitcher(
+              duration: const Duration(milliseconds: 220),
+              child: _showLyrics
+                  ? Card(
+                      key: const ValueKey('lyrics'),
+                      clipBehavior: Clip.antiAlias,
+                      elevation: usePlaybackTheme ? 0 : null,
+                      color: usePlaybackTheme ? Colors.transparent : null,
+                      surfaceTintColor: usePlaybackTheme
+                          ? Colors.transparent
+                          : null,
+                      child: usePlaybackTheme
+                          ? ShaderMask(
+                              blendMode: BlendMode.dstIn,
+                              shaderCallback: (bounds) => const LinearGradient(
+                                begin: Alignment.topCenter,
+                                end: Alignment.bottomCenter,
+                                colors: [
+                                  Colors.transparent,
+                                  Colors.black,
+                                  Colors.black,
+                                  Colors.transparent,
+                                ],
+                                stops: [0, .09, .91, 1],
+                              ).createShader(bounds),
+                              child: MobileLyricsList(
+                                lines: notifier.currentLyrics,
+                                active: notifier.currentLyricLineIndex,
+                                fontSize: settings.fontSize,
+                                fontFamily: lyricFontFamily,
+                              ),
+                            )
+                          : MobileLyricsList(
+                              lines: notifier.currentLyrics,
+                              active: notifier.currentLyricLineIndex,
+                              fontSize: settings.fontSize,
+                              fontFamily: lyricFontFamily,
+                            ),
+                    )
+                  : LayoutBuilder(
+                      key: const ValueKey('cover'),
+                      builder: (context, constraints) {
+                        final size = constraints.biggest.shortestSide
+                            .clamp(180.0, maxCoverSize)
+                            .toDouble();
+                        return Center(
+                          child: Hero(
+                            tag: song.filePath,
+                            child: _Cover(song: song, size: size),
                           ),
-                        )
-                      : MobileLyricsList(
-                          lines: notifier.currentLyrics,
-                          active: notifier.currentLyricLineIndex,
-                          fontSize: settings.fontSize,
-                          fontFamily: lyricFontFamily,
+                        );
+                      },
+                    ),
+            ),
+            if (_showLyrics)
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  final edgeWidth = (constraints.maxWidth * .16)
+                      .clamp(58.0, 108.0)
+                      .toDouble();
+                  return Stack(
+                    children: [
+                      Positioned(
+                        top: 0,
+                        bottom: 0,
+                        left: edgeWidth,
+                        right: edgeWidth,
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.translucent,
+                          onLongPress: () =>
+                              _showLyricsFontSizeSheet(context, settings),
                         ),
-                )
-              : LayoutBuilder(
-                  key: const ValueKey('cover'),
-                  builder: (context, constraints) {
-                    final size = constraints.biggest.shortestSide
-                        .clamp(180.0, maxCoverSize)
-                        .toDouble();
-                    return Center(
-                      child: Hero(
-                        tag: song.filePath,
-                        child: _Cover(song: song, size: size),
                       ),
-                    );
-                  },
-                ),
+                      _buildLyricsEdgeSeekZone(
+                        context,
+                        notifier: notifier,
+                        direction: -1,
+                        width: edgeWidth,
+                      ),
+                      _buildLyricsEdgeSeekZone(
+                        context,
+                        notifier: notifier,
+                        direction: 1,
+                        width: edgeWidth,
+                      ),
+                    ],
+                  );
+                },
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLyricsEdgeSeekZone(
+    BuildContext context, {
+    required PlaylistContentNotifier notifier,
+    required int direction,
+    required double width,
+  }) {
+    final isActive = _edgeSeekDirection == direction;
+    final colorScheme = Theme.of(context).colorScheme;
+    return Positioned(
+      top: 0,
+      bottom: 0,
+      left: direction < 0 ? 0 : null,
+      right: direction > 0 ? 0 : null,
+      width: width,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onLongPressStart: (_) => _startEdgeSeek(direction, notifier),
+        onLongPressEnd: (_) => unawaited(_stopEdgeSeek(notifier)),
+        onLongPressCancel: () => unawaited(_stopEdgeSeek(notifier)),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 140),
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(
+            color: isActive
+                ? colorScheme.primaryContainer.withValues(alpha: .34)
+                : Colors.transparent,
+            borderRadius: BorderRadius.horizontal(
+              left: direction > 0 ? const Radius.circular(24) : Radius.zero,
+              right: direction < 0 ? const Radius.circular(24) : Radius.zero,
+            ),
+          ),
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 120),
+            opacity: isActive ? 1 : 0,
+            child: Center(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    direction < 0 ? Icons.fast_rewind : Icons.fast_forward,
+                    color: colorScheme.onPrimaryContainer,
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    '${(notifier.currentPlaybackRate * 2).toStringAsFixed(2)}×',
+                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                      color: colorScheme.onPrimaryContainer,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -1956,6 +2195,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   void _showQueue(BuildContext context) {
     final usePlaybackTheme = _hasPlaybackTheme(
       context.read<SettingsProvider>(),
+      song: context.read<PlaylistContentNotifier>().currentSong,
     );
     showModalBottomSheet<void>(
       context: context,
@@ -1981,6 +2221,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   ) {
     final usePlaybackTheme = _hasPlaybackTheme(
       context.read<SettingsProvider>(),
+      song: notifier.currentSong,
     );
     var pitch = notifier.currentPitch;
     var playbackRate = notifier.currentPlaybackRate;
@@ -2109,6 +2350,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   void _showLyricSource(BuildContext context) {
     final usePlaybackTheme = _hasPlaybackTheme(
       context.read<SettingsProvider>(),
+      song: context.read<PlaylistContentNotifier>().currentSong,
     );
     showModalBottomSheet<void>(
       context: context,
@@ -2174,6 +2416,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   void _showAudioEffects(BuildContext context) {
     final usePlaybackTheme = _hasPlaybackTheme(
       context.read<SettingsProvider>(),
+      song: context.read<PlaylistContentNotifier>().currentSong,
     );
     showModalBottomSheet<void>(
       context: context,
@@ -2258,6 +2501,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     );
     final usePlaybackTheme = _hasPlaybackTheme(
       context.read<SettingsProvider>(),
+      song: song,
     );
 
     showModalBottomSheet<void>(

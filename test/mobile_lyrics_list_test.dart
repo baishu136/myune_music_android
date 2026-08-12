@@ -69,6 +69,32 @@ void main() {
     expect(inactiveStyle.style.fontSize, closeTo(21.84, 0.001));
   });
 
+  testWidgets('keeps the active lyric centered while font size changes', (
+    tester,
+  ) async {
+    final hostKey = GlobalKey<_LyricsHostState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(height: 220, child: _LyricsHost(key: hostKey)),
+        ),
+      ),
+    );
+    hostKey.currentState!.setActive(25);
+    await tester.pumpAndSettle();
+
+    hostKey.currentState!.setFontSize(32);
+    await tester.pumpAndSettle();
+    final enlarged = find.byKey(const ValueKey('mobile_lyric_25'));
+    expect(tester.getCenter(enlarged).dy, closeTo(110, 18));
+
+    hostKey.currentState!.setFontSize(12);
+    await tester.pumpAndSettle();
+    final reduced = find.byKey(const ValueKey('mobile_lyric_25'));
+    expect(tester.getCenter(reduced).dy, closeTo(110, 18));
+  });
+
   testWidgets('applies the selected font family to lyrics', (tester) async {
     final lines = [
       LyricLine(timestamp: Duration.zero, texts: const ['自定义字体歌词']),
@@ -107,6 +133,7 @@ class _LyricsHost extends StatefulWidget {
 
 class _LyricsHostState extends State<_LyricsHost> {
   int active = 0;
+  double fontSize = 20;
   final lines = List.generate(
     50,
     (index) => LyricLine(
@@ -117,7 +144,9 @@ class _LyricsHostState extends State<_LyricsHost> {
 
   void setActive(int value) => setState(() => active = value);
 
+  void setFontSize(double value) => setState(() => fontSize = value);
+
   @override
   Widget build(BuildContext context) =>
-      MobileLyricsList(lines: lines, active: active);
+      MobileLyricsList(lines: lines, active: active, fontSize: fontSize);
 }

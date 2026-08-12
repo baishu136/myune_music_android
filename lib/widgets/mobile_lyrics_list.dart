@@ -24,6 +24,8 @@ class MobileLyricsList extends StatefulWidget {
 class _MobileLyricsListState extends State<MobileLyricsList> {
   final ItemScrollController _scrollController = ItemScrollController();
   double _viewportHeight = 0;
+  int _centerRequestId = 0;
+  int _resizeRequestId = 0;
 
   @override
   void initState() {
@@ -34,15 +36,24 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
   @override
   void didUpdateWidget(covariant MobileLyricsList oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.active != widget.active || oldWidget.lines != widget.lines) {
-      _scrollToActive(jump: oldWidget.lines != widget.lines);
+    final linesChanged = oldWidget.lines != widget.lines;
+    final fontSizeChanged =
+        (oldWidget.fontSize - widget.fontSize).abs() >= 0.01;
+    if (oldWidget.active != widget.active || linesChanged || fontSizeChanged) {
+      _scrollToActive(jump: linesChanged || fontSizeChanged);
+      if (fontSizeChanged) _keepActiveCenteredDuringResize();
     }
   }
 
   void _scrollToActive({required bool jump}) {
     if (widget.active < 0 || widget.active >= widget.lines.length) return;
+    final requestId = ++_centerRequestId;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scrollController.isAttached) return;
+      if (!mounted ||
+          requestId != _centerRequestId ||
+          !_scrollController.isAttached) {
+        return;
+      }
       final alignment = _activeAlignment;
       if (jump) {
         _scrollController.jumpTo(index: widget.active, alignment: alignment);
@@ -55,6 +66,16 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
         );
       }
     });
+  }
+
+  void _keepActiveCenteredDuringResize() {
+    final resizeRequestId = ++_resizeRequestId;
+    for (final delay in const [80, 160, 240]) {
+      Future<void>.delayed(Duration(milliseconds: delay), () {
+        if (!mounted || resizeRequestId != _resizeRequestId) return;
+        _scrollToActive(jump: true);
+      });
+    }
   }
 
   double get _activeAlignment {
@@ -76,7 +97,10 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
       ? const Center(child: Text('暂无歌词'))
       : LayoutBuilder(
           builder: (context, constraints) {
+            final viewportChanged =
+                (_viewportHeight - constraints.maxHeight).abs() >= 0.5;
             _viewportHeight = constraints.maxHeight;
+            if (viewportChanged) _scrollToActive(jump: true);
             final edgePadding = (_viewportHeight / 2 - widget.fontSize).clamp(
               0.0,
               double.infinity,
@@ -105,7 +129,7 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
                     vertical: 5,
                   ),
                   child: AnimatedDefaultTextStyle(
-                    duration: const Duration(milliseconds: 260),
+                    duration: const Duration(milliseconds: 200),
                     curve: Curves.easeOutCubic,
                     style: style,
                     textAlign: TextAlign.center,

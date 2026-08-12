@@ -17,8 +17,9 @@ class CustomThemeImageService {
       '${support.path}${Platform.pathSeparator}themes',
     );
     await directory.create(recursive: true);
+    final revision = DateTime.now().microsecondsSinceEpoch;
     final file = File(
-      '${directory.path}${Platform.pathSeparator}${surface.name}.png',
+      '${directory.path}${Platform.pathSeparator}${surface.name}_$revision.png',
     );
     await file.writeAsBytes(pngBytes, flush: true);
     return file.path;

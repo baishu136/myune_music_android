@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../settings_provider.dart';
-import 'info_icon.dart';
 
 class PlaybackPageTab extends StatelessWidget {
   const PlaybackPageTab({super.key});
@@ -33,20 +32,6 @@ List<Widget> playbackPageSettingTiles(BuildContext context) {
       value: settings.addLyricPadding,
       onChanged: (value) {
         context.read<SettingsProvider>().setAddLyricPadding(value);
-      },
-    ),
-    // 启用歌词弹性滚动
-    SwitchListTile(
-      title: const Row(
-        children: [
-          Text('歌词弹性滚动'),
-          SizedBox(width: 4),
-          InfoIcon('启用后歌词切换会使用更自然的弹性跟随动画'),
-        ],
-      ),
-      value: settings.enableLyricElasticScroll,
-      onChanged: (value) {
-        context.read<SettingsProvider>().setEnableLyricElasticScroll(value);
       },
     ),
   ];

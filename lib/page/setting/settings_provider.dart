@@ -48,7 +48,6 @@ class SettingsProvider with ChangeNotifier {
   static const _autoAdjustLyricLayoutKey =
       'autoAdjustLyricLayout'; // 自动调节歌词字体与间距设置的 key
 
-  static const _enableLyricElasticScrollKey = 'enableLyricElasticScroll';
   static const _enableLoudnessKey = 'enableLoudness';
   static const _enableReplayGainKey = 'enableReplayGain';
   static const _enableGaplessPlaybackKey = 'enableGaplessPlayback';
@@ -59,6 +58,8 @@ class SettingsProvider with ChangeNotifier {
   static const _playbackThemeImageEnabledKey = 'playbackThemeImageEnabled';
   static const _homeThemeImageDimKey = 'homeThemeImageDim';
   static const _playbackThemeImageDimKey = 'playbackThemeImageDim';
+  static const _followAlbumArtOnHomeKey = 'followAlbumArtOnHome';
+  static const _followAlbumArtOnPlaybackKey = 'followAlbumArtOnPlayback';
 
   int _maxLinesPerLyric = 2;
   double _fontSize = defaultLyricFontSize;
@@ -80,7 +81,6 @@ class SettingsProvider with ChangeNotifier {
   bool _ignorePlaybackErrors = false; // 默认不忽略播放错误
   bool _preferExternalLyrics = false; // 默认不优先读取外置LRC歌词
   bool _autoAdjustLyricLayout = false; // 默认不自动调节歌词布局
-  bool _enableLyricElasticScroll = false;
   bool _enableLoudness = false;
   bool _enableReplayGain = false;
   bool _enableGaplessPlayback = false; // 默认不启用无缝播放
@@ -92,6 +92,8 @@ class SettingsProvider with ChangeNotifier {
   bool _playbackThemeImageEnabled = false;
   double _homeThemeImageDim = 0.62;
   double _playbackThemeImageDim = 0.68;
+  bool _followAlbumArtOnHome = false;
+  bool _followAlbumArtOnPlayback = false;
 
   bool _enableGlobalHotkeys = true;
   HotKey? _playPauseHotKey;
@@ -142,7 +144,9 @@ class SettingsProvider with ChangeNotifier {
 
   bool get preferExternalLyrics => _preferExternalLyrics; // 获取优先读取外置LRC歌词设置
   bool get autoAdjustLyricLayout => _autoAdjustLyricLayout; // 获取是否自动调节歌词布局
-  bool get enableLyricElasticScroll => _enableLyricElasticScroll;
+  // Retained for the legacy desktop lyric widget; Android no longer exposes
+  // or enables the experimental elastic scrolling implementation.
+  bool get enableLyricElasticScroll => false;
   bool get enableLoudness => _enableLoudness;
   bool get enableReplayGain => _enableReplayGain;
   bool get enableGaplessPlayback => _enableGaplessPlayback;
@@ -153,6 +157,8 @@ class SettingsProvider with ChangeNotifier {
   bool get playbackThemeImageEnabled => _playbackThemeImageEnabled;
   double get homeThemeImageDim => _homeThemeImageDim;
   double get playbackThemeImageDim => _playbackThemeImageDim;
+  bool get followAlbumArtOnHome => _followAlbumArtOnHome;
+  bool get followAlbumArtOnPlayback => _followAlbumArtOnPlayback;
 
   bool get enableGlobalHotkeys => _enableGlobalHotkeys;
   HotKey? get playPauseHotKey => _playPauseHotKey;
@@ -202,8 +208,7 @@ class SettingsProvider with ChangeNotifier {
     await prefs.remove(_enableLyricBlurKey);
     await prefs.remove(_enableDynamicBackgroundKey);
     await prefs.remove(_autoAdjustLyricLayoutKey);
-    _enableLyricElasticScroll =
-        prefs.getBool(_enableLyricElasticScrollKey) ?? false;
+    await prefs.remove('enableLyricElasticScroll');
     _enableLoudness = prefs.getBool(_enableLoudnessKey) ?? false;
     _enableReplayGain = prefs.getBool(_enableReplayGainKey) ?? false;
     _enableGaplessPlayback = prefs.getBool(_enableGaplessPlaybackKey) ?? false;
@@ -229,6 +234,9 @@ class SettingsProvider with ChangeNotifier {
     await prefs.remove('notificationThemeImageEnabled');
     _homeThemeImageDim = prefs.getDouble(_homeThemeImageDimKey) ?? 0.62;
     _playbackThemeImageDim = prefs.getDouble(_playbackThemeImageDimKey) ?? 0.68;
+    _followAlbumArtOnHome = prefs.getBool(_followAlbumArtOnHomeKey) ?? false;
+    _followAlbumArtOnPlayback =
+        prefs.getBool(_followAlbumArtOnPlaybackKey) ?? false;
     if (_enableLoudness && _enableReplayGain) {
       _enableReplayGain = false;
       await prefs.setBool(_enableReplayGainKey, false);
@@ -480,13 +488,6 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setBool(_preferExternalLyricsKey, value);
   }
 
-  void setEnableLyricElasticScroll(bool value) async {
-    _enableLyricElasticScroll = value;
-    notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_enableLyricElasticScrollKey, value);
-  }
-
   void setEnableLoudness(bool value) async {
     _enableLoudness = value;
     if (value) {
@@ -582,6 +583,22 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_playbackThemeImageDimKey, _playbackThemeImageDim);
+  }
+
+  Future<void> setFollowAlbumArtOnHome(bool value) async {
+    if (_followAlbumArtOnHome == value) return;
+    _followAlbumArtOnHome = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_followAlbumArtOnHomeKey, value);
+  }
+
+  Future<void> setFollowAlbumArtOnPlayback(bool value) async {
+    if (_followAlbumArtOnPlayback == value) return;
+    _followAlbumArtOnPlayback = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_followAlbumArtOnPlaybackKey, value);
   }
 
   HotKey? _parseHotKey(String? jsonStr, String type) {

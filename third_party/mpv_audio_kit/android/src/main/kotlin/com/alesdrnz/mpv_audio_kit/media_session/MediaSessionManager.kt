@@ -12,6 +12,7 @@ import android.content.Intent
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.view.KeyEvent
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
@@ -127,6 +128,7 @@ internal object MediaSessionManager :
     private var player: MpvControllerPlayer? = null
     private var session: MediaSession? = null
     private var audioFocus: AudioFocusController? = null
+    private var playbackWakeLock: PowerManager.WakeLock? = null
 
     // A self-connected controller binds [MpvMediaSessionService] so Media3
     // promotes it to the foreground and posts (and keeps updating) the media
@@ -322,6 +324,7 @@ internal object MediaSessionManager :
         publish()
         // Take audio focus + arm the headphone-unplug receiver if we're
         // already playing at enable time.
+        updatePlaybackWakeLock(this.playback.playing)
         if (this.playback.playing) audioFocus?.onPlaybackActive()
     }
 
@@ -354,10 +357,13 @@ internal object MediaSessionManager :
         } else {
             audioFocus?.onPlaybackInactive()
         }
+        updatePlaybackWakeLock(pb.playing)
     }
 
     private fun disable() = runOnMain {
         enabled = false
+        updatePlaybackWakeLock(false)
+        playbackWakeLock = null
         audioFocus?.release()
         audioFocus = null
         config = ConfigSnapshot.EMPTY
@@ -417,6 +423,33 @@ internal object MediaSessionManager :
                 policy = { config.interruptionPolicy },
                 emit = { cmd -> forwardCommand(cmd) },
             )
+        }
+    }
+
+    private fun updatePlaybackWakeLock(playing: Boolean) {
+        try {
+            if (playing) {
+                val ctx = appContext ?: return
+                val lock = playbackWakeLock ?: run {
+                    val powerManager =
+                        ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+                    powerManager.newWakeLock(
+                        PowerManager.PARTIAL_WAKE_LOCK,
+                        "${ctx.packageName}:backgroundAudio",
+                    ).also {
+                        it.setReferenceCounted(false)
+                        playbackWakeLock = it
+                    }
+                }
+                if (!lock.isHeld) lock.acquire()
+            } else {
+                playbackWakeLock?.let { lock ->
+                    if (lock.isHeld) lock.release()
+                }
+            }
+        } catch (_: RuntimeException) {
+            // Playback must keep working even on an OEM implementation that
+            // refuses wake-lock operations despite the manifest permission.
         }
     }
 
