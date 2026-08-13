@@ -87,6 +87,9 @@ class MediaSession {
   /// `false`; ignored where the action isn't rendered.
   final bool isFavorite;
 
+  /// Android notification state: `off`, `on`, or `locked`.
+  final String desktopLyricsState;
+
   // ── Audio interruption handling ────────────────────────────────────
 
   /// How the player reacts to an OS audio interruption (phone call,
@@ -158,6 +161,7 @@ class MediaSession {
       MediaAction.seek,
     },
     this.isFavorite = false,
+    this.desktopLyricsState = 'off',
     this.interruptionPolicy = InterruptionPolicy.pauseAndResume,
     this.fastForwardInterval = const Duration(seconds: 15),
     this.rewindInterval = const Duration(seconds: 15),
@@ -182,6 +186,7 @@ class MediaSession {
     Object? duration = unset,
     Set<MediaAction>? actions,
     bool? isFavorite,
+    String? desktopLyricsState,
     InterruptionPolicy? interruptionPolicy,
     Duration? fastForwardInterval,
     Duration? rewindInterval,
@@ -199,6 +204,7 @@ class MediaSession {
             identical(duration, unset) ? this.duration : duration as Duration?,
         actions: actions ?? this.actions,
         isFavorite: isFavorite ?? this.isFavorite,
+        desktopLyricsState: desktopLyricsState ?? this.desktopLyricsState,
         interruptionPolicy: interruptionPolicy ?? this.interruptionPolicy,
         fastForwardInterval: fastForwardInterval ?? this.fastForwardInterval,
         rewindInterval: rewindInterval ?? this.rewindInterval,
@@ -222,6 +228,7 @@ class MediaSession {
         other.artwork != artwork ||
         other.duration != duration ||
         other.isFavorite != isFavorite ||
+        other.desktopLyricsState != desktopLyricsState ||
         other.interruptionPolicy != interruptionPolicy ||
         other.fastForwardInterval != fastForwardInterval ||
         other.rewindInterval != rewindInterval ||
@@ -251,6 +258,7 @@ class MediaSession {
         duration,
         Object.hashAll(actions),
         isFavorite,
+        desktopLyricsState,
         interruptionPolicy,
         fastForwardInterval,
         rewindInterval,
@@ -264,6 +272,7 @@ class MediaSession {
   String toString() => 'MediaSession(title: $title, artist: $artist, '
       'album: $album, artwork: $artwork, duration: $duration, '
       'actions: $actions, isFavorite: $isFavorite, '
+      'desktopLyricsState: $desktopLyricsState, '
       'interruptionPolicy: $interruptionPolicy, '
       'fastForwardInterval: $fastForwardInterval, '
       'rewindInterval: $rewindInterval, '

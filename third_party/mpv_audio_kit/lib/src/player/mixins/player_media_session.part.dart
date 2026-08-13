@@ -145,6 +145,8 @@ mixin _MediaSessionModule on _PlayerBase {
         // auto-applied. The consumer reacts on the stream below and reflects
         // the new state via `MediaSession.isFavorite`.
         break;
+      case MediaSessionCommandDesktopLyrics():
+        break;
       case MediaSessionCommandSeekTo(:final position):
         _applySessionCommand((this as Player).seek(position));
       case MediaSessionCommandSeekBy(:final offset):
@@ -175,8 +177,10 @@ mixin _MediaSessionModule on _PlayerBase {
   /// ([Player.seek] throws via `_commandChecked`) — would otherwise escape as
   /// an unhandled async error (which can crash a guarded zone) seconds later.
   void _applySessionCommand(Future<void> action) {
-    unawaited(action.catchError((Object e, StackTrace st) {
-      _internalLog('Media-session command failed: $e', level: LogLevel.warn);
-    }),);
+    unawaited(
+      action.catchError((Object e, StackTrace st) {
+        _internalLog('Media-session command failed: $e', level: LogLevel.warn);
+      }),
+    );
   }
 }

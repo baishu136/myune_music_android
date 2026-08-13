@@ -60,10 +60,11 @@ internal object MediaSessionManager :
         val rewindIntervalMs: Long,
         val supportedPlaybackRates: List<Double>,
         val isFavorite: Boolean,
+        val desktopLyricsState: String,
     ) {
         companion object {
             val EMPTY =
-                ConfigSnapshot(emptySet(), "pauseAndResume", 15_000, 15_000, emptyList(), false)
+                ConfigSnapshot(emptySet(), "pauseAndResume", 15_000, 15_000, emptyList(), false, "off")
         }
     }
 
@@ -160,6 +161,7 @@ internal object MediaSessionManager :
             val sessionCommands =
                 MediaSession.ConnectionResult.DEFAULT_SESSION_COMMANDS.buildUpon()
                     .add(SessionCommand(MediaSessionMappers.LIKE_ACTION, Bundle.EMPTY))
+                    .add(SessionCommand(MediaSessionMappers.DESKTOP_LYRICS_ACTION, Bundle.EMPTY))
                     .build()
             return MediaSession.ConnectionResult.AcceptedResultBuilder(session)
                 .setAvailableSessionCommands(sessionCommands)
@@ -174,6 +176,10 @@ internal object MediaSessionManager :
         ): ListenableFuture<SessionResult> {
             if (customCommand.customAction == MediaSessionMappers.LIKE_ACTION) {
                 forwardCommand(mapOf("type" to "like"))
+                return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
+            }
+            if (customCommand.customAction == MediaSessionMappers.DESKTOP_LYRICS_ACTION) {
+                forwardCommand(mapOf("type" to "desktopLyrics"))
                 return Futures.immediateFuture(SessionResult(SessionResult.RESULT_SUCCESS))
             }
             return Futures.immediateFuture(
@@ -543,6 +549,7 @@ internal object MediaSessionManager :
         supportedPlaybackRates = (map["supportedPlaybackRates"] as? List<*>)
             ?.mapNotNull { (it as? Number)?.toDouble() } ?: emptyList(),
         isFavorite = map["isFavorite"] as? Boolean ?: false,
+        desktopLyricsState = map["desktopLyricsState"] as? String ?: "off",
     )
 
     private fun parseMetadata(map: Map<*, *>) = MetadataSnapshot(

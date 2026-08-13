@@ -88,6 +88,7 @@ export 'src/types/sealed/media_session_command.dart'
         MediaSessionCommandNext,
         MediaSessionCommandPrevious,
         MediaSessionCommandLike,
+        MediaSessionCommandDesktopLyrics,
         MediaSessionCommandSeekTo,
         MediaSessionCommandSeekBy,
         MediaSessionCommandSetRepeatMode,

@@ -30,6 +30,7 @@ internal object MediaSessionMappers {
      * forwarding the same `{type: "like"}` wire event the Dart side decodes.
      */
     const val LIKE_ACTION = "com.alesdrnz.mpv_audio_kit.LIKE"
+    const val DESKTOP_LYRICS_ACTION = "com.alesdrnz.mpv_audio_kit.DESKTOP_LYRICS"
 
     /** Wire loop string → Media3 repeat-mode constant. */
     fun loopToRepeatMode(loop: String): Int = when (loop) {
@@ -73,7 +74,9 @@ internal object MediaSessionMappers {
         if ("fastForward" in actions) b.add(Player.COMMAND_SEEK_FORWARD)
         if ("rewind" in actions) b.add(Player.COMMAND_SEEK_BACK)
         if ("setRepeatMode" in actions) b.add(Player.COMMAND_SET_REPEAT_MODE)
-        if ("setShuffle" in actions) b.add(Player.COMMAND_SET_SHUFFLE_MODE)
+        if ("setShuffle" in actions || "desktopLyrics" in actions) {
+            b.add(Player.COMMAND_SET_SHUFFLE_MODE)
+        }
         if ("setPlaybackRate" in actions) b.add(Player.COMMAND_SET_SPEED_AND_PITCH)
         return b.build()
     }
@@ -146,6 +149,28 @@ internal object MediaSessionMappers {
                     CommandButton.Builder(icon)
                         .setDisplayName("Favorite")
                         .setSessionCommand(SessionCommand(LIKE_ACTION, Bundle.EMPTY))
+                        .build()
+                }
+                "desktopLyrics" -> {
+                    val (icon, label) = when (config.desktopLyricsState) {
+                        "locked" -> CommandButton.ICON_CHECK_CIRCLE_FILLED to "桌面歌词已锁定"
+                        "on" -> CommandButton.ICON_SUBTITLES to "桌面歌词"
+                        else -> CommandButton.ICON_SUBTITLES_OFF to "开启桌面歌词"
+                    }
+                    CommandButton.Builder(icon)
+                        .setDisplayName(label)
+                        // Let Android append this preference after the native
+                        // previous / play-pause / next transport controls. A
+                        // forced forward-secondary slot conflicts with the
+                        // system next button on some Android 15 System UI
+                        // implementations and makes this action disappear.
+                        // Several Android 15 System UI variants render a custom
+                        // SessionCommand but silently drop its click. Route this
+                        // app-only action through an advertised player command;
+                        // MpvControllerPlayer turns it back into desktopLyrics.
+                        // The app does not expose shuffle alongside this action,
+                        // so no user-facing playback command is displaced.
+                        .setPlayerCommand(Player.COMMAND_SET_SHUFFLE_MODE, true)
                         .build()
                 }
                 else -> null

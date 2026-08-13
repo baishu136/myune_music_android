@@ -91,6 +91,7 @@ class MediaSessionMetadataSnapshot {
         url,
       );
 }
+
 /// Effective playback snapshot pushed to native. The OS extrapolates
 /// [position] forward using [rate] from receipt time, so this is pushed
 /// on state changes (play/pause/seek), not on every `time-pos` tick.
@@ -239,6 +240,7 @@ class MediaSessionChannel {
     final config = <String, Object?>{
       'actions': [for (final a in s.actions) a.name],
       'isFavorite': s.isFavorite,
+      'desktopLyricsState': s.desktopLyricsState,
       'interruptionPolicy': s.interruptionPolicy.name,
       'fastForwardIntervalMs': s.fastForwardInterval.inMilliseconds,
       'rewindIntervalMs': s.rewindInterval.inMilliseconds,
@@ -321,6 +323,8 @@ class MediaSessionChannel {
         return MediaSessionCommand.previous;
       case 'like':
         return MediaSessionCommand.like;
+      case 'desktopLyrics':
+        return MediaSessionCommand.desktopLyrics;
       case 'seekTo':
         final pos = raw['positionMs'];
         if (pos is! int) return null;

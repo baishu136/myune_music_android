@@ -60,6 +60,10 @@ class SettingsProvider with ChangeNotifier {
   static const _playbackThemeImageDimKey = 'playbackThemeImageDim';
   static const _followAlbumArtOnHomeKey = 'followAlbumArtOnHome';
   static const _followAlbumArtOnPlaybackKey = 'followAlbumArtOnPlayback';
+  static const _desktopLyricsEnabledKey = 'desktopLyricsEnabled';
+  static const _desktopLyricsLockedKey = 'desktopLyricsLocked';
+  static const _desktopLyricsColorKey = 'desktopLyricsColor';
+  static const _desktopLyricsFontSizeKey = 'desktopLyricsFontSize';
 
   int _maxLinesPerLyric = 2;
   double _fontSize = defaultLyricFontSize;
@@ -94,6 +98,10 @@ class SettingsProvider with ChangeNotifier {
   double _playbackThemeImageDim = 0.68;
   bool _followAlbumArtOnHome = false;
   bool _followAlbumArtOnPlayback = false;
+  bool _desktopLyricsEnabled = false;
+  bool _desktopLyricsLocked = false;
+  int _desktopLyricsColor = 0xFF00A9D6;
+  double _desktopLyricsFontSize = 22.0;
 
   bool _enableGlobalHotkeys = true;
   HotKey? _playPauseHotKey;
@@ -159,6 +167,10 @@ class SettingsProvider with ChangeNotifier {
   double get playbackThemeImageDim => _playbackThemeImageDim;
   bool get followAlbumArtOnHome => _followAlbumArtOnHome;
   bool get followAlbumArtOnPlayback => _followAlbumArtOnPlayback;
+  bool get desktopLyricsEnabled => _desktopLyricsEnabled;
+  bool get desktopLyricsLocked => _desktopLyricsLocked;
+  int get desktopLyricsColor => _desktopLyricsColor;
+  double get desktopLyricsFontSize => _desktopLyricsFontSize;
 
   bool get enableGlobalHotkeys => _enableGlobalHotkeys;
   HotKey? get playPauseHotKey => _playPauseHotKey;
@@ -237,6 +249,10 @@ class SettingsProvider with ChangeNotifier {
     _followAlbumArtOnHome = prefs.getBool(_followAlbumArtOnHomeKey) ?? false;
     _followAlbumArtOnPlayback =
         prefs.getBool(_followAlbumArtOnPlaybackKey) ?? false;
+    _desktopLyricsEnabled = prefs.getBool(_desktopLyricsEnabledKey) ?? false;
+    _desktopLyricsLocked = prefs.getBool(_desktopLyricsLockedKey) ?? false;
+    _desktopLyricsColor = prefs.getInt(_desktopLyricsColorKey) ?? 0xFF00A9D6;
+    _desktopLyricsFontSize = prefs.getDouble(_desktopLyricsFontSizeKey) ?? 22.0;
     if (_enableLoudness && _enableReplayGain) {
       _enableReplayGain = false;
       await prefs.setBool(_enableReplayGainKey, false);
@@ -599,6 +615,41 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_followAlbumArtOnPlaybackKey, value);
+  }
+
+  Future<void> setDesktopLyricsEnabled(bool value) async {
+    if (_desktopLyricsEnabled == value) return;
+    _desktopLyricsEnabled = value;
+    if (!value) _desktopLyricsLocked = false;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_desktopLyricsEnabledKey, value);
+    if (!value) await prefs.setBool(_desktopLyricsLockedKey, false);
+  }
+
+  Future<void> setDesktopLyricsLocked(bool value) async {
+    if (_desktopLyricsLocked == value) return;
+    _desktopLyricsLocked = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_desktopLyricsLockedKey, value);
+  }
+
+  Future<void> setDesktopLyricsColor(int value) async {
+    if (_desktopLyricsColor == value) return;
+    _desktopLyricsColor = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_desktopLyricsColorKey, value);
+  }
+
+  Future<void> setDesktopLyricsFontSize(double value) async {
+    final next = value.clamp(16.0, 38.0);
+    if ((_desktopLyricsFontSize - next).abs() < 0.01) return;
+    _desktopLyricsFontSize = next;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_desktopLyricsFontSizeKey, next);
   }
 
   HotKey? _parseHotKey(String? jsonStr, String type) {

@@ -25,6 +25,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import 'page/statistics_page/statistics_manager.dart';
 import 'layout/navigation_notifier.dart';
 import 'services/notification_service.dart';
+import 'services/desktop_lyrics_controller.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -145,6 +146,23 @@ void main() async {
             context.read<SettingsProvider>(),
             context.read<ThemeProvider>(),
           ),
+        ),
+        ChangeNotifierProxyProvider3<
+          SettingsProvider,
+          ThemeProvider,
+          PlaylistContentNotifier,
+          DesktopLyricsController
+        >(
+          // The notification's desktop-lyrics command may be pressed before
+          // the playback settings page is ever opened. Keep this controller
+          // eager so its media-session listener is always attached.
+          lazy: false,
+          create: (_) => DesktopLyricsController(),
+          update: (_, settings, theme, playlist, controller) {
+            final value = controller ?? DesktopLyricsController();
+            value.updateDependencies(settings, theme, playlist);
+            return value;
+          },
         ),
         ChangeNotifierProvider<StatisticsManager>(
           create: (context) => StatisticsManager(),

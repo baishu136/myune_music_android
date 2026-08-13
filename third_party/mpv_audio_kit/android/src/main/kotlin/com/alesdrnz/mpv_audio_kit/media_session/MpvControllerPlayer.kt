@@ -286,7 +286,15 @@ internal class MpvControllerPlayer(looper: Looper) : SimpleBasePlayer(looper) {
     }
 
     override fun handleSetShuffleModeEnabled(shuffleModeEnabled: Boolean): ListenableFuture<*> {
-        mgr.forwardCommand(mapOf("type" to "setShuffle", "shuffle" to shuffleModeEnabled))
+        val actions = mgr.config.actions
+        if ("desktopLyrics" in actions && "setShuffle" !in actions) {
+            // Android 15 notifications can ignore custom SessionCommands even
+            // though their buttons are visible. The desktop-lyrics button uses
+            // this otherwise-unused player command as a reliable transport.
+            mgr.forwardCommand(mapOf("type" to "desktopLyrics"))
+        } else {
+            mgr.forwardCommand(mapOf("type" to "setShuffle", "shuffle" to shuffleModeEnabled))
+        }
         return Futures.immediateVoidFuture()
     }
 

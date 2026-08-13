@@ -84,4 +84,7 @@ enum MediaAction {
   /// there is no built-in favourite concept). Reflect the chosen state back
   /// via [MediaSession.isFavorite] to fill or empty the star.
   like,
+
+  /// Android notification shortcut for cycling desktop-lyrics state.
+  desktopLyrics,
 }

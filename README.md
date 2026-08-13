@@ -27,7 +27,7 @@ Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手
 * 使用 Android 系统音频路由
 * 使用 Dart 解析音频元数据，并保留文件名回退
 
-首次添加歌曲时，应用会请求“音乐和音频”权限。Android 端可在 Flutter SDK 可用的环境中执行 `flutter pub get` 和 `flutter build apk --release` 构建。
+首次添加歌曲时，应用会请求“音乐和音频”权限。Android 端可在 Flutter SDK 可用的环境中执行 `flutter pub get` 和 `flutter build apk --release --split-per-abi` 构建。请勿将 Debug 通用包作为发布安装包，否则会同时包含调试内核和多套 ABI，体积会显著增大。
 
 > [!NOTE]
 > 本仓库仅提供和支持 **Android** 版本。Windows/Linux 版本请前往 [Myune Music 源项目主页](https://github.com/xiaobaimc/myune_music) 下载。
@@ -158,8 +158,10 @@ flutter run
 
 ### 构建项目
 ```bash
-flutter build apk --release
+flutter build apk --release --split-per-abi
 ```
+
+Windows 也可直接执行 `powershell -ExecutionPolicy Bypass -File tool/build_android_release.ps1`，脚本会在 `release` 目录输出常用的 arm64-v8a 与兼容旧设备的 armeabi-v7a 安装包。
 
 ## 🧱 使用的依赖与致谢
 

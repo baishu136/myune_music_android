@@ -347,6 +347,14 @@ class PlaylistContentNotifier extends ChangeNotifier
   List<LyricLine> get currentLyrics => _currentLyrics;
   int get currentLyricLineIndex => _currentLyricLineIndex;
 
+  /// Retries all configured lyric sources for the current song when no lyric
+  /// has been resolved yet. Existing lyrics are never replaced by this action.
+  Future<void> refreshCurrentLyricsIfEmpty() async {
+    final song = _currentSong;
+    if (song == null || _currentLyrics.isNotEmpty) return;
+    await _loadLyricsForSong(song.filePath);
+  }
+
   final StreamController<int> _lyricLineIndexController =
       StreamController<int>.broadcast(); // 歌词行变动流
   Stream<int> get lyricLineIndexStream => _lyricLineIndexController.stream;
@@ -906,12 +914,22 @@ class PlaylistContentNotifier extends ChangeNotifier
         MediaAction.playPause,
         MediaAction.next,
         MediaAction.seek,
+        MediaAction.desktopLyrics,
       },
+      desktopLyricsState: !_settingsProvider.desktopLyricsEnabled
+          ? 'off'
+          : (_settingsProvider.desktopLyricsLocked ? 'locked' : 'on'),
       // Regaining Android audio focus must not start music by itself. The
       // player resumes only after an explicit user play command.
       interruptionPolicy: InterruptionPolicy.pauseOnly,
       autoApplyPlaylistNavigation: false,
     );
+  }
+
+  Future<void> refreshDesktopLyricsMediaSession() async {
+    final song = _currentSong;
+    if (song == null) return;
+    await _audioService.player.setMediaSession(_buildMediaSession(song));
   }
 
   void _listenToPositionUpdates() {

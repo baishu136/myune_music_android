@@ -23,6 +23,7 @@ import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/play_pause_button.dart';
 import '../widgets/sort_dialog.dart';
 import '../services/notification_service.dart';
+import '../services/desktop_lyrics_controller.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/custom_theme_background.dart';
 
@@ -51,6 +52,7 @@ class MobileShell extends StatefulWidget {
 
 class _MobileShellState extends State<MobileShell> {
   static const _notificationPromptedKey = 'notification_permission_prompted';
+  static const _overlayPromptedKey = 'overlay_permission_prompted';
   int _tab = 0;
   String _query = '';
   StreamSubscription<String>? _errorSubscription;
@@ -70,8 +72,14 @@ class _MobileShellState extends State<MobileShell> {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _requestNotificationPermissionOnFirstLaunch();
+      unawaited(_requestFirstLaunchPermissions());
     });
+  }
+
+  Future<void> _requestFirstLaunchPermissions() async {
+    await _requestNotificationPermissionOnFirstLaunch();
+    if (!mounted) return;
+    await _requestOverlayPermissionOnFirstLaunch();
   }
 
   Future<void> _requestNotificationPermissionOnFirstLaunch() async {
@@ -82,6 +90,42 @@ class _MobileShellState extends State<MobileShell> {
     final status = await Permission.notification.request();
     if (!mounted || status.isGranted) return;
     context.read<NotificationService>().warning('未授予通知权限，后台播放时可能无法显示播放器控制栏');
+  }
+
+  Future<void> _requestOverlayPermissionOnFirstLaunch() async {
+    if (!Platform.isAndroid) return;
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool(_overlayPromptedKey) ?? false) return;
+    if (!mounted) return;
+
+    final desktopLyrics = context.read<DesktopLyricsController>();
+    if (await desktopLyrics.hasOverlayPermission()) {
+      await prefs.setBool(_overlayPromptedKey, true);
+      return;
+    }
+    if (!mounted) return;
+    final accepted = await showDialog<bool>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('允许悬浮窗权限'),
+        content: const Text('桌面歌词需要“显示在其他应用上层”权限。授权后仍需在设置中手动开启桌面歌词。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('暂不允许'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('前往授权'),
+          ),
+        ],
+      ),
+    );
+    await prefs.setBool(_overlayPromptedKey, true);
+    if (accepted == true) {
+      await desktopLyrics.requestOverlayPermissionOnly();
+    }
   }
 
   @override
@@ -1704,7 +1748,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
   }) {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
-      onTap: () => setState(() => _showLyrics = !_showLyrics),
+      onTap: () {
+        final switchingToCover = _showLyrics;
+        setState(() => _showLyrics = !_showLyrics);
+        if (switchingToCover && notifier.currentLyrics.isEmpty) {
+          unawaited(notifier.refreshCurrentLyricsIfEmpty());
+        }
+      },
       child: Listener(
         onPointerDown: _showLyrics ? _onLyricPointerDown : null,
         onPointerMove: _showLyrics ? _onLyricPointerMove : null,

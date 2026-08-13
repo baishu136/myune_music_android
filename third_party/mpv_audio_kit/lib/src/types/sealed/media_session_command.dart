@@ -81,6 +81,10 @@ sealed class MediaSessionCommand {
   /// [PlayerStream.mediaSessionCommands] and reflect the new state back via
   /// [MediaSession.isFavorite] (fills/empties the star).
   static const MediaSessionCommand like = MediaSessionCommandLike._();
+
+  /// The Android notification desktop-lyrics button was pressed.
+  static const MediaSessionCommand desktopLyrics =
+      MediaSessionCommandDesktopLyrics._();
 }
 
 /// The [MediaSessionCommand.play] variant — start or resume playback.
@@ -141,6 +145,13 @@ final class MediaSessionCommandLike extends MediaSessionCommand {
 
   @override
   String toString() => 'MediaSessionCommand.like';
+}
+
+final class MediaSessionCommandDesktopLyrics extends MediaSessionCommand {
+  const MediaSessionCommandDesktopLyrics._() : super._();
+
+  @override
+  String toString() => 'MediaSessionCommand.desktopLyrics';
 }
 
 /// The [MediaSessionCommand.seekTo] variant — seek to an absolute
