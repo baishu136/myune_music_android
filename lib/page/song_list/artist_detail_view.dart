@@ -59,8 +59,9 @@ class ArtistDetailView extends StatelessWidget {
 
   Uint8List? _findArtistCover(PlaylistContentNotifier notifier) {
     for (final song in notifier.activeSongList) {
-      final albumArt = song.albumArt;
-      if (albumArt != null) {
+      final albumArt =
+          song.albumArt ?? notifier.coverForSongPath(song.filePath);
+      if (albumArt != null && albumArt.isNotEmpty) {
         return albumArt;
       }
     }
@@ -353,7 +354,13 @@ class _ArtistHeaderBackdrop extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        Image.memory(cover!, fit: BoxFit.cover, gaplessPlayback: true),
+        Image.memory(
+          cover!,
+          fit: BoxFit.cover,
+          gaplessPlayback: true,
+          cacheWidth: 600,
+          filterQuality: FilterQuality.medium,
+        ),
         BackdropFilter(
           filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
           child: ColoredBox(color: baseColor.withValues(alpha: 0.40)),
@@ -388,7 +395,13 @@ class _ArtistCoverArt extends StatelessWidget {
         ],
       ),
       child: cover != null
-          ? Image.memory(cover!, fit: BoxFit.cover, gaplessPlayback: true)
+          ? Image.memory(
+              cover!,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              cacheWidth: 264,
+              filterQuality: FilterQuality.medium,
+            )
           : Icon(
               Icons.person,
               size: 42,

@@ -1149,18 +1149,10 @@ class _HeadSongListWidgetState extends State<HeadSongListWidget> {
                                         notifier.toggleSongSelection(song);
                                       } else {
                                         if (notifier.isSearching) {
-                                          final playlistIndex = notifier
-                                              .currentPlaylistSongs
-                                              .indexWhere(
-                                                (playlistSong) =>
-                                                    playlistSong.filePath ==
-                                                    song.filePath,
+                                          notifier
+                                              .playCurrentPlaylistSearchResult(
+                                                song,
                                               );
-                                          if (playlistIndex != -1) {
-                                            notifier.playSongAtIndex(
-                                              playlistIndex,
-                                            );
-                                          }
                                         } else {
                                           notifier.playSongAtIndex(index);
                                         }
@@ -1593,6 +1585,7 @@ class _SongTileWidgetState extends State<SongTileWidget> {
   }
 
   void _requestCover(String filePath) {
+    if (_requestedCoverPath == filePath) return;
     _requestedCoverPath = filePath;
     _notifier.requestSongCover(filePath);
   }
@@ -1997,6 +1990,10 @@ class _SongTileWidgetState extends State<SongTileWidget> {
     final colorScheme = Theme.of(context).colorScheme;
     final notifier = context.read<PlaylistContentNotifier>();
     final settings = context.watch<SettingsProvider>();
+    final directArt = widget.song.albumArt;
+    final coverArt = directArt != null && directArt.isNotEmpty
+        ? directArt
+        : notifier.coverForSongPath(widget.song.filePath);
 
     // 监听多选模式和选中歌曲的变化
     final isMultiSelectMode = context.select<PlaylistContentNotifier, bool>(
@@ -2055,16 +2052,15 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                   width: 50,
                   height: 50,
                   // isNotEmpty: 过滤空字节数组；errorBuilder: 兜底解码失败
-                  child:
-                      widget.song.albumArt != null &&
-                          widget.song.albumArt!.isNotEmpty
+                  child: coverArt != null && coverArt.isNotEmpty
                       ? ClipRRect(
                           borderRadius: BorderRadius.circular(6),
                           child: Image.memory(
                             cacheWidth: 100,
-                            widget.song.albumArt!,
+                            coverArt,
                             fit: BoxFit.cover,
                             gaplessPlayback: true,
+                            filterQuality: FilterQuality.medium,
                             errorBuilder: (context, error, stackTrace) {
                               return const Icon(
                                 Icons.music_note,

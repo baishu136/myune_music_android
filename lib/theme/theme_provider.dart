@@ -47,7 +47,11 @@ class ThemeProvider with ChangeNotifier {
   String _currentFontFamily = 'Misans'; // 默认字体
   bool _fontOnlyLyrics = false;
 
+  late ThemeData _lightThemeData;
+  late ThemeData _darkThemeData;
+
   ThemeProvider() {
+    _rebuildThemeData();
     initialize();
   }
 
@@ -66,29 +70,29 @@ class ThemeProvider with ChangeNotifier {
     return ColorScheme.fromSeed(seedColor: _currentSeedColor);
   }
 
-  ThemeData get lightThemeData => ThemeData(
+  ThemeData get lightThemeData => _lightThemeData;
+
+  ThemeData get darkThemeData => _darkThemeData;
+
+  ThemeData _buildThemeData(Brightness brightness) => ThemeData(
     useMaterial3: true,
     colorScheme: ColorScheme.fromSeed(
       seedColor: _currentSeedColor,
-      brightness: Brightness.light,
+      brightness: brightness,
     ),
     fontFamily: _interfaceFontFamily,
     textTheme: misansTextTheme,
   ).makeMouseClickable();
 
-  ThemeData get darkThemeData => ThemeData(
-    useMaterial3: true,
-    colorScheme: ColorScheme.fromSeed(
-      seedColor: _currentSeedColor,
-      brightness: Brightness.dark,
-    ),
-    fontFamily: _interfaceFontFamily,
-    textTheme: misansTextTheme,
-  ).makeMouseClickable();
+  void _rebuildThemeData() {
+    _lightThemeData = _buildThemeData(Brightness.light);
+    _darkThemeData = _buildThemeData(Brightness.dark);
+  }
 
   Future<void> setSeedColor(Color newColor, {bool isManual = false}) async {
     if (_currentSeedColor != newColor) {
       _currentSeedColor = newColor;
+      _rebuildThemeData();
       notifyListeners();
       await _saveSeedColor(newColor);
     }
@@ -132,6 +136,7 @@ class ThemeProvider with ChangeNotifier {
         : Color(_defaultSeedColorValue);
     if (_currentSeedColor != color) {
       _currentSeedColor = color;
+      _rebuildThemeData();
       notifyListeners();
       await _saveSeedColor(color);
     }
@@ -150,24 +155,17 @@ class ThemeProvider with ChangeNotifier {
     }
   }
 
-  void toggleDarkMode() async {
-    switch (_themeMode) {
-      case ThemeMode.light:
-        _themeMode = ThemeMode.dark;
-        break;
-      case ThemeMode.dark:
-        _themeMode = ThemeMode.system;
-        break;
-      case ThemeMode.system:
-        _themeMode = ThemeMode.light;
-        break;
-    }
-    notifyListeners();
-
-    setThemeMode(_themeMode);
+  Future<void> toggleDarkMode() {
+    final nextMode = switch (_themeMode) {
+      ThemeMode.light => ThemeMode.dark,
+      ThemeMode.dark => ThemeMode.system,
+      ThemeMode.system => ThemeMode.light,
+    };
+    return setThemeMode(nextMode);
   }
 
-  void setThemeMode(ThemeMode mode) async {
+  Future<void> setThemeMode(ThemeMode mode) async {
+    if (_themeMode == mode) return;
     _themeMode = mode;
     notifyListeners();
 
@@ -221,6 +219,7 @@ class ThemeProvider with ChangeNotifier {
   void setFontFamily(String fontFamily) async {
     if (_currentFontFamily == fontFamily) return; // 没变就直接退出
     _currentFontFamily = fontFamily;
+    _rebuildThemeData();
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_fontFamilyKey, fontFamily);
@@ -228,6 +227,7 @@ class ThemeProvider with ChangeNotifier {
 
   void resetFontFamily() async {
     _currentFontFamily = 'Misans'; // 默认字体
+    _rebuildThemeData();
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.remove(_fontFamilyKey);
@@ -236,6 +236,7 @@ class ThemeProvider with ChangeNotifier {
   Future<void> setFontOnlyLyrics(bool value) async {
     if (_fontOnlyLyrics == value) return;
     _fontOnlyLyrics = value;
+    _rebuildThemeData();
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_fontOnlyLyricsKey, value);
@@ -254,6 +255,7 @@ class ThemeProvider with ChangeNotifier {
       final loaded = await FontService().loadFontByName(_currentFontFamily);
       if (!loaded) _currentFontFamily = 'Misans';
     }
+    _rebuildThemeData();
     notifyListeners();
   }
 

@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
+
 import '../playlist/playlist_content_notifier.dart';
-import '../playlist/playlist_models.dart';
 
 class FolderPlaylistRefresher extends StatefulWidget {
   final PlaylistContentNotifier notifier;
@@ -16,225 +15,51 @@ class FolderPlaylistRefresher extends StatefulWidget {
 class _FolderPlaylistRefresherState extends State<FolderPlaylistRefresher> {
   bool _isRefreshing = false;
 
-  Future<void> _showRefreshDialog() async {
+  Future<void> _startRefresh() async {
     if (_isRefreshing) return;
+    setState(() => _isRefreshing = true);
 
-    final folderPlaylists = widget.notifier.playlists
-        .where((p) => p.isFolderBased)
-        .toList();
+    ImportedFolderRefreshSummary? summary;
+    Object? failure;
+    try {
+      summary = await widget.notifier.refreshImportedAudioFolders();
+    } catch (error, stackTrace) {
+      failure = error;
+      debugPrint('刷新已导入文件夹失败: $error\n$stackTrace');
+    } finally {
+      if (mounted) setState(() => _isRefreshing = false);
+    }
 
-    if (folderPlaylists.isEmpty) {
-      if (mounted) {
-        await showDialog(
-          context: context,
-          builder: (ctx) => AlertDialog(
-            title: const Text('提示'),
-            content: const Text('没有文件夹歌单'),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.of(ctx).pop(),
-                child: const Text('确定'),
-              ),
-            ],
-          ),
-        );
-      }
+    if (!mounted) return;
+    if (failure != null || summary == null) {
+      await showDialog<void>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('刷新失败'),
+          content: const Text('无法刷新已导入的文件夹，请检查存储权限后重试。'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(dialogContext).pop(),
+              child: const Text('确定'),
+            ),
+          ],
+        ),
+      );
       return;
     }
 
-    await showDialog(
+    await showDialog<void>(
       context: context,
-      builder: (BuildContext dialogContext) {
-        return _FolderSelectionDialog(
-          playlists: folderPlaylists,
-          onStartRefresh: (selectedIds) {
-            Navigator.of(dialogContext).pop();
-            _startRefresh(selectedIds);
-          },
-        );
-      },
-    );
-  }
-
-  Future<void> _startRefresh(Set<String> playlistIds) async {
-    setState(() => _isRefreshing = true);
-
-    final folderPlaylists = widget.notifier.playlists
-        .where((p) => p.isFolderBased && playlistIds.contains(p.id))
-        .toList();
-
-    final changes = <String, ({List<String> added, List<String> removed})>{};
-    final failedNames = <String>[];
-    for (final playlist in folderPlaylists) {
-      try {
-        final result = await widget.notifier.refreshFolderPlaylistById(
-          playlist.id,
-        );
-        if (!mounted) return;
-        if (result.added.isNotEmpty || result.removed.isNotEmpty) {
-          changes[playlist.name] = result;
-        }
-      } catch (e) {
-        debugPrint('刷新歌单 "${playlist.name}" 失败: $e');
-        failedNames.add(playlist.name);
-        if (!mounted) return;
-      }
-    }
-
-    setState(() => _isRefreshing = false);
-
-    if (!mounted) return;
-
-    if (changes.isEmpty && failedNames.isEmpty) {
-      await showDialog(
-        context: context,
-        builder: (c) => AlertDialog(
-          title: const Text('刷新完成'),
-          content: const Text('所有文件夹歌单无变化'),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(c).pop(),
-              child: const Text('确定'),
-            ),
-          ],
-        ),
-      );
-    } else {
-      await showDialog(
-        context: context,
-        builder: (c) => AlertDialog(
-          title: const Text('文件夹歌单刷新完成'),
-          content: SizedBox(
-            width: 500,
-            height: MediaQuery.of(c).size.height * 0.6,
-            child: ClipRect(
-              child: Scrollbar(
-                thumbVisibility: true,
-                child: SingleChildScrollView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  child: _buildChangeContent(changes, failedNames),
-                ),
-              ),
-            ),
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('刷新完成'),
+        content: _RefreshSummaryContent(summary: summary!),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('确定'),
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(c).pop(),
-              child: const Text('确定'),
-            ),
-          ],
-        ),
-      );
-    }
-  }
-
-  Widget _buildChangeContent(
-    Map<String, ({List<String> added, List<String> removed})> changes,
-    List<String> failedNames,
-  ) {
-    final children = <Widget>[];
-    for (final entry in changes.entries) {
-      final name = entry.key;
-      final added = entry.value.added;
-      final removed = entry.value.removed;
-      children.add(
-        Padding(
-          padding: const EdgeInsets.only(bottom: 8),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                '歌单 "$name"',
-                style: const TextStyle(
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                ),
-              ),
-              if (removed.isNotEmpty) ...[
-                Padding(
-                  padding: const EdgeInsets.only(left: 8, top: 4),
-                  child: Text(
-                    '移除 ${removed.length} 首:',
-                    style: TextStyle(color: Colors.red.shade700, fontSize: 15),
-                  ),
-                ),
-                ...removed.map(
-                  (path) => Padding(
-                    padding: const EdgeInsets.only(left: 24),
-                    child: Text(
-                      '• ${p.basename(path)}',
-                      style: TextStyle(
-                        color: Colors.red.shade700,
-                        fontSize: 14,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ),
-              ],
-              if (added.isNotEmpty) ...[
-                Padding(
-                  padding: const EdgeInsets.only(left: 8, top: 4),
-                  child: Text(
-                    '新增 ${added.length} 首:',
-                    style: TextStyle(
-                      color: Colors.green.shade700,
-                      fontSize: 15,
-                    ),
-                  ),
-                ),
-                ...added.map(
-                  (path) => Padding(
-                    padding: const EdgeInsets.only(left: 24),
-                    child: Text(
-                      '• ${p.basename(path)}',
-                      style: TextStyle(
-                        color: Colors.green.shade700,
-                        fontSize: 14,
-                      ),
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
-      );
-    }
-    if (failedNames.isNotEmpty) {
-      children.add(
-        Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: Text(
-                '刷新失败 (${failedNames.length} 个):',
-                style: TextStyle(
-                  color: Colors.orange.shade700,
-                  fontWeight: FontWeight.bold,
-                  fontSize: 15,
-                ),
-              ),
-            ),
-            ...failedNames.map(
-              (name) => Padding(
-                padding: const EdgeInsets.only(left: 24),
-                child: Text(
-                  '• $name',
-                  style: TextStyle(color: Colors.orange.shade700, fontSize: 14),
-                ),
-              ),
-            ),
-          ],
-        ),
-      );
-    }
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: children,
+        ],
+      ),
     );
   }
 
@@ -243,143 +68,75 @@ class _FolderPlaylistRefresherState extends State<FolderPlaylistRefresher> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text('刷新所有文件夹歌单', style: Theme.of(context).textTheme.titleMedium),
+        Flexible(
+          child: Text(
+            '刷新所有文件夹歌单',
+            style: Theme.of(context).textTheme.titleMedium,
+          ),
+        ),
+        const SizedBox(width: 12),
         ElevatedButton.icon(
-          onPressed: _isRefreshing ? null : _showRefreshDialog,
+          onPressed: _isRefreshing ? null : _startRefresh,
           icon: _isRefreshing
-              ? const SizedBox(
-                  width: 20,
-                  height: 20,
+              ? const SizedBox.square(
+                  dimension: 20,
                   child: CircularProgressIndicator(strokeWidth: 2),
                 )
               : const Icon(Icons.sync, size: 20),
-          label: const Text('开始刷新'),
+          label: Text(_isRefreshing ? '正在刷新' : '开始刷新'),
         ),
       ],
     );
   }
 }
 
-/// 文件夹歌单选择对话框
-class _FolderSelectionDialog extends StatefulWidget {
-  final List<Playlist> playlists;
-  final void Function(Set<String> selectedIds) onStartRefresh;
+class _RefreshSummaryContent extends StatelessWidget {
+  final ImportedFolderRefreshSummary summary;
 
-  const _FolderSelectionDialog({
-    required this.playlists,
-    required this.onStartRefresh,
-  });
-
-  @override
-  State<_FolderSelectionDialog> createState() => _FolderSelectionDialogState();
-}
-
-class _FolderSelectionDialogState extends State<_FolderSelectionDialog> {
-  late Set<String> _selectedIds;
-  final ScrollController _scrollController = ScrollController();
-
-  @override
-  void initState() {
-    super.initState();
-    _selectedIds = widget.playlists.map((p) => p.id).toSet();
-  }
-
-  @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
-  }
-
-  bool get _isAllSelected => _selectedIds.length == widget.playlists.length;
-
-  void _toggleAll() {
-    setState(() {
-      if (_isAllSelected) {
-        _selectedIds.clear();
-      } else {
-        _selectedIds = widget.playlists.map((p) => p.id).toSet();
-      }
-    });
-  }
-
-  void _togglePlaylist(String id) {
-    setState(() {
-      if (_selectedIds.contains(id)) {
-        _selectedIds.remove(id);
-      } else {
-        _selectedIds.add(id);
-      }
-    });
-  }
+  const _RefreshSummaryContent({required this.summary});
 
   @override
   Widget build(BuildContext context) {
-    return AlertDialog(
-      title: const Text('选择文件夹歌单'),
-      content: SizedBox(
-        width: 400,
-        height: MediaQuery.of(context).size.height * 0.5,
+    final hasHistory =
+        summary.refreshedFolders > 0 ||
+        summary.skippedFolders > 0 ||
+        summary.failedFolders.isNotEmpty;
+    if (!hasHistory) {
+      return const Text('尚未记录通过“导入整个文件夹”添加的目录。');
+    }
+
+    return ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 460, maxHeight: 420),
+      child: SingleChildScrollView(
         child: Column(
+          mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            CheckboxListTile(
-              value: _isAllSelected,
-              onChanged: (_) => _toggleAll(),
-              title: Text(_isAllSelected ? '取消全选' : '全选'),
-              controlAffinity: ListTileControlAffinity.leading,
-              dense: true,
-            ),
-            const Divider(height: 1),
-            Expanded(
-              child: Scrollbar(
-                controller: _scrollController,
-                thumbVisibility: true,
-                child: ListView.builder(
-                  controller: _scrollController,
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  itemCount: widget.playlists.length,
-                  itemBuilder: (context, index) {
-                    final playlist = widget.playlists[index];
-                    return CheckboxListTile(
-                      value: _selectedIds.contains(playlist.id),
-                      onChanged: (_) => _togglePlaylist(playlist.id),
-                      title: Row(
-                        children: [
-                          const Padding(
-                            padding: EdgeInsets.only(right: 4),
-                            child: Icon(Icons.folder, size: 16),
-                          ),
-                          Flexible(
-                            child: Text(
-                              playlist.name,
-                              overflow: TextOverflow.ellipsis,
-                            ),
-                          ),
-                        ],
-                      ),
-                      subtitle: Text('${playlist.songFilePaths.length} 首歌曲'),
-                      controlAffinity: ListTileControlAffinity.leading,
-                      dense: true,
-                    );
-                  },
+            Text('已扫描 ${summary.refreshedFolders} 个文件夹'),
+            if (summary.skippedFolders > 0)
+              Text('已跳过 ${summary.skippedFolders} 个曲库中已无对应歌曲的文件夹'),
+            Text('新增 ${summary.addedSongs} 首歌曲'),
+            Text('移除 ${summary.removedSongs} 首失效歌曲'),
+            if (summary.failedFolders.isNotEmpty) ...[
+              const SizedBox(height: 12),
+              Text(
+                '以下文件夹无法访问：',
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+              ...summary.failedFolders.map(
+                (folder) => Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Text(
+                    folder,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 ),
               ),
-            ),
+            ],
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.of(context).pop(),
-          child: const Text('取消'),
-        ),
-        ElevatedButton(
-          onPressed: _selectedIds.isEmpty
-              ? null
-              : () => widget.onStartRefresh(_selectedIds),
-          child: const Text('开始刷新'),
-        ),
-      ],
     );
   }
 }

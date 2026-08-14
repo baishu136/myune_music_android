@@ -170,18 +170,18 @@ class SongListDetailWidget extends StatelessWidget {
                                     notifier.playingPlaylist ??
                                     Playlist(id: 'dummy', name: 'dummy'),
                                 onTap: () {
-                                  final listToPlay = isSearching
-                                      ? notifier.filteredSongs
-                                      : notifier.activeSongList;
-                                  final originalIndexInList = listToPlay
-                                      .indexOf(song);
-
-                                  if (originalIndexInList != -1) {
-                                    notifier.playFromDynamicList(
-                                      listToPlay,
-                                      originalIndexInList,
-                                    );
+                                  if (isSearching) {
+                                    notifier.playActiveListSearchResult(song);
+                                    return;
                                   }
+                                  final originalIndexInList = notifier
+                                      .activeSongList
+                                      .indexOf(song);
+                                  if (originalIndexInList == -1) return;
+                                  notifier.playFromDynamicList(
+                                    notifier.activeSongList,
+                                    originalIndexInList,
+                                  );
                                 },
                               );
                             },

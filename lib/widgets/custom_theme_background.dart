@@ -3,6 +3,10 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+
+import '../theme/theme_motion.dart';
+import '../theme/theme_provider.dart';
 
 class CustomThemeBackground extends StatelessWidget {
   const CustomThemeBackground({
@@ -41,7 +45,14 @@ class CustomThemeBackground extends StatelessWidget {
   Widget build(BuildContext context) {
     final showCover = _canShowCover;
     if (!showCover && !_canShowCustomImage) return child;
-    final dark = Theme.of(context).brightness == Brightness.dark;
+    final mode = context.watch<ThemeProvider?>()?.themeMode;
+    final dark = switch (mode) {
+      ThemeMode.light => false,
+      ThemeMode.dark => true,
+      ThemeMode.system =>
+        MediaQuery.platformBrightnessOf(context) == Brightness.dark,
+      null => Theme.of(context).brightness == Brightness.dark,
+    };
     Widget image = showCover
         ? Image.memory(
             coverBytes!,
@@ -75,7 +86,9 @@ class CustomThemeBackground extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         RepaintBoundary(child: image),
-        ColoredBox(
+        AnimatedContainer(
+          duration: ThemeMotion.transitionDuration,
+          curve: ThemeMotion.transitionCurve,
           color: (dark ? Colors.black : Colors.white).withValues(
             alpha: (showCover ? coverDim : dim).clamp(0.0, 0.92),
           ),

@@ -50,7 +50,7 @@ packages:
     source: hosted
     version: "1.4.1"
   charset:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: charset
       sha256: "27802032a581e01ac565904ece8c8962564b1070690794f0072f6865958ce8b9"

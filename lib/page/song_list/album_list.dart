@@ -370,6 +370,7 @@ class _AlbumCoverTileState extends State<_AlbumCoverTile> {
   }
 
   void _requestCover(String filePath) {
+    if (_requestedCoverPath == filePath) return;
     _requestedCoverPath = filePath;
     _notifier.requestSongCover(filePath);
   }
@@ -382,16 +383,21 @@ class _AlbumCoverTileState extends State<_AlbumCoverTile> {
 
   @override
   Widget build(BuildContext context) {
+    final directArt = widget.albumArt;
+    final coverArt = directArt != null && directArt.isNotEmpty
+        ? directArt
+        : _notifier.coverForSongPath(widget.filePath);
     return Container(
       width: double.infinity,
       color: Theme.of(context).colorScheme.secondaryContainer,
       // isNotEmpty: 过滤空字节数组；errorBuilder: 兜底解码失败
-      child: widget.albumArt != null && widget.albumArt!.isNotEmpty
+      child: coverArt != null && coverArt.isNotEmpty
           ? Image.memory(
               cacheWidth: 200,
-              widget.albumArt!,
+              coverArt,
               fit: BoxFit.cover,
               gaplessPlayback: true,
+              filterQuality: FilterQuality.medium,
               errorBuilder: (context, error, stackTrace) {
                 return const Icon(Icons.album, size: 50);
               },

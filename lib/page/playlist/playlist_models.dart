@@ -37,11 +37,17 @@ class Song {
 
 // 歌单歌曲元数据缓存
 class SongMetadataCacheEntry {
+  // Bump this whenever metadata decoding changes. Older entries may contain
+  // already-decoded mojibake and therefore cannot be repaired reliably from
+  // their cached strings alone; they must be read again from the audio file.
+  static const int currentDecoderVersion = 2;
+
   final String title;
   final String artist;
   final String album;
   final int? durationMs;
   final int modifiedMs;
+  final int decoderVersion;
 
   const SongMetadataCacheEntry({
     required this.title,
@@ -49,7 +55,10 @@ class SongMetadataCacheEntry {
     required this.album,
     required this.modifiedMs,
     this.durationMs,
+    this.decoderVersion = currentDecoderVersion,
   });
+
+  bool get usesCurrentDecoder => decoderVersion == currentDecoderVersion;
 
   Map<String, dynamic> toJson() {
     return {
@@ -58,6 +67,7 @@ class SongMetadataCacheEntry {
       'album': album,
       'durationMs': durationMs,
       'modifiedMs': modifiedMs,
+      'decoderVersion': decoderVersion,
     };
   }
 
@@ -68,6 +78,9 @@ class SongMetadataCacheEntry {
       album: json['album'] ?? '',
       durationMs: json['durationMs'],
       modifiedMs: json['modifiedMs'] ?? 0,
+      // Cache files written before the decoder version was introduced are
+      // deliberately treated as stale and rebuilt on the next library load.
+      decoderVersion: json['decoderVersion'] ?? 0,
     );
   }
 }

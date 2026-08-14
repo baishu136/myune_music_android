@@ -59,6 +59,96 @@ void main() {
       await tempDirectory.delete(recursive: true);
     }
   });
+
+  test('pure Dart metadata reader decodes GBK WAV INFO tags', () async {
+    final tempDirectory = await Directory.systemTemp.createTemp(
+      'myune-wav-gbk-info-',
+    );
+    final wavFile = File('${tempDirectory.path}/track-with-gbk-info.wav');
+
+    try {
+      wavFile.writeAsBytesSync(_wavWithGbkInfo());
+
+      final result = await readAudioInfoWithDart(
+        path: wavFile.path,
+        options: const AudioInfoOptions(
+          needCover: false,
+          needLyrics: false,
+          needAudioProps: false,
+          needExtraTags: false,
+          needTrackNumber: false,
+        ),
+      );
+
+      expect(result.title, '乌云典当记');
+      expect(result.artist, '万能青年旅店');
+      expect(result.album, '单曲');
+    } finally {
+      await tempDirectory.delete(recursive: true);
+    }
+  });
+}
+
+Uint8List _wavWithGbkInfo() {
+  final fmt = BytesBuilder(copy: false)
+    ..add(_uint16(1))
+    ..add(_uint16(1))
+    ..add(_uint32(8000))
+    ..add(_uint32(16000))
+    ..add(_uint16(2))
+    ..add(_uint16(16));
+  final info = BytesBuilder(copy: false)
+    ..add('INFO'.codeUnits)
+    ..add(
+      _riffChunk(
+        'INAM',
+        Uint8List.fromList([
+          0xce,
+          0xda,
+          0xd4,
+          0xc6,
+          0xb5,
+          0xe4,
+          0xb5,
+          0xb1,
+          0xbc,
+          0xc7,
+          0,
+        ]),
+      ),
+    )
+    ..add(
+      _riffChunk(
+        'IART',
+        Uint8List.fromList([
+          0xcd,
+          0xf2,
+          0xc4,
+          0xdc,
+          0xc7,
+          0xe0,
+          0xc4,
+          0xea,
+          0xc2,
+          0xc3,
+          0xb5,
+          0xea,
+          0,
+        ]),
+      ),
+    )
+    ..add(_riffChunk('IPRD', Uint8List.fromList([0xb5, 0xa5, 0xc7, 0xfa, 0])));
+  final chunks = BytesBuilder(copy: false)
+    ..add(_riffChunk('fmt ', fmt.takeBytes()))
+    ..add(_riffChunk('data', Uint8List(160)))
+    ..add(_riffChunk('LIST', info.takeBytes()));
+  final chunkBytes = chunks.takeBytes();
+  return (BytesBuilder(copy: false)
+        ..add('RIFF'.codeUnits)
+        ..add(_uint32(4 + chunkBytes.length))
+        ..add('WAVE'.codeUnits)
+        ..add(chunkBytes))
+      .takeBytes();
 }
 
 Uint8List _wavWithId3Cover(Uint8List cover) {

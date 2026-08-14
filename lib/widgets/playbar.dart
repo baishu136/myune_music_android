@@ -80,6 +80,14 @@ class _PlaybarState extends State<Playbar> {
                 child: Consumer<PlaylistContentNotifier>(
                   builder: (context, playlistNotifier, child) {
                     final currentSong = playlistNotifier.currentSong;
+                    final directArt = currentSong?.albumArt;
+                    final coverArt = currentSong == null
+                        ? null
+                        : directArt != null && directArt.isNotEmpty
+                        ? directArt
+                        : playlistNotifier.coverForSongPath(
+                            currentSong.filePath,
+                          );
 
                     return Row(
                       children: <Widget>[
@@ -118,14 +126,15 @@ class _PlaybarState extends State<Playbar> {
                           ),
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(4),
-                            child:
-                                (currentSong?.albumArt != null &&
-                                    currentSong!.albumArt!.isNotEmpty)
+                            child: (coverArt != null && coverArt.isNotEmpty)
                                 ? Image.memory(
-                                    currentSong.albumArt!,
+                                    coverArt,
                                     fit: BoxFit.cover,
                                     width: 50,
                                     height: 50,
+                                    gaplessPlayback: true,
+                                    cacheWidth: 150,
+                                    filterQuality: FilterQuality.medium,
                                     errorBuilder: (context, error, stackTrace) {
                                       return Icon(
                                         Icons.music_note,

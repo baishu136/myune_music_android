@@ -2,6 +2,7 @@
 
 import 'dart:ui' as ui;
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -62,8 +63,12 @@ class _BackgroundBlurWidgetState extends State<BackgroundBlurWidget>
     super.dispose();
   }
 
-  void _checkAndUpdateColors(Song? song, bool isDarkTheme) {
-    if (song == null || song.albumArt == null) {
+  void _checkAndUpdateColors(
+    Song? song,
+    Uint8List? albumArt,
+    bool isDarkTheme,
+  ) {
+    if (song == null || albumArt == null || albumArt.isEmpty) {
       if (_extractedColors != null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (mounted) setState(() => _extractedColors = null);
@@ -77,12 +82,20 @@ class _BackgroundBlurWidgetState extends State<BackgroundBlurWidget>
     _lastSongFilePath = song.filePath;
     _isProcessingColor = true;
 
-    _extractColorsAsync(song, isDarkTheme);
+    _extractColorsAsync(song, albumArt, isDarkTheme);
   }
 
-  Future<void> _extractColorsAsync(Song song, bool isDarkTheme) async {
+  Future<void> _extractColorsAsync(
+    Song song,
+    Uint8List albumArt,
+    bool isDarkTheme,
+  ) async {
     try {
-      final ImageProvider imageProvider = MemoryImage(song.albumArt!);
+      final ImageProvider imageProvider = ResizeImage.resizeIfNeeded(
+        256,
+        256,
+        MemoryImage(albumArt),
+      );
       final List<CgColor> cgColors = await extractColor(imageProvider, 6);
 
       if (!mounted || song.filePath != _lastSongFilePath) return;
@@ -182,10 +195,18 @@ class _BackgroundBlurWidgetState extends State<BackgroundBlurWidget>
     return Consumer<PlaylistContentNotifier>(
       builder: (context, playlistNotifier, child) {
         final currentSong = playlistNotifier.currentSong;
+        final directArt = currentSong?.albumArt;
+        final currentCover = currentSong == null
+            ? null
+            : directArt != null && directArt.isNotEmpty
+            ? directArt
+            : playlistNotifier.coverForSongPath(currentSong.filePath);
 
-        _checkAndUpdateColors(currentSong, isDarkTheme);
+        _checkAndUpdateColors(currentSong, currentCover, isDarkTheme);
         // 当没有封面图或用户未启用模糊背景时，使用纯色背景
-        if (currentSong?.albumArt == null || !useBlurBackground) {
+        if (currentCover == null ||
+            currentCover.isEmpty ||
+            !useBlurBackground) {
           return Container(
             color: Theme.of(context).colorScheme.surface,
             child: child,
@@ -265,8 +286,11 @@ class _BackgroundBlurWidgetState extends State<BackgroundBlurWidget>
                 tileMode: TileMode.decal,
               ),
               child: Image.memory(
-                currentSong!.albumArt!,
+                currentCover,
                 fit: BoxFit.cover,
+                gaplessPlayback: true,
+                cacheWidth: 720,
+                filterQuality: FilterQuality.medium,
                 errorBuilder: (context, error, stackTrace) =>
                     Container(color: Theme.of(context).colorScheme.surface),
               ),
@@ -408,6 +432,15 @@ class SongDetailPage extends StatelessWidget {
                                     builder: (context, playlistNotifier, child) {
                                       final currentSong =
                                           playlistNotifier.currentSong;
+                                      final directCover = currentSong?.albumArt;
+                                      final currentCover = currentSong == null
+                                          ? null
+                                          : directCover != null &&
+                                                directCover.isNotEmpty
+                                          ? directCover
+                                          : playlistNotifier.coverForSongPath(
+                                              currentSong.filePath,
+                                            );
                                       return LayoutBuilder(
                                         builder: (context, constraints) {
                                           final w = constraints.maxWidth;
@@ -505,15 +538,19 @@ class SongDetailPage extends StatelessWidget {
                                                     child: AspectRatio(
                                                       aspectRatio: 1,
                                                       child:
-                                                          (currentSong?.albumArt !=
+                                                          (currentCover !=
                                                                   null &&
-                                                              currentSong!
-                                                                  .albumArt!
+                                                              currentCover
                                                                   .isNotEmpty)
                                                           ? Image.memory(
-                                                              currentSong
-                                                                  .albumArt!,
+                                                              currentCover,
                                                               fit: BoxFit.cover,
+                                                              gaplessPlayback:
+                                                                  true,
+                                                              cacheWidth: 720,
+                                                              filterQuality:
+                                                                  FilterQuality
+                                                                      .medium,
                                                               errorBuilder:
                                                                   (
                                                                     _,

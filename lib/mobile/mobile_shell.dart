@@ -178,10 +178,15 @@ class _MobileShellState extends State<MobileShell> {
         settings.homeThemeImageEnabled &&
         settings.homeThemeImagePath != null &&
         File(settings.homeThemeImagePath!).existsSync();
-    final currentAlbumArt = notifier.currentSong?.albumArt;
+    final currentSong = notifier.currentSong;
+    final directAlbumArt = currentSong?.albumArt;
+    final currentAlbumArt = currentSong == null
+        ? null
+        : directAlbumArt != null && directAlbumArt.isNotEmpty
+        ? directAlbumArt
+        : notifier.coverForSongPath(currentSong.filePath);
     final useAlbumArtOnHome =
-        settings.followAlbumArtOnHome &&
-        _hasUsableAlbumArt(notifier.currentSong);
+        settings.followAlbumArtOnHome && currentAlbumArt != null;
     final useHomeTheme = useCustomHomeTheme || useAlbumArtOnHome;
     final page = switch (_tab) {
       0 => _LibraryTab(
@@ -641,15 +646,28 @@ class _MobileShellState extends State<MobileShell> {
   }
 
   Future<void> _showSearch(BuildContext context) async {
-    final controller = TextEditingController(text: _query);
+    final notifier = context.read<PlaylistContentNotifier>();
+    final scope = _tab == 1
+        ? _SongSearchScope.currentPlaylist
+        : _SongSearchScope.library;
+    final sourceSongs = List<Song>.from(
+      scope == _SongSearchScope.currentPlaylist
+          ? notifier.currentPlaylistSongs
+          : notifier.allSongs,
+    );
     await showSearch<void>(
       context: context,
       delegate: _SongSearchDelegate(
         initialQuery: _query,
+        scope: scope,
+        sourceSongs: sourceSongs,
         onChanged: (value) => setState(() => _query = value),
       ),
     );
-    controller.dispose();
+    // 退出搜索后恢复原始曲库/歌单界面，搜索只负责定位歌曲。
+    if (mounted && _query.isNotEmpty) {
+      setState(() => _query = '');
+    }
   }
 
   Future<void> _showImportOptions() async {
@@ -750,7 +768,7 @@ class _LibraryTabState extends State<_LibraryTab>
         final notifier = context.read<PlaylistContentNotifier>();
         return widget.query.isEmpty
             ? notifier.playSongFromAllSongs(index)
-            : notifier.playFromDynamicList(List<Song>.from(filtered), index);
+            : notifier.playAllSongsSearchResult(filtered[index]);
       },
     );
   }
@@ -1065,16 +1083,48 @@ class _SongCollectionPage extends StatelessWidget {
   const _SongCollectionPage({required this.title, required this.songs});
   final String title;
   final List<Song> songs;
+
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(title)),
-    body: _SongList(
-      songs: songs,
-      onPlay: (index) => context
-          .read<PlaylistContentNotifier>()
-          .playFromDynamicList(songs, index),
-    ),
-  );
+  Widget build(BuildContext context) {
+    final notifier = context.watch<PlaylistContentNotifier>();
+    final settings = context.watch<SettingsProvider>();
+    final customBackgroundEnabled =
+        settings.homeThemeImageEnabled &&
+        settings.homeThemeImagePath != null &&
+        File(settings.homeThemeImagePath!).existsSync();
+    final backgroundSong = notifier.currentSong;
+    final backgroundAlbumArt = backgroundSong == null
+        ? null
+        : backgroundSong.albumArt?.isNotEmpty == true
+        ? backgroundSong.albumArt
+        : notifier.coverForSongPath(backgroundSong.filePath);
+    final albumArtBackgroundEnabled =
+        settings.followAlbumArtOnHome && backgroundAlbumArt != null;
+    final useBackground = customBackgroundEnabled || albumArtBackgroundEnabled;
+
+    final scaffold = Scaffold(
+      backgroundColor: useBackground ? Colors.transparent : null,
+      appBar: AppBar(
+        title: Text(title),
+        backgroundColor: useBackground ? Colors.transparent : null,
+        scrolledUnderElevation: useBackground ? 0 : null,
+      ),
+      body: _SongList(
+        songs: songs,
+        onPlay: (index) => notifier.playFromDynamicList(songs, index),
+      ),
+    );
+
+    return CustomThemeBackground(
+      path: settings.homeThemeImagePath,
+      enabled: customBackgroundEnabled,
+      dim: settings.homeThemeImageDim,
+      coverBytes: backgroundAlbumArt,
+      coverEnabled: albumArtBackgroundEnabled,
+      coverDim: 0.56,
+      child: scaffold,
+    );
+  }
 }
 
 class _SongList extends StatelessWidget {
@@ -1392,6 +1442,8 @@ class _NowPlayingPage extends StatefulWidget {
 
 class _NowPlayingPageState extends State<_NowPlayingPage> {
   bool _showLyrics = false;
+  final MobileLyricsListController _lyricsListController =
+      MobileLyricsListController();
   double? _seekPositionMs;
   bool _isDraggingSeek = false;
   int _seekSessionId = 0;
@@ -1594,12 +1646,16 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
     final lyricFontFamily = context.watch<ThemeProvider>().currentFontFamily;
     final song = notifier.currentSong;
     final useCustomPlaybackTheme = _hasCustomPlaybackTheme(settings);
-    final useAlbumArtOnPlayback =
-        settings.followAlbumArtOnPlayback && _hasUsableAlbumArt(song);
-    final usePlaybackTheme = useCustomPlaybackTheme || useAlbumArtOnPlayback;
     if (song == null) {
       return const Scaffold(body: Center(child: Text('尚未播放歌曲')));
     }
+    final directAlbumArt = song.albumArt;
+    final currentAlbumArt = directAlbumArt != null && directAlbumArt.isNotEmpty
+        ? directAlbumArt
+        : notifier.coverForSongPath(song.filePath);
+    final useAlbumArtOnPlayback =
+        settings.followAlbumArtOnPlayback && currentAlbumArt != null;
+    final usePlaybackTheme = useCustomPlaybackTheme || useAlbumArtOnPlayback;
     if (_lastSongPath != song.filePath) {
       _lastSongPath = song.filePath;
       _resetSeekTracking();
@@ -1730,7 +1786,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
       path: settings.playbackThemeImagePath,
       enabled: useCustomPlaybackTheme,
       dim: settings.playbackThemeImageDim,
-      coverBytes: song.albumArt,
+      coverBytes: currentAlbumArt,
       coverEnabled: useAlbumArtOnPlayback,
       coverDim: 0.52,
       child: scaffold,
@@ -1750,7 +1806,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
       behavior: HitTestBehavior.opaque,
       onTap: () {
         final switchingToCover = _showLyrics;
+        final switchingToLyrics = !_showLyrics;
         setState(() => _showLyrics = !_showLyrics);
+        if (switchingToLyrics) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted || !_showLyrics) return;
+            _lyricsListController.recenter();
+          });
+        }
         if (switchingToCover && notifier.currentLyrics.isEmpty) {
           unawaited(notifier.refreshCurrentLyricsIfEmpty());
         }
@@ -1778,33 +1841,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage> {
                       surfaceTintColor: usePlaybackTheme
                           ? Colors.transparent
                           : null,
-                      child: usePlaybackTheme
-                          ? ShaderMask(
-                              blendMode: BlendMode.dstIn,
-                              shaderCallback: (bounds) => const LinearGradient(
-                                begin: Alignment.topCenter,
-                                end: Alignment.bottomCenter,
-                                colors: [
-                                  Colors.transparent,
-                                  Colors.black,
-                                  Colors.black,
-                                  Colors.transparent,
-                                ],
-                                stops: [0, .09, .91, 1],
-                              ).createShader(bounds),
-                              child: MobileLyricsList(
-                                lines: notifier.currentLyrics,
-                                active: notifier.currentLyricLineIndex,
-                                fontSize: settings.fontSize,
-                                fontFamily: lyricFontFamily,
-                              ),
-                            )
-                          : MobileLyricsList(
-                              lines: notifier.currentLyrics,
-                              active: notifier.currentLyricLineIndex,
-                              fontSize: settings.fontSize,
-                              fontFamily: lyricFontFamily,
-                            ),
+                      child: MobileLyricsList(
+                        controller: _lyricsListController,
+                        lines: notifier.currentLyrics,
+                        active: notifier.currentLyricLineIndex,
+                        fontSize: settings.fontSize,
+                        fontFamily: lyricFontFamily,
+                        edgeFadeEnabled: usePlaybackTheme,
+                      ),
                     )
                   : LayoutBuilder(
                       key: const ValueKey('cover'),
@@ -2801,7 +2845,7 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
               _draggingEqualizerGains[index] ?? notifier.equalizerGains[index];
           return Row(
             children: [
-              SizedBox(width: 42, child: Text(_frequency(frequency))),
+              SizedBox(width: 64, child: Text(_frequency(frequency))),
               Expanded(
                 child: Slider(
                   min: -12,
@@ -3022,7 +3066,10 @@ class _CoverState extends State<_Cover> {
 
   @override
   Widget build(BuildContext context) {
-    final art = widget.song.albumArt;
+    final directArt = widget.song.albumArt;
+    final art = directArt != null && directArt.isNotEmpty
+        ? directArt
+        : _notifier?.coverForSongPath(widget.song.filePath);
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: SizedBox(
@@ -3033,7 +3080,17 @@ class _CoverState extends State<_Cover> {
                 color: Theme.of(context).colorScheme.secondaryContainer,
                 child: Icon(Icons.music_note, size: widget.size * .5),
               )
-            : Image.memory(art, fit: BoxFit.cover),
+            : Image.memory(
+                art,
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                cacheWidth: (widget.size * 3).round().clamp(96, 384),
+                filterQuality: FilterQuality.medium,
+                errorBuilder: (context, error, stackTrace) => ColoredBox(
+                  color: Theme.of(context).colorScheme.secondaryContainer,
+                  child: Icon(Icons.music_note, size: widget.size * .5),
+                ),
+              ),
       ),
     );
   }
@@ -3092,12 +3149,25 @@ class _PlaylistCard extends StatelessWidget {
   }
 }
 
+enum _SongSearchScope { library, currentPlaylist }
+
 class _SongSearchDelegate extends SearchDelegate<void> {
-  _SongSearchDelegate({required String initialQuery, required this.onChanged}) {
+  _SongSearchDelegate({
+    required String initialQuery,
+    required this.onChanged,
+    required this.scope,
+    required this.sourceSongs,
+  }) : super(
+         searchFieldLabel: scope == _SongSearchScope.currentPlaylist
+             ? '在当前歌单中搜索'
+             : '搜索音乐库',
+       ) {
     query = initialQuery;
   }
 
   final ValueChanged<String> onChanged;
+  final _SongSearchScope scope;
+  final List<Song> sourceSongs;
 
   @override
   List<Widget> buildActions(BuildContext context) => [
@@ -3127,13 +3197,24 @@ class _SongSearchDelegate extends SearchDelegate<void> {
   Widget buildSuggestions(BuildContext context) => _results(context);
 
   Widget _results(BuildContext context) {
-    final notifier = context.watch<PlaylistContentNotifier>();
-    final songs = notifier.searchSongs(query, notifier.allSongs);
+    final songs = context.read<PlaylistContentNotifier>().searchSongs(
+      query,
+      sourceSongs,
+    );
     return _SongList(
       songs: songs,
-      onPlay: (index) => context
-          .read<PlaylistContentNotifier>()
-          .playFromDynamicList(songs, index),
+      onPlay: (index) async {
+        final notifier = context.read<PlaylistContentNotifier>();
+        final song = songs[index];
+        if (scope == _SongSearchScope.currentPlaylist) {
+          await notifier.playCurrentPlaylistSearchResult(song);
+        } else {
+          await notifier.playAllSongsSearchResult(song);
+        }
+        if (context.mounted) {
+          close(context, null);
+        }
+      },
     );
   }
 }
@@ -3168,8 +3249,8 @@ String _longDuration(Duration value) {
 }
 
 String _frequency(num value) => value >= 1000
-    ? '${(value / 1000).toStringAsFixed(value % 1000 == 0 ? 0 : 1)}k'
-    : value.toStringAsFixed(0);
+    ? '${(value / 1000).toStringAsFixed(value % 1000 == 0 ? 0 : 1)}k Hz'
+    : '${value.toStringAsFixed(0)} Hz';
 
 String _dateTime(DateTime value) {
   String two(int number) => number.toString().padLeft(2, '0');

@@ -15,15 +15,26 @@ class About extends StatelessWidget {
         decoration: TextDecoration.underline,
         fontSize: 14,
       ),
-      recognizer: TapGestureRecognizer()..onTap = () => _openUrl(url),
+      recognizer: TapGestureRecognizer()..onTap = () => _openUrl(context, url),
     );
   }
 
   // 打开链接
-  void _openUrl(String url) async {
+  Future<void> _openUrl(BuildContext context, String url) async {
     final uri = Uri.parse(url);
-    if (await canLaunchUrl(uri)) {
-      await launchUrl(uri, mode: LaunchMode.externalApplication);
+    try {
+      final opened = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!opened && context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('无法打开链接，请检查浏览器设置后重试')));
+      }
+    } catch (_) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('无法打开链接，请检查网络或浏览器设置')));
+      }
     }
   }
 

@@ -59,8 +59,9 @@ class AlbumDetailView extends StatelessWidget {
 
   Uint8List? _findAlbumCover(PlaylistContentNotifier notifier) {
     for (final song in notifier.activeSongList) {
-      final albumArt = song.albumArt;
-      if (albumArt != null) {
+      final albumArt =
+          song.albumArt ?? notifier.coverForSongPath(song.filePath);
+      if (albumArt != null && albumArt.isNotEmpty) {
         return albumArt;
       }
     }
@@ -393,7 +394,13 @@ class _AlbumCoverArt extends StatelessWidget {
         ],
       ),
       child: cover != null
-          ? Image.memory(cover!, fit: BoxFit.cover, gaplessPlayback: true)
+          ? Image.memory(
+              cover!,
+              fit: BoxFit.cover,
+              gaplessPlayback: true,
+              cacheWidth: 264,
+              filterQuality: FilterQuality.medium,
+            )
           : Icon(
               Icons.album,
               size: 42,

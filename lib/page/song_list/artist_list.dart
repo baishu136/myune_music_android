@@ -325,6 +325,7 @@ class _ArtistCoverAvatarState extends State<_ArtistCoverAvatar> {
   }
 
   void _requestCover(String filePath) {
+    if (_requestedCoverPath == filePath) return;
     _requestedCoverPath = filePath;
     _notifier.requestSongCover(filePath);
   }
@@ -337,15 +338,15 @@ class _ArtistCoverAvatarState extends State<_ArtistCoverAvatar> {
 
   @override
   Widget build(BuildContext context) {
+    final directArt = widget.representativeArt;
+    final coverArt = directArt != null && directArt.isNotEmpty
+        ? directArt
+        : _notifier.coverForSongPath(widget.filePath);
     return CircleAvatar(
-      backgroundImage: widget.representativeArt != null
-          ? ResizeImage(
-              MemoryImage(widget.representativeArt!),
-              width: 100,
-              height: 100,
-            )
+      backgroundImage: coverArt != null
+          ? ResizeImage(MemoryImage(coverArt), width: 100, height: 100)
           : null,
-      child: widget.representativeArt == null ? const Icon(Icons.person) : null,
+      child: coverArt == null ? const Icon(Icons.person) : null,
     );
   }
 }

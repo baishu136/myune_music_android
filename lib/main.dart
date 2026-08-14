@@ -14,6 +14,7 @@ import 'package:windows_taskbar/windows_taskbar.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 
 import 'hot_keys.dart';
+import 'theme/theme_motion.dart';
 import 'theme/theme_provider.dart';
 import 'layout/app_shell.dart';
 import 'mobile/mobile_shell.dart';
@@ -62,8 +63,11 @@ void main() async {
     exit(0); // 退出第二个实例
   }
 
-  PaintingBinding.instance.imageCache.maximumSize = 200;
-  PaintingBinding.instance.imageCache.maximumSizeBytes = 20 * 1024 * 1024;
+  // Keep decoded artwork warm across route transitions. The previous 20 MiB
+  // limit could evict a handful of high-density covers while a new page was
+  // being built, which briefly left the destination page without artwork.
+  PaintingBinding.instance.imageCache.maximumSize = 320;
+  PaintingBinding.instance.imageCache.maximumSizeBytes = 48 * 1024 * 1024;
 
   MpvAudioKit.ensureInitialized();
 
@@ -465,6 +469,8 @@ class _MyAppState extends State<MyApp> with TrayListener {
           theme: themeProvider.lightThemeData,
           darkTheme: themeProvider.darkThemeData,
           themeMode: themeProvider.themeMode,
+          themeAnimationDuration: ThemeMotion.transitionDuration,
+          themeAnimationCurve: ThemeMotion.transitionCurve,
           builder: (context, materialAppChild) => Platform.isAndroid
               ? GlobalNoticeOverlay(child: materialAppChild!)
               : DragToResizeArea(child: Hotkeys(child: materialAppChild!)),

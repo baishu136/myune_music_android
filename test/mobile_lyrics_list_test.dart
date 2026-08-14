@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
+import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 void main() {
   testWidgets('active lyric automatically scrolls into the visible area', (
@@ -122,6 +123,100 @@ void main() {
     );
     expect(style.style.fontFamily, 'TestLyricsFont');
   });
+
+  testWidgets('manual lyric browsing resumes follow after six idle seconds', (
+    tester,
+  ) async {
+    final hostKey = GlobalKey<_LyricsHostState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(height: 220, child: _LyricsHost(key: hostKey)),
+        ),
+      ),
+    );
+    hostKey.currentState!.setActive(20);
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byType(ScrollablePositionedList),
+      const Offset(0, -140),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+    hostKey.currentState!.setActive(40);
+    await tester.pump();
+
+    final active = find.byKey(const ValueKey('mobile_lyric_40'));
+    expect(active, findsNothing);
+
+    await tester.pump(const Duration(seconds: 5));
+    expect(active, findsNothing);
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(active, findsOneWidget);
+    expect(tester.getCenter(active).dy, closeTo(110, 24));
+  });
+
+  testWidgets('controller recenters the active lyric immediately', (
+    tester,
+  ) async {
+    final hostKey = GlobalKey<_LyricsHostState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(height: 220, child: _LyricsHost(key: hostKey)),
+        ),
+      ),
+    );
+    hostKey.currentState!.setActive(25);
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byType(ScrollablePositionedList),
+      const Offset(0, -160),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    hostKey.currentState!.recenter();
+    await tester.pumpAndSettle();
+
+    final active = find.byKey(const ValueKey('mobile_lyric_25'));
+    expect(active, findsOneWidget);
+    expect(tester.getCenter(active).dy, closeTo(110, 24));
+  });
+
+  testWidgets('edge fade is opt-in', (tester) async {
+    final lines = [
+      LyricLine(timestamp: Duration.zero, texts: const ['第一行']),
+      LyricLine(timestamp: const Duration(seconds: 1), texts: const ['第二行']),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: MobileLyricsList(lines: lines, active: 0)),
+      ),
+    );
+    expect(find.byKey(const ValueKey('mobile_lyrics_edge_fade')), findsNothing);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: MobileLyricsList(
+            lines: lines,
+            active: 0,
+            edgeFadeEnabled: true,
+          ),
+        ),
+      ),
+    );
+    expect(
+      find.byKey(const ValueKey('mobile_lyrics_edge_fade')),
+      findsOneWidget,
+    );
+  });
 }
 
 class _LyricsHost extends StatefulWidget {
@@ -134,6 +229,7 @@ class _LyricsHost extends StatefulWidget {
 class _LyricsHostState extends State<_LyricsHost> {
   int active = 0;
   double fontSize = 20;
+  final controller = MobileLyricsListController();
   final lines = List.generate(
     50,
     (index) => LyricLine(
@@ -146,7 +242,13 @@ class _LyricsHostState extends State<_LyricsHost> {
 
   void setFontSize(double value) => setState(() => fontSize = value);
 
+  void recenter() => controller.recenter();
+
   @override
-  Widget build(BuildContext context) =>
-      MobileLyricsList(lines: lines, active: active, fontSize: fontSize);
+  Widget build(BuildContext context) => MobileLyricsList(
+    controller: controller,
+    lines: lines,
+    active: active,
+    fontSize: fontSize,
+  );
 }

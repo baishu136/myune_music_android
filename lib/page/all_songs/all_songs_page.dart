@@ -170,10 +170,9 @@ class _AllSongsPageState extends State<AllSongsPage> {
                                         enableContextMenu: false,
                                         onTap: () {
                                           if (notifier.isSearching) {
-                                            // 搜索模式下使用当前渲染列表快照，避免索引错位
-                                            notifier.playFromDynamicList(
-                                              List<Song>.from(songs),
-                                              index,
+                                            // 搜索只定位歌曲，播放上下文仍使用完整曲库。
+                                            notifier.playAllSongsSearchResult(
+                                              songs[index],
                                             );
                                           } else {
                                             notifier.playSongFromAllSongs(
