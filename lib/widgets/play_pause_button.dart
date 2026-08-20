@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 
 class PlayPauseButton extends StatefulWidget {
@@ -27,13 +29,18 @@ class PlayPauseButton extends StatefulWidget {
 class _PlayPauseButtonState extends State<PlayPauseButton>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
+  late final Animation<double> _progress;
 
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 320),
+      duration: const Duration(milliseconds: 300),
+    );
+    _progress = CurvedAnimation(
+      parent: _controller,
+      curve: Curves.easeInOutCubic,
     );
 
     // 根据初始播放状态设置动画控制器的值
@@ -68,13 +75,21 @@ class _PlayPauseButtonState extends State<PlayPauseButton>
       iconSize: widget.size,
       padding: widget.padding,
       tooltip: widget.tooltip,
-      icon: AnimatedIcon(
-        icon: AnimatedIcons.play_pause,
-        progress: CurvedAnimation(
-          parent: _controller,
-          curve: Curves.easeInOutCubic,
+      icon: AnimatedBuilder(
+        animation: _progress,
+        builder: (context, child) {
+          final transition = math.sin(math.pi * _progress.value);
+          return Transform.rotate(
+            key: const ValueKey('play_pause_rotation'),
+            angle: transition * math.pi / 3,
+            child: Transform.scale(scale: 1 - transition * .08, child: child),
+          );
+        },
+        child: AnimatedIcon(
+          icon: AnimatedIcons.play_pause,
+          progress: _progress,
+          color: widget.color,
         ),
-        color: widget.color,
       ),
       onPressed: widget.onPressed,
     );

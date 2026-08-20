@@ -7,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../theme/theme_motion.dart';
 import '../theme/theme_provider.dart';
+import 'artwork_image.dart';
 
 class CustomThemeBackground extends StatelessWidget {
   const CustomThemeBackground({
@@ -35,10 +36,7 @@ class CustomThemeBackground extends StatelessWidget {
 
   bool get _canShowCustomImage {
     final value = path;
-    return enabled &&
-        value != null &&
-        value.isNotEmpty &&
-        File(value).existsSync();
+    return enabled && value != null && value.isNotEmpty;
   }
 
   @override
@@ -54,8 +52,9 @@ class CustomThemeBackground extends StatelessWidget {
       null => Theme.of(context).brightness == Brightness.dark,
     };
     Widget image = showCover
-        ? Image.memory(
-            coverBytes!,
+        ? ArtworkImage(
+            bytes: coverBytes!,
+            size: ArtworkSize.medium,
             key: const ValueKey('cover-follow-background'),
             fit: BoxFit.cover,
             filterQuality: FilterQuality.medium,
@@ -67,6 +66,8 @@ class CustomThemeBackground extends StatelessWidget {
             fit: BoxFit.cover,
             filterQuality: FilterQuality.medium,
             gaplessPlayback: true,
+            errorBuilder: (_, __, ___) =>
+                const ColoredBox(color: Colors.transparent),
           );
     if (showCover && coverBlurSigma > 0) {
       image = ClipRect(

@@ -9,6 +9,7 @@ import 'balance_rate_control.dart';
 import 'play_pause_button.dart';
 import 'play_mode_button.dart';
 import '../page/setting/settings_provider.dart';
+import 'artwork_image.dart';
 
 // 格式化时间函数
 String _formatDuration(Duration duration) {
@@ -127,13 +128,13 @@ class _PlaybarState extends State<Playbar> {
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(4),
                             child: (coverArt != null && coverArt.isNotEmpty)
-                                ? Image.memory(
-                                    coverArt,
+                                ? ArtworkImage(
+                                    bytes: coverArt,
+                                    size: ArtworkSize.thumbnail,
                                     fit: BoxFit.cover,
                                     width: 50,
                                     height: 50,
                                     gaplessPlayback: true,
-                                    cacheWidth: 150,
                                     filterQuality: FilterQuality.medium,
                                     errorBuilder: (context, error, stackTrace) {
                                       return Icon(

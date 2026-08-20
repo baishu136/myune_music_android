@@ -8,10 +8,15 @@ import '../page/playlist/playlist_models.dart';
 class MobileLyricsListController {
   Object? _owner;
   VoidCallback? _recenterCallback;
+  bool _recenterPending = false;
 
   void _attach(Object owner, VoidCallback callback) {
     _owner = owner;
     _recenterCallback = callback;
+    if (_recenterPending) {
+      _recenterPending = false;
+      callback();
+    }
   }
 
   void _detach(Object owner) {
@@ -20,7 +25,14 @@ class MobileLyricsListController {
     _recenterCallback = null;
   }
 
-  void recenter() => _recenterCallback?.call();
+  void recenter() {
+    final callback = _recenterCallback;
+    if (callback == null) {
+      _recenterPending = true;
+      return;
+    }
+    callback();
+  }
 }
 
 class MobileLyricsList extends StatefulWidget {
@@ -32,6 +44,7 @@ class MobileLyricsList extends StatefulWidget {
     this.fontFamily,
     this.controller,
     this.edgeFadeEnabled = false,
+    this.position = Duration.zero,
   });
 
   final List<LyricLine> lines;
@@ -40,6 +53,7 @@ class MobileLyricsList extends StatefulWidget {
   final String? fontFamily;
   final MobileLyricsListController? controller;
   final bool edgeFadeEnabled;
+  final Duration position;
 
   @override
   State<MobileLyricsList> createState() => _MobileLyricsListState();
@@ -105,13 +119,20 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
     });
   }
 
-  void _markManualInteraction() {
+  void _startManualInteraction() {
     if (!mounted) return;
     _isManuallyBrowsing = true;
     _centerRequestId++;
     _resumeFollowTimer?.cancel();
+    _resumeFollowTimer = null;
+  }
+
+  void _scheduleResumeFollowTimer() {
+    if (!mounted || !_isManuallyBrowsing) return;
+    _resumeFollowTimer?.cancel();
     _resumeFollowTimer = Timer(const Duration(seconds: 6), () {
       if (!mounted) return;
+      _resumeFollowTimer = null;
       _isManuallyBrowsing = false;
       _scrollToActive(jump: false, force: true);
     });
@@ -131,13 +152,9 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
   bool _onScrollNotification(ScrollNotification notification) {
     if (notification is ScrollStartNotification &&
         notification.dragDetails != null) {
-      _markManualInteraction();
-    } else if (notification is ScrollUpdateNotification &&
-        notification.dragDetails != null) {
-      _markManualInteraction();
-    } else if (notification is OverscrollNotification &&
-        notification.dragDetails != null) {
-      _markManualInteraction();
+      _startManualInteraction();
+    } else if (notification is ScrollEndNotification && _isManuallyBrowsing) {
+      _scheduleResumeFollowTimer();
     }
     return false;
   }
@@ -153,12 +170,14 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
   }
 
   double get _activeAlignment {
-    if (_viewportHeight <= 0 ||
-        widget.active < 0 ||
-        widget.active >= widget.lines.length) {
+    return _alignmentFor(widget.active);
+  }
+
+  double _alignmentFor(int index) {
+    if (_viewportHeight <= 0 || index < 0 || index >= widget.lines.length) {
       return 0.45;
     }
-    final lineCount = widget.lines[widget.active].texts.fold<int>(
+    final lineCount = widget.lines[index].texts.fold<int>(
       0,
       (count, text) => count + '\n'.allMatches(text).length + 1,
     );
@@ -195,18 +214,25 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
                 padding: EdgeInsets.symmetric(vertical: edgePadding),
                 itemCount: widget.lines.length,
                 itemBuilder: (itemContext, index) {
+                  final isActive = index == widget.active;
                   final style = DefaultTextStyle.of(itemContext).style.copyWith(
                     fontFamily: widget.fontFamily,
-                    fontSize: index == widget.active
+                    fontSize: isActive
                         ? widget.fontSize
                         : (widget.fontSize * 0.84).clamp(12.0, 32.0),
-                    fontWeight: index == widget.active
-                        ? FontWeight.w700
-                        : FontWeight.w400,
-                    color: index == widget.active
+                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w400,
+                    color: isActive
                         ? Theme.of(itemContext).colorScheme.primary
-                        : null,
+                        : _unplayedColor(itemContext),
                   );
+                  final lyric = isActive
+                      ? _KaraokeLyricText(
+                          line: widget.lines[index],
+                          position: widget.position,
+                          playedColor: style.color!,
+                          unplayedColor: _unplayedColor(itemContext),
+                        )
+                      : Text(widget.lines[index].texts.join('\n'));
                   return Padding(
                     key: ValueKey('mobile_lyric_$index'),
                     padding: const EdgeInsets.symmetric(
@@ -214,11 +240,11 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
                       vertical: 5,
                     ),
                     child: AnimatedDefaultTextStyle(
-                      duration: const Duration(milliseconds: 200),
+                      duration: const Duration(milliseconds: 160),
                       curve: Curves.easeOutCubic,
                       style: style,
                       textAlign: TextAlign.center,
-                      child: Text(widget.lines[index].texts.join('\n')),
+                      child: lyric,
                     ),
                   );
                 },
@@ -233,11 +259,11 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
                   end: Alignment.bottomCenter,
                   colors: [
                     Colors.transparent,
-                    Colors.white,
-                    Colors.white,
+                    Colors.black,
+                    Colors.black,
                     Colors.transparent,
                   ],
-                  stops: [0, 0.14, 0.86, 1],
+                  stops: [0, 0.10, 0.90, 1],
                 ).createShader(bounds),
                 child: lyrics,
               );
@@ -245,4 +271,94 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
             return lyrics;
           },
         );
+
+  Color _unplayedColor(BuildContext context) =>
+      Theme.of(context).brightness == Brightness.dark
+      ? Colors.white.withValues(alpha: .50)
+      : const Color(0xFF757575).withValues(alpha: .50);
+}
+
+class _KaraokeLyricText extends StatelessWidget {
+  const _KaraokeLyricText({
+    required this.line,
+    required this.position,
+    required this.playedColor,
+    required this.unplayedColor,
+  });
+
+  final LyricLine line;
+  final Duration position;
+  final Color playedColor;
+  final Color unplayedColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final tokenRows = line.tokens;
+    if (tokenRows == null || tokenRows.isEmpty) {
+      return Text(line.texts.join('\n'));
+    }
+    final spans = <InlineSpan>[];
+    for (var row = 0; row < line.texts.length; row++) {
+      if (row > 0) spans.add(const TextSpan(text: '\n'));
+      final tokens = row < tokenRows.length ? tokenRows[row] : null;
+      if (tokens == null || tokens.isEmpty) {
+        spans.add(
+          TextSpan(
+            text: line.texts[row],
+            style: TextStyle(color: unplayedColor),
+          ),
+        );
+        continue;
+      }
+      for (final token in tokens) {
+        _appendTokenSpans(spans, token);
+      }
+    }
+    return Text.rich(TextSpan(children: spans), textAlign: TextAlign.center);
+  }
+
+  void _appendTokenSpans(List<InlineSpan> spans, LyricToken token) {
+    final durationMs = token.end.inMilliseconds - token.start.inMilliseconds;
+    final elapsedMs = position.inMilliseconds - token.start.inMilliseconds;
+    if (elapsedMs <= 0) {
+      spans.add(
+        TextSpan(
+          text: token.text,
+          style: TextStyle(color: unplayedColor),
+        ),
+      );
+      return;
+    }
+    if (durationMs <= 0 || elapsedMs >= durationMs) {
+      spans.add(
+        TextSpan(
+          text: token.text,
+          style: TextStyle(color: playedColor),
+        ),
+      );
+      return;
+    }
+    final runes = token.text.runes.toList(growable: false);
+    if (runes.isEmpty) return;
+    final completed = (runes.length * elapsedMs / durationMs).floor().clamp(
+      0,
+      runes.length,
+    );
+    if (completed > 0) {
+      spans.add(
+        TextSpan(
+          text: String.fromCharCodes(runes.take(completed)),
+          style: TextStyle(color: playedColor),
+        ),
+      );
+    }
+    if (completed < runes.length) {
+      spans.add(
+        TextSpan(
+          text: String.fromCharCodes(runes.skip(completed)),
+          style: TextStyle(color: unplayedColor),
+        ),
+      );
+    }
+  }
 }

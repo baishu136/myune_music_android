@@ -10,12 +10,17 @@ import 'tabs/hotkeys_tab.dart';
 import 'tabs/advanced_tab.dart';
 
 // 定义应用版本号常量
-const String appVersion = '0.9.4-android.49';
+const String appVersion = '0.9.7-android.77';
 
 class SettingPage extends StatefulWidget {
-  const SettingPage({super.key, this.onSectionChanged});
+  const SettingPage({
+    super.key,
+    this.onSectionChanged,
+    this.onSwipeBackFromFirstSection,
+  });
 
   final ValueChanged<String>? onSectionChanged;
+  final VoidCallback? onSwipeBackFromFirstSection;
 
   @override
   State<SettingPage> createState() => _SettingPageState();
@@ -23,6 +28,9 @@ class SettingPage extends StatefulWidget {
 
 class _SettingPageState extends State<SettingPage> {
   int _selectedIndex = 1;
+  late final PageController _androidPageController;
+  double _leadingEdgeDragDistance = 0;
+  bool _leadingEdgeSwipeHandled = false;
 
   static const _androidDestinations = <(int, String, IconData)>[
     (1, '个性化', Icons.palette_outlined),
@@ -34,9 +42,16 @@ class _SettingPageState extends State<SettingPage> {
   @override
   void initState() {
     super.initState();
+    _androidPageController = PageController();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       widget.onSectionChanged?.call(_androidDestinations.first.$2);
     });
+  }
+
+  @override
+  void dispose() {
+    _androidPageController.dispose();
+    super.dispose();
   }
 
   void _selectAndroidSection((int, String, IconData) section) {
@@ -44,6 +59,81 @@ class _SettingPageState extends State<SettingPage> {
       setState(() => _selectedIndex = section.$1);
     }
     widget.onSectionChanged?.call(section.$2);
+  }
+
+  void _animateToAndroidSection(int pageIndex) {
+    final section = _androidDestinations[pageIndex];
+    _selectAndroidSection(section);
+    if (!_androidPageController.hasClients) return;
+    _androidPageController.animateToPage(
+      pageIndex,
+      duration: const Duration(milliseconds: 320),
+      curve: Curves.easeOutCubic,
+    );
+  }
+
+  Widget _androidPager() => NotificationListener<ScrollNotification>(
+    onNotification: _handleAndroidPagerScroll,
+    child: PageView.builder(
+      controller: _androidPageController,
+      physics: const PageScrollPhysics(parent: BouncingScrollPhysics()),
+      onPageChanged: (index) {
+        _selectAndroidSection(_androidDestinations[index]);
+      },
+      itemCount: _androidDestinations.length,
+      itemBuilder: (context, index) => _SettingsKeepAlivePage(
+        key: ValueKey('android-setting-page-$index'),
+        child: AnimatedBuilder(
+          animation: _androidPageController,
+          builder: (context, child) {
+            final currentPage =
+                _androidPageController.hasClients &&
+                    _androidPageController.position.hasContentDimensions
+                ? (_androidPageController.page ?? index.toDouble())
+                : 0.0;
+            final distance = (currentPage - index).abs().clamp(0.0, 1.0);
+            return Opacity(opacity: 1 - distance * 0.10, child: child);
+          },
+          child: _contentFor(_androidDestinations[index].$1),
+        ),
+      ),
+    ),
+  );
+
+  bool _handleAndroidPagerScroll(ScrollNotification notification) {
+    if (notification.metrics.axis != Axis.horizontal ||
+        widget.onSwipeBackFromFirstSection == null) {
+      return false;
+    }
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _leadingEdgeDragDistance = 0;
+      _leadingEdgeSwipeHandled = false;
+      return false;
+    }
+    if (_selectedIndex != _androidDestinations.first.$1 ||
+        _leadingEdgeSwipeHandled) {
+      return false;
+    }
+    if (notification is ScrollUpdateNotification &&
+        notification.dragDetails != null) {
+      final delta = notification.scrollDelta ?? 0;
+      final atLeadingEdge =
+          notification.metrics.pixels <=
+          notification.metrics.minScrollExtent + 1;
+      if (atLeadingEdge && delta < 0) {
+        _leadingEdgeDragDistance += -delta;
+      }
+    } else if (notification is OverscrollNotification &&
+        notification.dragDetails != null &&
+        notification.overscroll < 0) {
+      _leadingEdgeDragDistance += -notification.overscroll;
+    }
+    if (_leadingEdgeDragDistance >= 48) {
+      _leadingEdgeSwipeHandled = true;
+      widget.onSwipeBackFromFirstSection?.call();
+    }
+    return false;
   }
 
   Widget _contentFor(int index) {
@@ -92,7 +182,7 @@ class _SettingPageState extends State<SettingPage> {
                     : NavigationRailLabelType.selected,
                 groupAlignment: -0.75,
                 onDestinationSelected: (index) {
-                  _selectAndroidSection(_androidDestinations[index]);
+                  _animateToAndroidSection(index);
                 },
                 destinations: _androidDestinations
                     .map(
@@ -116,7 +206,7 @@ class _SettingPageState extends State<SettingPage> {
                   alignment: Alignment.topCenter,
                   child: ConstrainedBox(
                     constraints: const BoxConstraints(maxWidth: 920),
-                    child: _content(),
+                    child: _androidPager(),
                   ),
                 ),
               ),
@@ -146,7 +236,9 @@ class _SettingPageState extends State<SettingPage> {
                           borderRadius: BorderRadius.circular(18),
                           child: InkWell(
                             borderRadius: BorderRadius.circular(18),
-                            onTap: () => _selectAndroidSection(section),
+                            onTap: () => _animateToAndroidSection(
+                              _androidDestinations.indexOf(section),
+                            ),
                             child: Center(
                               child: Icon(
                                 section.$3,
@@ -166,7 +258,7 @@ class _SettingPageState extends State<SettingPage> {
             ),
           ),
           const Divider(height: 1),
-          Expanded(child: _content()),
+          Expanded(child: _androidPager()),
         ],
       );
     }
@@ -234,6 +326,27 @@ class _SettingPageState extends State<SettingPage> {
         Expanded(child: _content()),
       ],
     );
+  }
+}
+
+class _SettingsKeepAlivePage extends StatefulWidget {
+  const _SettingsKeepAlivePage({super.key, required this.child});
+
+  final Widget child;
+
+  @override
+  State<_SettingsKeepAlivePage> createState() => _SettingsKeepAlivePageState();
+}
+
+class _SettingsKeepAlivePageState extends State<_SettingsKeepAlivePage>
+    with AutomaticKeepAliveClientMixin<_SettingsKeepAlivePage> {
+  @override
+  bool get wantKeepAlive => true;
+
+  @override
+  Widget build(BuildContext context) {
+    super.build(context);
+    return widget.child;
   }
 }
 

@@ -5,6 +5,7 @@ import 'dart:io';
 import '../playlist/playlist_content_notifier.dart';
 import '../playlist/playlist_models.dart';
 import '../statistics_page/statistics_manager.dart';
+import '../../widgets/artwork_image.dart';
 
 class SongDetailsPage extends StatelessWidget {
   const SongDetailsPage({super.key});
@@ -71,7 +72,11 @@ class SongDetailsPage extends StatelessWidget {
                               decoration: BoxDecoration(
                                 borderRadius: BorderRadius.circular(6),
                                 image: DecorationImage(
-                                  image: MemoryImage(details.albumArt!),
+                                  image: artworkImageProvider(
+                                    context,
+                                    details.albumArt!,
+                                    size: ArtworkSize.medium,
+                                  ),
                                   fit: BoxFit.cover,
                                 ),
                                 boxShadow: const [

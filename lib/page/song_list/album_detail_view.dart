@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 import '../../widgets/sort_dialog.dart';
 import '../playlist/playlist_content_notifier.dart';
 import 'song_list_detail_page.dart';
+import '../../widgets/artwork_image.dart';
 
 class AlbumDetailView extends StatelessWidget {
   final VoidCallback onBack;
@@ -127,7 +128,7 @@ class _AlbumHeaderState extends State<_AlbumHeader> {
 
     try {
       final colors = await extractColor(
-        ResizeImage(MemoryImage(cover), width: 56, height: 56),
+        artworkImageProvider(context, cover, size: ArtworkSize.medium),
         1,
       );
       if (!mounted || _lastCover != cover || colors.isEmpty) return;
@@ -353,11 +354,11 @@ class _AlbumHeaderBackdrop extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        Image.memory(
-          cover!,
+        ArtworkImage(
+          bytes: cover!,
+          size: ArtworkSize.medium,
           fit: BoxFit.cover,
           gaplessPlayback: true,
-          cacheWidth: 600,
           errorBuilder: (context, error, stackTrace) => const SizedBox.shrink(),
         ), // 缓存封面
         BackdropFilter(
@@ -394,11 +395,11 @@ class _AlbumCoverArt extends StatelessWidget {
         ],
       ),
       child: cover != null
-          ? Image.memory(
-              cover!,
+          ? ArtworkImage(
+              bytes: cover!,
+              size: ArtworkSize.medium,
               fit: BoxFit.cover,
               gaplessPlayback: true,
-              cacheWidth: 264,
               filterQuality: FilterQuality.medium,
             )
           : Icon(

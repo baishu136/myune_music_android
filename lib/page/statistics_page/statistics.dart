@@ -8,6 +8,7 @@ import '../playlist/playlist_content_notifier.dart';
 import '../setting/settings_provider.dart';
 import '../playlist/playlist_models.dart';
 import 'statistics_manager.dart';
+import '../../widgets/artwork_image.dart';
 
 class Statistics extends StatefulWidget {
   const Statistics({super.key});
@@ -350,9 +351,9 @@ class _StatisticsState extends State<Statistics> {
               leading: ClipRRect(
                 borderRadius: BorderRadius.circular(4),
                 child: songWithArt.albumArt != null
-                    ? Image.memory(
-                        cacheWidth: 100,
-                        songWithArt.albumArt!,
+                    ? ArtworkImage(
+                        bytes: songWithArt.albumArt!,
+                        size: ArtworkSize.thumbnail,
                         width: 40,
                         height: 40,
                         fit: BoxFit.cover,
@@ -444,9 +445,9 @@ class _StatisticsState extends State<Statistics> {
                 child: cover != null
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(100),
-                        child: Image.memory(
-                          cacheWidth: 100,
-                          cover,
+                        child: ArtworkImage(
+                          bytes: cover,
+                          size: ArtworkSize.thumbnail,
                           width: 40,
                           height: 40,
                           fit: BoxFit.cover,
@@ -523,9 +524,9 @@ class _StatisticsState extends State<Statistics> {
                 child: cover != null
                     ? ClipRRect(
                         borderRadius: BorderRadius.circular(4),
-                        child: Image.memory(
-                          cacheWidth: 100,
-                          cover,
+                        child: ArtworkImage(
+                          bytes: cover,
+                          size: ArtworkSize.thumbnail,
                           width: 40,
                           height: 40,
                           fit: BoxFit.cover,

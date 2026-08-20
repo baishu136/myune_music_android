@@ -17,6 +17,7 @@ import './setting/settings_provider.dart';
 import '../widgets/playing_queue_drawer.dart';
 import '../widgets/lyrics_settings_drawer.dart';
 import 'playlist/playlist_models.dart';
+import '../widgets/artwork_image.dart';
 
 // 公共模糊背景组件
 class BackgroundBlurWidget extends StatefulWidget {
@@ -91,10 +92,10 @@ class _BackgroundBlurWidgetState extends State<BackgroundBlurWidget>
     bool isDarkTheme,
   ) async {
     try {
-      final ImageProvider imageProvider = ResizeImage.resizeIfNeeded(
-        256,
-        256,
-        MemoryImage(albumArt),
+      final ImageProvider imageProvider = artworkImageProvider(
+        context,
+        albumArt,
+        size: ArtworkSize.medium,
       );
       final List<CgColor> cgColors = await extractColor(imageProvider, 6);
 
@@ -285,11 +286,11 @@ class _BackgroundBlurWidgetState extends State<BackgroundBlurWidget>
                 sigmaY: 40,
                 tileMode: TileMode.decal,
               ),
-              child: Image.memory(
-                currentCover,
+              child: ArtworkImage(
+                bytes: currentCover,
+                size: ArtworkSize.medium,
                 fit: BoxFit.cover,
                 gaplessPlayback: true,
-                cacheWidth: 720,
                 filterQuality: FilterQuality.medium,
                 errorBuilder: (context, error, stackTrace) =>
                     Container(color: Theme.of(context).colorScheme.surface),
@@ -542,12 +543,17 @@ class SongDetailPage extends StatelessWidget {
                                                                   null &&
                                                               currentCover
                                                                   .isNotEmpty)
-                                                          ? Image.memory(
-                                                              currentCover,
+                                                          ? ArtworkImage(
+                                                              bytes:
+                                                                  currentCover,
+                                                              size: ArtworkSize
+                                                                  .large,
+                                                              logicalSize:
+                                                                  imageSize,
                                                               fit: BoxFit.cover,
                                                               gaplessPlayback:
                                                                   true,
-                                                              cacheWidth: 720,
+                                                              progressive: true,
                                                               filterQuality:
                                                                   FilterQuality
                                                                       .medium,

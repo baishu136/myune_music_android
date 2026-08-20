@@ -8,6 +8,7 @@ import '../playlist/playlist_content_notifier.dart';
 import '../../widgets/single_line_lyrics.dart';
 import 'album_detail_view.dart';
 import 'package:pinyin/pinyin.dart';
+import '../../widgets/artwork_image.dart';
 
 class AlbumList extends StatefulWidget {
   const AlbumList({super.key});
@@ -392,9 +393,9 @@ class _AlbumCoverTileState extends State<_AlbumCoverTile> {
       color: Theme.of(context).colorScheme.secondaryContainer,
       // isNotEmpty: 过滤空字节数组；errorBuilder: 兜底解码失败
       child: coverArt != null && coverArt.isNotEmpty
-          ? Image.memory(
-              cacheWidth: 200,
-              coverArt,
+          ? ArtworkImage(
+              bytes: coverArt,
+              size: ArtworkSize.medium,
               fit: BoxFit.cover,
               gaplessPlayback: true,
               filterQuality: FilterQuality.medium,

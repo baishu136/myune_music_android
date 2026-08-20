@@ -21,6 +21,13 @@ void main() {
         .value;
     expect(middle, greaterThan(0));
     expect(middle, lessThan(1));
+    expect(
+      tester
+          .widget<Transform>(find.byKey(const ValueKey('play_pause_rotation')))
+          .transform
+          .getRotation(),
+      isNot(0),
+    );
 
     await tester.pumpAndSettle();
     expect(

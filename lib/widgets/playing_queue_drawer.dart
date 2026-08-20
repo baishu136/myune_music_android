@@ -6,11 +6,18 @@ import '../theme/scroll_config.dart';
 import '../page/playlist/playlist_content_notifier.dart';
 import '../page/playlist/playlist_content_widget.dart';
 import '../page/playlist/playlist_models.dart';
+import '../page/setting/settings_provider.dart';
+import 'custom_theme_background.dart';
 
 class PlayingQueueDrawer extends StatefulWidget {
-  const PlayingQueueDrawer({super.key, this.transparentBackground = false});
+  const PlayingQueueDrawer({
+    super.key,
+    this.transparentBackground = false,
+    this.syncHomeBackground = true,
+  });
 
   final bool transparentBackground;
+  final bool syncHomeBackground;
 
   @override
   State<PlayingQueueDrawer> createState() => PlayingQueueDrawerState();
@@ -27,8 +34,8 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer> {
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<PlaylistContentNotifier>(
-      builder: (context, notifier, child) {
+    return Consumer2<PlaylistContentNotifier, SettingsProvider>(
+      builder: (context, notifier, settings, child) {
         // 获取播放队列
         final queue = notifier.playingQueueSongs;
         final playingPlaylist = notifier.playingPlaylist;
@@ -123,18 +130,34 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer> {
               ),
           ],
         );
-        final content = SafeArea(child: queueContent);
+        final currentSong = notifier.currentSong;
+        final embeddedCover = currentSong?.albumArt;
+        final currentCover = embeddedCover != null && embeddedCover.isNotEmpty
+            ? embeddedCover
+            : currentSong == null
+            ? null
+            : notifier.coverForSongPath(currentSong.filePath);
+        final safeContent = SafeArea(child: queueContent);
+        final content = !widget.syncHomeBackground
+            ? safeContent
+            : CustomThemeBackground(
+                path: settings.homeThemeImagePath,
+                enabled: settings.homeThemeImageEnabled,
+                dim: settings.homeThemeImageDim,
+                coverBytes: currentCover,
+                coverEnabled:
+                    settings.followAlbumArtOnHome &&
+                    currentCover != null &&
+                    currentCover.isNotEmpty,
+                coverDim: 0.52,
+                child: safeContent,
+              );
         if (widget.transparentBackground) {
           return Material(
             color: Colors.transparent,
             surfaceTintColor: Colors.transparent,
-            shape: RoundedRectangleBorder(
-              borderRadius: const BorderRadius.vertical(
-                top: Radius.circular(28),
-              ),
-              side: BorderSide(
-                color: Theme.of(context).colorScheme.outlineVariant,
-              ),
+            shape: const RoundedRectangleBorder(
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
             ),
             clipBehavior: Clip.antiAlias,
             child: content,

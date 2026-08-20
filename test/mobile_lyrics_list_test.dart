@@ -143,7 +143,9 @@ void main() {
       find.byType(ScrollablePositionedList),
       const Offset(0, -140),
     );
-    await tester.pump(const Duration(milliseconds: 300));
+    for (var frame = 0; frame < 10; frame++) {
+      await tester.pump(const Duration(milliseconds: 50));
+    }
     hostKey.currentState!.setActive(40);
     await tester.pump();
 
@@ -216,6 +218,59 @@ void main() {
       find.byKey(const ValueKey('mobile_lyrics_edge_fade')),
       findsOneWidget,
     );
+    final fade = tester.widget<ShaderMask>(
+      find.byKey(const ValueKey('mobile_lyrics_edge_fade')),
+    );
+    expect(fade.blendMode, BlendMode.dstIn);
+  });
+
+  testWidgets('karaoke lyric colors played and unplayed text separately', (
+    tester,
+  ) async {
+    final line = LyricLine(
+      timestamp: Duration.zero,
+      texts: const ['Hello世界'],
+      tokens: [
+        [
+          LyricToken(
+            text: 'Hello',
+            start: Duration.zero,
+            end: const Duration(seconds: 1),
+          ),
+          LyricToken(
+            text: '世界',
+            start: const Duration(seconds: 1),
+            end: const Duration(seconds: 2),
+          ),
+        ],
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          body: MobileLyricsList(
+            lines: [line],
+            active: 0,
+            position: const Duration(milliseconds: 500),
+          ),
+        ),
+      ),
+    );
+
+    final richText = tester.widget<Text>(
+      find
+          .descendant(
+            of: find.byKey(const ValueKey('mobile_lyric_0')),
+            matching: find.byType(Text),
+          )
+          .last,
+    );
+    final spans = (richText.textSpan! as TextSpan).children!.cast<TextSpan>();
+    expect(spans.map((span) => span.text).join(), 'Hello世界');
+    expect(spans.first.style!.color, isNot(spans.last.style!.color));
+    expect(spans.last.style!.color, Colors.white.withValues(alpha: .5));
   });
 }
 

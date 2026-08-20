@@ -22,11 +22,22 @@ import 'playlist_manager.dart';
 import '../setting/settings_provider.dart';
 import '../../theme/theme_provider.dart';
 import '../statistics_page/playback_tracker.dart';
+import '../statistics_page/statistics_manager.dart';
 import '../../services/audio_metadata_service.dart';
 import '../../services/global_hotkey_manager.dart';
 import '../../services/search_service.dart';
+import '../../widgets/artwork_image.dart';
 
-enum SortCriterion { title, artist, file, dateModified, random, trackNumber }
+enum SortCriterion {
+  title,
+  artist,
+  file,
+  dateModified,
+  playCount,
+  playTime,
+  random,
+  trackNumber,
+}
 
 enum PlayMode { sequence, shuffle, repeatOne }
 
@@ -244,10 +255,13 @@ class PlaylistContentNotifier extends ChangeNotifier
   final Map<String, int> _coverRequestCounts = {};
   final Set<String> _pendingCoverRequests = {};
   final ListQueue<String> _coverQueue = ListQueue<String>();
-  bool _coverWorkerRunning = false;
+  final Map<String, ChangeNotifier> _coverSignals = {};
+  int _activeCoverWorkers = 0;
+  static const int _maxConcurrentCoverWorkers = 3;
 
   // --- 封面内存缓存 ---
   final Map<String, Uint8List?> _coverCache = {};
+  final Map<String, int> _coverVersionMs = {};
   final Set<String> _evictableCoverPaths = {};
   static const int _maxCoverCacheSize = 100;
 
@@ -922,6 +936,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     _saveSongMetadataCache();
     _saveAudioControlSettings();
     savePlaybackState();
+    for (final signal in _coverSignals.values) {
+      signal.dispose();
+    }
+    _coverSignals.clear();
     super.dispose();
   }
 
@@ -1034,26 +1052,22 @@ class PlaylistContentNotifier extends ChangeNotifier
     // 监听系统媒体控制的指令
     _audioService.player.stream.mediaSessionCommands.listen((command) {
       if (command is MediaSessionCommandPlay) {
-        _playbackIntent = true;
+        _applyMediaSessionPlayingState(true);
         if (_activeTrackChangeRevision != null) {
           // 系统已经乐观执行了 play；切歌尚未完成时立即压回暂停，等最终
           // 文件加载完再按播放意图启动，避免通知栏操作恢复旧曲。
           unawaited(_audioService.pause());
         }
-        PlaybackTracker().resumeTracking();
       } else if (command is MediaSessionCommandPause) {
-        _setPlaybackPaused();
-        PlaybackTracker().pauseTracking();
+        _applyMediaSessionPlayingState(false);
       } else if (command is MediaSessionCommandPlayPause) {
         if (_audioService.player.state.playWhenReady) {
-          _playbackIntent = true;
+          _applyMediaSessionPlayingState(true);
           if (_activeTrackChangeRevision != null) {
             unawaited(_audioService.pause());
           }
-          PlaybackTracker().resumeTracking();
         } else {
-          _setPlaybackPaused();
-          PlaybackTracker().pauseTracking();
+          _applyMediaSessionPlayingState(false);
         }
       } else if (command is MediaSessionCommandStop) {
         _cancelPendingTrackChange();
@@ -1110,6 +1124,21 @@ class PlaylistContentNotifier extends ChangeNotifier
       // 尝试播放下一首歌曲
       // playNext();
     });
+  }
+
+  void _applyMediaSessionPlayingState(bool playing) {
+    // Native media controls update the player first and then emit the command.
+    // Mirror that state immediately so notification/app buttons do not wait for
+    // a later stream tick, and invalidate an older in-flight transport command.
+    _transportCommandRevision++;
+    _playbackIntent = playing;
+    _isPlaying = playing;
+    if (playing) {
+      PlaybackTracker().resumeTracking();
+    } else {
+      PlaybackTracker().pauseTracking();
+    }
+    notifyListeners();
   }
 
   Future<void> _cleanupSmtc() async {}
@@ -1318,6 +1347,22 @@ class PlaylistContentNotifier extends ChangeNotifier
   Future<Song> _prepareSongForPlayback(String filePath) async {
     // 首先获取基础元数据
     final Song basicSong = await _parseSongMetadata(filePath);
+    final cacheKey = _normalizePath(filePath);
+
+    // Reuse both positive and negative cover results from visible list items.
+    // This avoids reopening the same audio file when entering Now Playing.
+    if (_coverCache.containsKey(cacheKey)) {
+      final cachedCover = _coverCache[cacheKey];
+      if (cachedCover == null || cachedCover.isEmpty) return basicSong;
+      return Song(
+        title: basicSong.title,
+        artist: basicSong.artist,
+        album: basicSong.album,
+        filePath: basicSong.filePath,
+        albumArt: cachedCover,
+        duration: basicSong.duration,
+      );
+    }
 
     // 只在没有封面的情况下加载元数据
     if (basicSong.albumArt == null) {
@@ -1356,7 +1401,6 @@ class PlaylistContentNotifier extends ChangeNotifier
         }
 
         // 更新缓存
-        final cacheKey = _normalizePath(filePath);
         if (_songMetadataCache.containsKey(cacheKey)) {
           final cachedEntry = _songMetadataCache[cacheKey]!;
           _songMetadataCache[cacheKey] = SongMetadataCacheEntry(
@@ -1368,9 +1412,14 @@ class PlaylistContentNotifier extends ChangeNotifier
           );
         }
 
-        final cover = metadata.cover;
-        if (cover != null && cover.isNotEmpty) {
-          _coverCache[cacheKey] = cover;
+        final extractedCover = metadata.cover;
+        final cover = extractedCover != null && extractedCover.isNotEmpty
+            ? extractedCover
+            : null;
+        _coverCache[cacheKey] = cover;
+        final stat = await File(normalizedPath).stat();
+        _coverVersionMs[cacheKey] = stat.modified.millisecondsSinceEpoch;
+        if (cover != null) {
           _evictableCoverPaths.remove(cacheKey);
         }
 
@@ -1491,6 +1540,11 @@ class PlaylistContentNotifier extends ChangeNotifier
         final stat = await file.stat();
         final modifiedMs = stat.modified.millisecondsSinceEpoch;
 
+        final coverVersionMs = _coverVersionMs[cacheKey] ?? cached?.modifiedMs;
+        if (coverVersionMs != null && coverVersionMs != modifiedMs) {
+          _invalidateCoverCache(cacheKey);
+        }
+
         if (cached != null &&
             cached.usesCurrentDecoder &&
             cached.modifiedMs == modifiedMs) {
@@ -1545,12 +1599,22 @@ class PlaylistContentNotifier extends ChangeNotifier
     if (cachedCover != null && cachedCover.isNotEmpty) {
       return cachedCover;
     }
+    if (_coverCache.containsKey(cacheKey)) return null;
 
     final embeddedCover = _findSongByPath(filePath)?.albumArt;
     if (embeddedCover != null && embeddedCover.isNotEmpty) {
       return embeddedCover;
     }
     return null;
+  }
+
+  Listenable coverListenableForSongPath(String filePath) {
+    final cacheKey = _normalizePath(filePath);
+    return _coverSignals.putIfAbsent(cacheKey, ChangeNotifier.new);
+  }
+
+  void _notifyCoverChanged(String cacheKey) {
+    _coverSignals[cacheKey]?.notifyListeners();
   }
 
   void requestSongCover(String filePath) {
@@ -1574,6 +1638,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     final albumArt = song?.albumArt;
     if (albumArt != null && albumArt.isNotEmpty) {
       _coverCache[cacheKey] = albumArt;
+      final metadataEntry = _songMetadataCache[cacheKey];
+      if (metadataEntry != null) {
+        _coverVersionMs[cacheKey] = metadataEntry.modifiedMs;
+      }
       scheduleMicrotask(() => _applyCachedCover(cacheKey));
       return;
     }
@@ -1652,6 +1720,35 @@ class PlaylistContentNotifier extends ChangeNotifier
     _coverQueue.addAll(remaining);
   }
 
+  void _invalidateCoverCache(String cacheKey) {
+    final hadCachedResult = _coverCache.containsKey(cacheKey);
+    _coverCache.remove(cacheKey);
+    _coverVersionMs.remove(cacheKey);
+    _pendingCoverRequests.remove(cacheKey);
+    _removeFromCoverQueue(cacheKey);
+    _notifyCoverChanged(cacheKey);
+
+    if (hadCachedResult) {
+      _updateSongInCollections(cacheKey, (song) {
+        if (song.albumArt == null) return song;
+        return Song(
+          title: song.title,
+          artist: song.artist,
+          album: song.album,
+          filePath: song.filePath,
+          albumArt: null,
+          duration: song.duration,
+        );
+      });
+    }
+
+    if (_isCoverRequested(cacheKey)) {
+      _pendingCoverRequests.add(cacheKey);
+      _coverQueue.add(cacheKey);
+      _processCoverQueue();
+    }
+  }
+
   void _applyCachedCover(String cacheKey) {
     final cachedCover = _coverCache[cacheKey];
     if (cachedCover == null) return;
@@ -1681,7 +1778,9 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     for (final key in toEvict) {
       _coverCache.remove(key);
+      _coverVersionMs.remove(key);
       _evictableCoverPaths.remove(key);
+      _notifyCoverChanged(key);
       _updateSongInCollections(key, (song) {
         return Song(
           title: song.title,
@@ -1696,58 +1795,69 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _processCoverQueue() {
-    if (_coverWorkerRunning) {
-      return;
+    while (_activeCoverWorkers < _maxConcurrentCoverWorkers &&
+        _coverQueue.isNotEmpty) {
+      _activeCoverWorkers++;
+      unawaited(_coverWorker());
     }
-    _coverWorkerRunning = true;
-    unawaited(_coverWorker());
   }
 
   Future<void> _coverWorker() async {
-    while (_coverQueue.isNotEmpty) {
-      final cacheKey = _coverQueue.removeFirst();
-      if (!_isCoverRequested(cacheKey)) {
-        _pendingCoverRequests.remove(cacheKey);
-        continue;
-      }
-      final filePath = cacheKey;
-      try {
-        final normalizedPath = Uri.file(
-          filePath,
-        ).toFilePath(windows: Platform.isWindows);
-        final metadata = await readAudioInfo(
-          path: normalizedPath,
-          options: const AudioInfoOptions(
-            needCover: true,
-            needLyrics: false,
-            needAudioProps: false,
-            needExtraTags: false,
-            needTrackNumber: false,
-          ),
-        );
-
-        if (metadata.cover != null && metadata.cover!.isNotEmpty) {
-          _coverCache[cacheKey] = metadata.cover;
-          _evictableCoverPaths.remove(cacheKey);
-          _updateSongInCollections(filePath, (song) {
-            return Song(
-              title: song.title,
-              artist: song.artist,
-              album: song.album,
-              filePath: song.filePath,
-              albumArt: metadata.cover,
-              duration: song.duration,
-            );
-          });
+    try {
+      while (_coverQueue.isNotEmpty) {
+        final cacheKey = _coverQueue.removeFirst();
+        if (!_isCoverRequested(cacheKey)) {
+          _pendingCoverRequests.remove(cacheKey);
+          continue;
         }
-      } catch (e) {
-        // 记录失败原因，排查封面加载问题
-        debugPrint('加载封面失败: ${p.basename(filePath)} - $e');
-      } finally {
-        _pendingCoverRequests.remove(cacheKey);
+        final filePath = cacheKey;
+        try {
+          final normalizedPath = Uri.file(
+            filePath,
+          ).toFilePath(windows: Platform.isWindows);
+          final metadata = await readAudioInfo(
+            path: normalizedPath,
+            options: const AudioInfoOptions(
+              needCover: true,
+              needLyrics: false,
+              needAudioProps: false,
+              needExtraTags: false,
+              needTrackNumber: false,
+            ),
+          );
+
+          final extractedCover = metadata.cover;
+          final cover = extractedCover != null && extractedCover.isNotEmpty
+              ? extractedCover
+              : null;
+          _coverCache[cacheKey] = cover;
+          final stat = await File(normalizedPath).stat();
+          _coverVersionMs[cacheKey] = stat.modified.millisecondsSinceEpoch;
+          _notifyCoverChanged(cacheKey);
+
+          if (cover != null) {
+            _evictableCoverPaths.remove(cacheKey);
+            _updateSongInCollections(filePath, (song) {
+              return Song(
+                title: song.title,
+                artist: song.artist,
+                album: song.album,
+                filePath: song.filePath,
+                albumArt: cover,
+                duration: song.duration,
+              );
+            });
+          }
+        } catch (e) {
+          debugPrint('加载封面失败: ${p.basename(filePath)} - $e');
+        } finally {
+          _pendingCoverRequests.remove(cacheKey);
+        }
       }
+    } finally {
+      _activeCoverWorkers--;
+      _processCoverQueue();
     }
-    _coverWorkerRunning = false;
   }
 
   bool _isCoverRequested(String cacheKey) {
@@ -4158,7 +4268,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     try {
       final colors = await extractColor(
-        MemoryImage(albumArt),
+        artworkImageProvider(null, albumArt, size: ArtworkSize.medium),
         1, // 提取一种主色调
       );
       if (colors.isNotEmpty) {
@@ -4247,6 +4357,32 @@ class PlaylistContentNotifier extends ChangeNotifier
     required SortCriterion criterion,
     required bool descending,
   }) async {
+    String mixedPinyin(String text) {
+      final buffer = StringBuffer();
+      for (final char in text.characters) {
+        final pinyin = PinyinHelper.getPinyin(char);
+        if (pinyin.isNotEmpty && pinyin != char) {
+          buffer.write(pinyin);
+        } else {
+          buffer.write(char.toLowerCase());
+        }
+      }
+      return buffer.toString();
+    }
+
+    int compareByTitleThenPath(
+      ({String path, Song song}) a,
+      ({String path, Song song}) b,
+    ) {
+      final titleResult = mixedPinyin(
+        a.song.title,
+      ).compareTo(mixedPinyin(b.song.title));
+      if (titleResult != 0) return titleResult;
+      return mixedPinyin(
+        p.basename(a.path),
+      ).compareTo(mixedPinyin(p.basename(b.path)));
+    }
+
     if (criterion == SortCriterion.file) {
       final sorted = List<String>.from(paths)
         ..sort(
@@ -4265,21 +4401,6 @@ class PlaylistContentNotifier extends ChangeNotifier
       for (final path in paths) {
         final metadata = await _parseSongMetadata(path);
         sortableList.add({'path': path, 'metadata': metadata});
-      }
-
-      String mixedPinyin(String text) {
-        final buffer = StringBuffer();
-        for (final char in text.characters) {
-          final pinyin = PinyinHelper.getPinyin(char);
-
-          // 如果能成功转换成拼音就用拼音，否则保留原字符
-          if (pinyin.isNotEmpty && pinyin != char) {
-            buffer.write(pinyin);
-          } else {
-            buffer.write(char.toLowerCase());
-          }
-        }
-        return buffer.toString();
       }
 
       // 对这个临时列表进行排序
@@ -4303,6 +4424,42 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 提取出排好序的路径并返回
       return sortableList.map((item) => item['path'] as String).toList();
+    }
+
+    // 播放统计只持久化播放次数；累计播放时间与统计页保持一致，
+    // 使用“歌曲时长 × 播放次数”的估算口径。
+    if (criterion == SortCriterion.playCount ||
+        criterion == SortCriterion.playTime) {
+      String normalizedPath(String path) =>
+          p.normalize(path).replaceAll('\\', '/').toLowerCase();
+
+      final playCounts = <String, int>{
+        for (final entry
+            in StatisticsManager().statisticsData.songStats.entries)
+          normalizedPath(entry.key): entry.value.playCount,
+      };
+      final sortableList = <({String path, Song song, int sortValue})>[];
+
+      for (final path in paths) {
+        final song = await _parseSongMetadata(path);
+        final playCount = playCounts[normalizedPath(path)] ?? 0;
+        final sortValue = criterion == SortCriterion.playCount
+            ? playCount
+            : (song.duration?.inMilliseconds ?? 0) * playCount;
+        sortableList.add((path: path, song: song, sortValue: sortValue));
+      }
+
+      sortableList.sort((a, b) {
+        // 这两种统计排序始终从高到低；相同数值（包括 0）按标题排序。
+        final statisticResult = b.sortValue.compareTo(a.sortValue);
+        if (statisticResult != 0) return statisticResult;
+        return compareByTitleThenPath(
+          (path: a.path, song: a.song),
+          (path: b.path, song: b.song),
+        );
+      });
+
+      return sortableList.map((item) => item.path).toList();
     }
 
     // 音轨号排序

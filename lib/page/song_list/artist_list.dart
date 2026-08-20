@@ -8,6 +8,7 @@ import 'dart:typed_data';
 import '../playlist/playlist_content_notifier.dart';
 import '../../widgets/single_line_lyrics.dart';
 import 'artist_detail_view.dart';
+import '../../widgets/artwork_image.dart';
 
 class ArtistList extends StatefulWidget {
   const ArtistList({super.key});
@@ -344,7 +345,7 @@ class _ArtistCoverAvatarState extends State<_ArtistCoverAvatar> {
         : _notifier.coverForSongPath(widget.filePath);
     return CircleAvatar(
       backgroundImage: coverArt != null
-          ? ResizeImage(MemoryImage(coverArt), width: 100, height: 100)
+          ? artworkImageProvider(context, coverArt, size: ArtworkSize.medium)
           : null,
       child: coverArt == null ? const Icon(Icons.person) : null,
     );

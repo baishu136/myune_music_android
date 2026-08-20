@@ -43,6 +43,7 @@ class _CustomThemeImageEditorPageState
     extends State<_CustomThemeImageEditorPage> {
   final GlobalKey _captureKey = GlobalKey();
   final TransformationController _controller = TransformationController();
+  Rect? _cropRect;
   bool _saving = false;
 
   @override
@@ -60,10 +61,33 @@ class _CustomThemeImageEditorPageState
           _captureKey.currentContext?.findRenderObject()
               as RenderRepaintBoundary?;
       if (boundary == null) return;
-      final width = boundary.size.width;
-      final ratio = (1440 / width).clamp(1.0, 2.5);
+      final cropRect = _cropRect;
+      if (cropRect == null || cropRect.isEmpty) return;
+      final ratio = (1440 / cropRect.width).clamp(1.0, 3.0);
       final image = await boundary.toImage(pixelRatio: ratio);
-      final data = await image.toByteData(format: ui.ImageByteFormat.png);
+      final source = Rect.fromLTWH(
+        cropRect.left * ratio,
+        cropRect.top * ratio,
+        cropRect.width * ratio,
+        cropRect.height * ratio,
+      );
+      final outputWidth = source.width.round();
+      final outputHeight = source.height.round();
+      final recorder = ui.PictureRecorder();
+      final canvas = Canvas(recorder);
+      canvas.drawImageRect(
+        image,
+        source,
+        Rect.fromLTWH(0, 0, outputWidth.toDouble(), outputHeight.toDouble()),
+        Paint()..filterQuality = FilterQuality.high,
+      );
+      final cropped = await recorder.endRecording().toImage(
+        outputWidth,
+        outputHeight,
+      );
+      final data = await cropped.toByteData(format: ui.ImageByteFormat.png);
+      image.dispose();
+      cropped.dispose();
       if (!mounted || data == null) return;
       Navigator.of(context).pop(data.buffer.asUint8List());
     } finally {
@@ -109,14 +133,23 @@ class _CustomThemeImageEditorPageState
               ),
             ),
             Expanded(
-              child: Center(
-                child: Padding(
-                  padding: const EdgeInsets.all(18),
-                  child: AspectRatio(
-                    aspectRatio: targetAspect,
-                    child: RepaintBoundary(
-                      key: _captureKey,
-                      child: ClipRect(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final available = Size(
+                    constraints.maxWidth,
+                    constraints.maxHeight,
+                  );
+                  final cropRect = _inscribedCropRect(
+                    available,
+                    targetAspect,
+                    const EdgeInsets.all(24),
+                  );
+                  _cropRect = cropRect;
+                  return Stack(
+                    fit: StackFit.expand,
+                    children: [
+                      RepaintBoundary(
+                        key: _captureKey,
                         child: ColoredBox(
                           color: Colors.black,
                           child: InteractiveViewer(
@@ -125,12 +158,10 @@ class _CustomThemeImageEditorPageState
                             maxScale: 6,
                             boundaryMargin: const EdgeInsets.all(600),
                             clipBehavior: Clip.hardEdge,
-                            child: SizedBox.expand(
+                            child: SizedBox.fromSize(
+                              size: available,
                               child: Image.file(
                                 File(widget.sourcePath),
-                                // Keep the complete source visible when the editor
-                                // first opens. The user can then zoom and position it
-                                // deliberately instead of starting from a hidden crop.
                                 fit: BoxFit.contain,
                                 filterQuality: FilterQuality.high,
                               ),
@@ -138,9 +169,14 @@ class _CustomThemeImageEditorPageState
                           ),
                         ),
                       ),
-                    ),
-                  ),
-                ),
+                      IgnorePointer(
+                        child: CustomPaint(
+                          painter: _CropOverlayPainter(cropRect: cropRect),
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
             const Padding(
@@ -156,4 +192,46 @@ class _CustomThemeImageEditorPageState
       ),
     );
   }
+
+  Rect _inscribedCropRect(Size size, double aspect, EdgeInsets padding) {
+    final width = (size.width - padding.horizontal).clamp(1.0, size.width);
+    final height = (size.height - padding.vertical).clamp(1.0, size.height);
+    var cropWidth = width;
+    var cropHeight = cropWidth / aspect;
+    if (cropHeight > height) {
+      cropHeight = height;
+      cropWidth = cropHeight * aspect;
+    }
+    return Rect.fromCenter(
+      center: Offset(size.width / 2, size.height / 2),
+      width: cropWidth,
+      height: cropHeight,
+    );
+  }
+}
+
+class _CropOverlayPainter extends CustomPainter {
+  const _CropOverlayPainter({required this.cropRect});
+
+  final Rect cropRect;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final mask = Path()
+      ..fillType = PathFillType.evenOdd
+      ..addRect(Offset.zero & size)
+      ..addRect(cropRect);
+    canvas.drawPath(mask, Paint()..color = const Color(0x996E6E6E));
+    canvas.drawRect(
+      cropRect,
+      Paint()
+        ..color = Colors.white.withValues(alpha: .88)
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 2,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant _CropOverlayPainter oldDelegate) =>
+      oldDelegate.cropRect != cropRect;
 }

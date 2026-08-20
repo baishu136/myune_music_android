@@ -11,6 +11,7 @@ import 'playlist_models.dart';
 import '../../widgets/sort_dialog.dart';
 import '../setting/settings_provider.dart';
 import '../../layout/navigation_notifier.dart';
+import '../../widgets/artwork_image.dart';
 
 enum ManagementMode { manual, folder }
 
@@ -2055,9 +2056,9 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                   child: coverArt != null && coverArt.isNotEmpty
                       ? ClipRRect(
                           borderRadius: BorderRadius.circular(6),
-                          child: Image.memory(
-                            cacheWidth: 100,
-                            coverArt,
+                          child: ArtworkImage(
+                            bytes: coverArt,
+                            size: ArtworkSize.thumbnail,
                             fit: BoxFit.cover,
                             gaplessPlayback: true,
                             filterQuality: FilterQuality.medium,
