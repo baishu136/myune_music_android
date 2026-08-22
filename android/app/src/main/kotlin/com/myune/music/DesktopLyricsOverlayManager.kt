@@ -41,7 +41,8 @@ class DesktopLyricsOverlayManager(
     private var lyricColor = Color.rgb(0, 169, 214)
     private var lyricSize = 22f
 
-    private val expandedBackgroundColor = Color.argb(51, 128, 128, 128)
+    // Neutral gray at 30% opacity, independent from the app's dynamic theme.
+    private val expandedBackgroundColor = Color.argb(77, 128, 128, 128)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val autoCollapseRunnable = Runnable {
         if (expanded && !locked) {

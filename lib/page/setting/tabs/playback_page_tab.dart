@@ -32,6 +32,28 @@ List<Widget> playbackPageSettingTiles(BuildContext context) {
       value: settings.addLyricPadding,
       onChanged: settings.setAddLyricPadding,
     ),
+    SwitchListTile.adaptive(
+      secondary: const Icon(Icons.flare_outlined),
+      title: const Text('歌词外发光'),
+      subtitle: const Text('为播放页歌词添加柔和外发光，默认关闭'),
+      value: settings.playbackLyricGlowEnabled,
+      onChanged: settings.setPlaybackLyricGlowEnabled,
+    ),
+    if (settings.playbackLyricGlowEnabled)
+      ListTile(
+        leading: const SizedBox(width: 24),
+        title: Text(
+          '发光范围：${settings.playbackLyricGlowRadius.toStringAsFixed(0)}',
+        ),
+        subtitle: Slider(
+          value: settings.playbackLyricGlowRadius,
+          min: 2,
+          max: 20,
+          divisions: 18,
+          label: settings.playbackLyricGlowRadius.toStringAsFixed(0),
+          onChanged: settings.setPlaybackLyricGlowRadius,
+        ),
+      ),
     if (Platform.isAndroid) ...[
       const Divider(),
       SwitchListTile(

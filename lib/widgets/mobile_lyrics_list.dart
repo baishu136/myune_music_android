@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 import '../page/playlist/playlist_models.dart';
@@ -8,14 +9,26 @@ import '../page/playlist/playlist_models.dart';
 class MobileLyricsListController {
   Object? _owner;
   VoidCallback? _recenterCallback;
+  ValueChanged<Duration>? _settleCallback;
   bool _recenterPending = false;
+  Duration? _settlePending;
 
-  void _attach(Object owner, VoidCallback callback) {
+  void _attach(
+    Object owner,
+    VoidCallback recenterCallback,
+    ValueChanged<Duration> settleCallback,
+  ) {
     _owner = owner;
-    _recenterCallback = callback;
+    _recenterCallback = recenterCallback;
+    _settleCallback = settleCallback;
     if (_recenterPending) {
       _recenterPending = false;
-      callback();
+      recenterCallback();
+    }
+    final pendingTarget = _settlePending;
+    if (pendingTarget != null) {
+      _settlePending = null;
+      settleCallback(pendingTarget);
     }
   }
 
@@ -23,6 +36,7 @@ class MobileLyricsListController {
     if (!identical(_owner, owner)) return;
     _owner = null;
     _recenterCallback = null;
+    _settleCallback = null;
   }
 
   void recenter() {
@@ -32,6 +46,15 @@ class MobileLyricsListController {
       return;
     }
     callback();
+  }
+
+  void settleOn(Duration target) {
+    final callback = _settleCallback;
+    if (callback == null) {
+      _settlePending = target;
+      return;
+    }
+    callback(target);
   }
 }
 
@@ -44,7 +67,12 @@ class MobileLyricsList extends StatefulWidget {
     this.fontFamily,
     this.controller,
     this.edgeFadeEnabled = false,
+    this.glowEnabled = false,
+    this.glowRadius = 8,
+    this.brightForeground = false,
     this.position = Duration.zero,
+    this.positionListenable,
+    this.onBrowseTargetChanged,
   });
 
   final List<LyricLine> lines;
@@ -53,7 +81,12 @@ class MobileLyricsList extends StatefulWidget {
   final String? fontFamily;
   final MobileLyricsListController? controller;
   final bool edgeFadeEnabled;
+  final bool glowEnabled;
+  final double glowRadius;
+  final bool brightForeground;
   final Duration position;
+  final ValueListenable<Duration>? positionListenable;
+  final ValueChanged<Duration?>? onBrowseTargetChanged;
 
   @override
   State<MobileLyricsList> createState() => _MobileLyricsListState();
@@ -61,16 +94,25 @@ class MobileLyricsList extends StatefulWidget {
 
 class _MobileLyricsListState extends State<MobileLyricsList> {
   final ItemScrollController _scrollController = ItemScrollController();
+  final ItemPositionsListener _itemPositionsListener =
+      ItemPositionsListener.create();
   double _viewportHeight = 0;
   int _centerRequestId = 0;
   int _resizeRequestId = 0;
   Timer? _resumeFollowTimer;
+  Timer? _browseGuideTimer;
+  Timer? _seekTargetTimer;
   bool _isManuallyBrowsing = false;
+  int? _browseTargetIndex;
+  int? _seekTargetIndex;
 
   @override
   void initState() {
     super.initState();
-    widget.controller?._attach(this, _recenterActive);
+    widget.controller?._attach(this, _recenterActive, _settleOnTimestamp);
+    _itemPositionsListener.itemPositions.addListener(
+      _updateBrowseTargetFromVisibleItems,
+    );
     _scrollToActive(jump: true);
   }
 
@@ -79,25 +121,43 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller?._detach(this);
-      widget.controller?._attach(this, _recenterActive);
+      widget.controller?._attach(this, _recenterActive, _settleOnTimestamp);
     }
     final linesChanged = oldWidget.lines != widget.lines;
     final fontSizeChanged =
         (oldWidget.fontSize - widget.fontSize).abs() >= 0.01;
     if (linesChanged) {
-      _resumeAutomaticFollow();
-      _scrollToActive(jump: true, force: true);
+      _clearSeekTarget();
+      _resumeAutomaticFollow(notifyBrowseTarget: false);
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onBrowseTargetChanged?.call(null);
+      });
+      // When an online fallback source returns the first lyric batch, the
+      // list is created below with its active line already centered. A second
+      // post-frame jump would be visible during the cover -> lyric animation.
+      if (oldWidget.lines.isNotEmpty && widget.lines.isNotEmpty) {
+        _scrollToActive(jump: true, force: true);
+      }
     } else if (fontSizeChanged) {
       _scrollToActive(jump: true, force: true);
       if (fontSizeChanged) _keepActiveCenteredDuringResize();
     } else if (oldWidget.active != widget.active) {
+      final seekTarget = _seekTargetIndex;
+      if (seekTarget != null) {
+        if (widget.active == seekTarget) _clearSeekTarget();
+        return;
+      }
       _scrollToActive(jump: false);
     }
   }
 
   void _scrollToActive({required bool jump, bool force = false}) {
+    _scrollToIndex(widget.active, jump: jump, force: force);
+  }
+
+  void _scrollToIndex(int index, {required bool jump, bool force = false}) {
     if (_isManuallyBrowsing && !force) return;
-    if (widget.active < 0 || widget.active >= widget.lines.length) return;
+    if (index < 0 || index >= widget.lines.length) return;
     final requestId = ++_centerRequestId;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted ||
@@ -105,12 +165,12 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
           !_scrollController.isAttached) {
         return;
       }
-      final alignment = _activeAlignment;
+      final alignment = _alignmentFor(index);
       if (jump) {
-        _scrollController.jumpTo(index: widget.active, alignment: alignment);
+        _scrollController.jumpTo(index: index, alignment: alignment);
       } else {
         _scrollController.scrollTo(
-          index: widget.active,
+          index: index,
           alignment: alignment,
           duration: const Duration(milliseconds: 320),
           curve: Curves.easeInOutCubic,
@@ -121,32 +181,115 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
 
   void _startManualInteraction() {
     if (!mounted) return;
+    _clearSeekTarget();
     _isManuallyBrowsing = true;
     _centerRequestId++;
     _resumeFollowTimer?.cancel();
     _resumeFollowTimer = null;
+    _browseGuideTimer?.cancel();
+    _browseGuideTimer = null;
+    _updateBrowseTargetFromVisibleItems(force: true);
   }
 
   void _scheduleResumeFollowTimer() {
     if (!mounted || !_isManuallyBrowsing) return;
+    _scheduleBrowseGuideHideTimer();
     _resumeFollowTimer?.cancel();
     _resumeFollowTimer = Timer(const Duration(seconds: 6), () {
       if (!mounted) return;
       _resumeFollowTimer = null;
-      _isManuallyBrowsing = false;
+      _resumeAutomaticFollow();
       _scrollToActive(jump: false, force: true);
     });
   }
 
-  void _resumeAutomaticFollow() {
+  void _scheduleBrowseGuideHideTimer() {
+    _browseGuideTimer?.cancel();
+    _browseGuideTimer = Timer(const Duration(seconds: 3), () {
+      if (!mounted || !_isManuallyBrowsing) return;
+      _browseGuideTimer = null;
+      _browseTargetIndex = null;
+      widget.onBrowseTargetChanged?.call(null);
+    });
+  }
+
+  void _resumeAutomaticFollow({bool notifyBrowseTarget = true}) {
     _resumeFollowTimer?.cancel();
     _resumeFollowTimer = null;
+    _browseGuideTimer?.cancel();
+    _browseGuideTimer = null;
     _isManuallyBrowsing = false;
+    _browseTargetIndex = null;
+    if (notifyBrowseTarget) widget.onBrowseTargetChanged?.call(null);
+  }
+
+  void _updateBrowseTargetFromVisibleItems({bool force = false}) {
+    if (!_isManuallyBrowsing || widget.lines.isEmpty) return;
+    final positions = _itemPositionsListener.itemPositions.value;
+    if (positions.isEmpty) return;
+
+    const viewportCenter = .5;
+    ItemPosition? target;
+    var nearestDistance = double.infinity;
+    for (final position in positions) {
+      if (position.index < 0 || position.index >= widget.lines.length) continue;
+      if (position.itemLeadingEdge <= viewportCenter &&
+          position.itemTrailingEdge >= viewportCenter) {
+        target = position;
+        break;
+      }
+      final itemCenter =
+          (position.itemLeadingEdge + position.itemTrailingEdge) / 2;
+      final distance = (itemCenter - viewportCenter).abs();
+      if (distance < nearestDistance) {
+        nearestDistance = distance;
+        target = position;
+      }
+    }
+
+    final index = target?.index;
+    if (index == null || (!force && index == _browseTargetIndex)) return;
+    _browseTargetIndex = index;
+    widget.onBrowseTargetChanged?.call(widget.lines[index].timestamp);
   }
 
   void _recenterActive() {
+    _clearSeekTarget();
     _resumeAutomaticFollow();
     _scrollToActive(jump: true, force: true);
+  }
+
+  void _settleOnTimestamp(Duration timestamp) {
+    if (widget.lines.isEmpty) return;
+    _resumeAutomaticFollow();
+
+    var targetIndex = 0;
+    var nearestDistance = (widget.lines.first.timestamp - timestamp)
+        .inMilliseconds
+        .abs();
+    for (var index = 1; index < widget.lines.length; index++) {
+      final distance = (widget.lines[index].timestamp - timestamp)
+          .inMilliseconds
+          .abs();
+      if (distance >= nearestDistance) continue;
+      nearestDistance = distance;
+      targetIndex = index;
+    }
+
+    _seekTargetTimer?.cancel();
+    _seekTargetIndex = targetIndex;
+    _scrollToIndex(targetIndex, jump: false, force: true);
+    _seekTargetTimer = Timer(const Duration(seconds: 2), () {
+      if (!mounted || _seekTargetIndex != targetIndex) return;
+      _clearSeekTarget();
+      _scrollToActive(jump: false, force: true);
+    });
+  }
+
+  void _clearSeekTarget() {
+    _seekTargetTimer?.cancel();
+    _seekTargetTimer = null;
+    _seekTargetIndex = null;
   }
 
   bool _onScrollNotification(ScrollNotification notification) {
@@ -188,7 +331,12 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
   @override
   void dispose() {
     widget.controller?._detach(this);
+    _itemPositionsListener.itemPositions.removeListener(
+      _updateBrowseTargetFromVisibleItems,
+    );
     _resumeFollowTimer?.cancel();
+    _browseGuideTimer?.cancel();
+    _seekTargetTimer?.cancel();
     _centerRequestId++;
     _resizeRequestId++;
     super.dispose();
@@ -199,18 +347,31 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
       ? const Center(child: Text('暂无歌词'))
       : LayoutBuilder(
           builder: (context, constraints) {
+            final hadViewport = _viewportHeight > 0;
             final viewportChanged =
                 (_viewportHeight - constraints.maxHeight).abs() >= 0.5;
             _viewportHeight = constraints.maxHeight;
-            if (viewportChanged) _scrollToActive(jump: true);
+            if (hadViewport && viewportChanged) {
+              _scrollToActive(jump: true);
+            }
             final edgePadding = (_viewportHeight / 2 - widget.fontSize).clamp(
               0.0,
               double.infinity,
             );
+            final hasActiveLine =
+                widget.active >= 0 && widget.active < widget.lines.length;
             Widget lyrics = NotificationListener<ScrollNotification>(
               onNotification: _onScrollNotification,
               child: ScrollablePositionedList.builder(
                 itemScrollController: _scrollController,
+                itemPositionsListener: _itemPositionsListener,
+                initialScrollIndex: hasActiveLine ? widget.active : 0,
+                // Index zero is already centered by the symmetric edge
+                // padding. Applying an additional alignment there can keep
+                // the following line outside the lazily built viewport.
+                initialAlignment: hasActiveLine && widget.active > 0
+                    ? _activeAlignment
+                    : 0,
                 padding: EdgeInsets.symmetric(vertical: edgePadding),
                 itemCount: widget.lines.length,
                 itemBuilder: (itemContext, index) {
@@ -224,14 +385,34 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
                     color: isActive
                         ? Theme.of(itemContext).colorScheme.primary
                         : _unplayedColor(itemContext),
+                    shadows: widget.glowEnabled
+                        ? [
+                            Shadow(
+                              color: _glowColor(itemContext),
+                              blurRadius: widget.glowRadius,
+                            ),
+                          ]
+                        : null,
                   );
+                  final unplayedColor = _unplayedColor(itemContext);
                   final lyric = isActive
-                      ? _KaraokeLyricText(
-                          line: widget.lines[index],
-                          position: widget.position,
-                          playedColor: style.color!,
-                          unplayedColor: _unplayedColor(itemContext),
-                        )
+                      ? widget.positionListenable == null
+                            ? _KaraokeLyricText(
+                                line: widget.lines[index],
+                                position: widget.position,
+                                playedColor: style.color!,
+                                unplayedColor: unplayedColor,
+                              )
+                            : ValueListenableBuilder<Duration>(
+                                valueListenable: widget.positionListenable!,
+                                builder: (context, position, _) =>
+                                    _KaraokeLyricText(
+                                      line: widget.lines[index],
+                                      position: position,
+                                      playedColor: style.color!,
+                                      unplayedColor: unplayedColor,
+                                    ),
+                              )
                       : Text(widget.lines[index].texts.join('\n'));
                   return Padding(
                     key: ValueKey('mobile_lyric_$index'),
@@ -273,9 +454,14 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
         );
 
   Color _unplayedColor(BuildContext context) =>
-      Theme.of(context).brightness == Brightness.dark
+      widget.brightForeground || Theme.of(context).brightness == Brightness.dark
       ? Colors.white.withValues(alpha: .50)
-      : const Color(0xFF757575).withValues(alpha: .50);
+      : const Color(0xFF757575).withValues(alpha: .80);
+
+  Color _glowColor(BuildContext context) =>
+      widget.brightForeground || Theme.of(context).brightness == Brightness.dark
+      ? Colors.white.withValues(alpha: .30)
+      : const Color(0xFFBDBDBD).withValues(alpha: .30);
 }
 
 class _KaraokeLyricText extends StatelessWidget {

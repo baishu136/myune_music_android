@@ -4,11 +4,11 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../../app_version.dart';
 import '../../playlist/playlist_content_notifier.dart';
 import '../settings_provider.dart';
 import '../update_checker.dart';
 import '../about.dart';
-import '../setting_page.dart';
 import 'info_icon.dart';
 import 'theme_settings_section.dart';
 
@@ -21,6 +21,15 @@ class GeneralTab extends StatefulWidget {
 
 class _GeneralTabState extends State<GeneralTab> {
   bool _isCheckingUpdate = false;
+  String? _appVersion;
+
+  @override
+  void initState() {
+    super.initState();
+    AppVersion.current().then((version) {
+      if (mounted) setState(() => _appVersion = version);
+    });
+  }
 
   // 检查更新
   Future<void> _checkForUpdates() async {
@@ -33,8 +42,8 @@ class _GeneralTabState extends State<GeneralTab> {
     try {
       notifier.postInfo('正在检查更新…');
 
-      // 使用写好的版本号
-      final result = await UpdateChecker.checkForUpdates(appVersion);
+      final currentVersion = _appVersion ?? await AppVersion.current();
+      final result = await UpdateChecker.checkForUpdates(currentVersion);
 
       if (!mounted) return;
 
@@ -92,7 +101,7 @@ class _GeneralTabState extends State<GeneralTab> {
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
               Text(
-                '当前版本: $appVersion',
+                '当前版本: ${_appVersion ?? '读取中…'}',
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               ElevatedButton.icon(
@@ -139,7 +148,7 @@ class _GeneralTabState extends State<GeneralTab> {
                     ),
                     const SizedBox(width: 4),
                     const InfoIcon(
-                      '企鹅：匹配准、支持翻译（推荐）\n网抑：匹配一般，支持翻译\n库狗：匹配高，不支持翻译',
+                      '先使用所选平台；未获取到歌词时自动尝试其余平台。\n回退优先级：网抑 → 企鹅 → 库狗',
                     ),
                   ],
                 ),
@@ -152,28 +161,21 @@ class _GeneralTabState extends State<GeneralTab> {
                         minimumSize: WidgetStateProperty.all(const Size(0, 0)),
                       ),
                       segments: const [
-                        ButtonSegment(value: 'qq', label: Text('企鹅')),
                         ButtonSegment(value: 'netease', label: Text('网抑')),
+                        ButtonSegment(value: 'qq', label: Text('企鹅')),
                         ButtonSegment(value: 'kugou', label: Text('库狗')),
                       ],
                       selected: {settings.primaryLyricSource},
                       onSelectionChanged: (newSelection) {
                         if (newSelection.isNotEmpty) {
                           final selected = newSelection.first;
-                          String secondary;
-                          if (selected == 'qq') {
-                            secondary = 'netease';
-                          } else if (selected == 'netease') {
-                            secondary = 'qq';
-                          } else {
-                            secondary = 'qq';
-                          }
-
                           final settingsProvider = context
                               .read<SettingsProvider>();
 
                           settingsProvider.setPrimaryLyricSource(selected);
-                          settingsProvider.setSecondaryLyricSource(secondary);
+                          settingsProvider.setSecondaryLyricSource(
+                            networkLyricSourceOrder(selected)[1],
+                          );
                         }
                       },
                       showSelectedIcon: false,

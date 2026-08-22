@@ -55,6 +55,7 @@ class StatisticsManager with ChangeNotifier {
   // 记录歌曲播放（超过30秒）
   void recordSongPlayed(SongPlayStat stat) {
     _statisticsData.recordSongPlayed(stat);
+    notifyListeners();
     // 异步保存，不影响播放体验
     _saveStatistics();
   }
@@ -86,6 +87,7 @@ class StatisticsManager with ChangeNotifier {
   // 清空所有统计数据
   Future<void> clearAllStats() async {
     _statisticsData.clearStats();
+    notifyListeners();
     await _saveStatistics();
   }
 

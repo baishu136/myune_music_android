@@ -25,6 +25,8 @@ class SettingsProvider with ChangeNotifier {
   static const _showAlbumNameKey = 'showAlbumName'; // 显示专辑名称设置的 key
 
   static const _enableOnlineLyricsKey = 'enableOnlineLyrics';
+  static const _enableLyricTranslationKey = 'enableLyricTranslation';
+  static const _enableLyricSourceFallbackKey = 'enableLyricSourceFallback';
   static const _lyricVerticalSpacingKey =
       'lyricVerticalSpacing'; // 歌词垂直间距设置的 key
   static const _primaryLyricSourceKey = 'primaryLyricSource'; // 主要歌词源设置的 key
@@ -35,6 +37,8 @@ class SettingsProvider with ChangeNotifier {
   static const _minimizeToTrayKey = 'minimizeToTray'; // 最小化到托盘设置的 key
   static const _enableLyricBlurKey = 'enableLyricBlur'; // 歌词模糊效果设置的 key
   static const _lyricBlurStrengthKey = 'lyricBlurStrength'; // 歌词模糊强度设置的 key
+  static const _playbackLyricGlowEnabledKey = 'playbackLyricGlowEnabled';
+  static const _playbackLyricGlowRadiusKey = 'playbackLyricGlowRadius';
   static const _showTaskbarProgressKey =
       'showTaskbarProgress'; // 任务栏进度显示设置的 key
   static const _hiddenPagesKey = 'hiddenPages'; // 隐藏页面设置的 key
@@ -58,8 +62,20 @@ class SettingsProvider with ChangeNotifier {
   static const _playbackThemeImageEnabledKey = 'playbackThemeImageEnabled';
   static const _homeThemeImageDimKey = 'homeThemeImageDim';
   static const _playbackThemeImageDimKey = 'playbackThemeImageDim';
+  static const _homeThemeImageBlurKey = 'homeThemeImageBlur';
+  static const _playbackThemeImageBlurKey = 'playbackThemeImageBlur';
+  static const _homeAlbumArtBackgroundDimKey = 'homeAlbumArtBackgroundDim';
+  static const _playbackAlbumArtBackgroundDimKey =
+      'playbackAlbumArtBackgroundDim';
+  static const _homeAlbumArtBackgroundBlurKey = 'homeAlbumArtBackgroundBlur';
+  static const _playbackAlbumArtBackgroundBlurKey =
+      'playbackAlbumArtBackgroundBlur';
   static const _followAlbumArtOnHomeKey = 'followAlbumArtOnHome';
   static const _followAlbumArtOnPlaybackKey = 'followAlbumArtOnPlayback';
+  static const _artistGroupGridViewKey = 'artistGroupGridView';
+  static const _albumGroupGridViewKey = 'albumGroupGridView';
+  static const _artistGroupCoverPathsKey = 'artistGroupCoverPaths';
+  static const _albumGroupCoverPathsKey = 'albumGroupCoverPaths';
   static const _desktopLyricsEnabledKey = 'desktopLyricsEnabled';
   static const _desktopLyricsLockedKey = 'desktopLyricsLocked';
   static const _desktopLyricsColorKey = 'desktopLyricsColor';
@@ -77,6 +93,8 @@ class SettingsProvider with ChangeNotifier {
   bool _minimizeToTray = false; // 默认不启用最小化到托盘
   bool _enableLyricBlur = false; // Android 版已移除歌词模糊效果
   double _lyricBlurStrength = 2.5; // 歌词模糊强度，范围 1.0~4.0
+  bool _playbackLyricGlowEnabled = false;
+  double _playbackLyricGlowRadius = 8.0;
   bool _showAlbumName = false; // 默认不显示专辑名称
   bool _enableDynamicBackground = false; // 默认不启用动态背景
   bool _audioDeviceIsAuto = true; // 默认音频设备为自动
@@ -96,8 +114,18 @@ class SettingsProvider with ChangeNotifier {
   bool _playbackThemeImageEnabled = false;
   double _homeThemeImageDim = 0.62;
   double _playbackThemeImageDim = 0.68;
+  double _homeThemeImageBlur = 22.0;
+  double _playbackThemeImageBlur = 22.0;
+  double _homeAlbumArtBackgroundDim = 0.52;
+  double _playbackAlbumArtBackgroundDim = 0.52;
+  double _homeAlbumArtBackgroundBlur = 40.0;
+  double _playbackAlbumArtBackgroundBlur = 40.0;
   bool _followAlbumArtOnHome = false;
   bool _followAlbumArtOnPlayback = false;
+  bool _artistGroupGridView = false;
+  bool _albumGroupGridView = false;
+  Map<String, String> _artistGroupCoverPaths = {};
+  Map<String, String> _albumGroupCoverPaths = {};
   bool _desktopLyricsEnabled = false;
   bool _desktopLyricsLocked = false;
   int _desktopLyricsColor = 0xFF00A9D6;
@@ -112,6 +140,8 @@ class SettingsProvider with ChangeNotifier {
 
   bool _showTaskbarProgress = false;
   bool _enableOnlineLyrics = false; // 默认不启用从网络获取歌词
+  bool _enableLyricTranslation = true; // 默认显示网络歌词翻译
+  bool _enableLyricSourceFallback = false; // 默认仅使用用户选择的歌词源
   String _primaryLyricSource = 'qq'; // 默认主要歌词源为qq音乐
   String _secondaryLyricSource = 'netease'; // 默认备用歌词源为网易云音乐
 
@@ -133,11 +163,15 @@ class SettingsProvider with ChangeNotifier {
   bool get minimizeToTray => _minimizeToTray; // 获取最小化到托盘设置
   bool get enableLyricBlur => _enableLyricBlur; // 获取歌词模糊效果设置
   double get lyricBlurStrength => _lyricBlurStrength; // 获取歌词模糊强度设置
+  bool get playbackLyricGlowEnabled => _playbackLyricGlowEnabled;
+  double get playbackLyricGlowRadius => _playbackLyricGlowRadius;
   bool get showTaskbarProgress => _showTaskbarProgress; // 获取任务栏进度显示设置
   bool get showAlbumName => _showAlbumName; // 获取显示专辑名称设置
   bool get enableDynamicBackground => _enableDynamicBackground; // 获取动态背景设置
 
   bool get enableOnlineLyrics => _enableOnlineLyrics;
+  bool get enableLyricTranslation => _enableLyricTranslation;
+  bool get enableLyricSourceFallback => _enableLyricSourceFallback;
   String get primaryLyricSource => _primaryLyricSource; // 获取主要歌词源
   String get secondaryLyricSource => _secondaryLyricSource; // 获取备用歌词源
 
@@ -165,8 +199,20 @@ class SettingsProvider with ChangeNotifier {
   bool get playbackThemeImageEnabled => _playbackThemeImageEnabled;
   double get homeThemeImageDim => _homeThemeImageDim;
   double get playbackThemeImageDim => _playbackThemeImageDim;
+  double get homeThemeImageBlur => _homeThemeImageBlur;
+  double get playbackThemeImageBlur => _playbackThemeImageBlur;
+  double get homeAlbumArtBackgroundDim => _homeAlbumArtBackgroundDim;
+  double get playbackAlbumArtBackgroundDim => _playbackAlbumArtBackgroundDim;
+  double get homeAlbumArtBackgroundBlur => _homeAlbumArtBackgroundBlur;
+  double get playbackAlbumArtBackgroundBlur => _playbackAlbumArtBackgroundBlur;
   bool get followAlbumArtOnHome => _followAlbumArtOnHome;
   bool get followAlbumArtOnPlayback => _followAlbumArtOnPlayback;
+  bool get artistGroupGridView => _artistGroupGridView;
+  bool get albumGroupGridView => _albumGroupGridView;
+  Map<String, String> get artistGroupCoverPaths =>
+      Map.unmodifiable(_artistGroupCoverPaths);
+  Map<String, String> get albumGroupCoverPaths =>
+      Map.unmodifiable(_albumGroupCoverPaths);
   bool get desktopLyricsEnabled => _desktopLyricsEnabled;
   bool get desktopLyricsLocked => _desktopLyricsLocked;
   int get desktopLyricsColor => _desktopLyricsColor;
@@ -196,6 +242,9 @@ class SettingsProvider with ChangeNotifier {
         prefs.getBool(_forceSingleLineLyricKey) ?? false; // 加载强制单行歌词设置
     _showAlbumName = prefs.getBool(_showAlbumNameKey) ?? false; // 加载显示专辑名称设置
     _enableOnlineLyrics = prefs.getBool(_enableOnlineLyricsKey) ?? false;
+    _enableLyricTranslation = prefs.getBool(_enableLyricTranslationKey) ?? true;
+    _enableLyricSourceFallback =
+        prefs.getBool(_enableLyricSourceFallbackKey) ?? false;
     _lyricVerticalSpacing =
         prefs.getDouble(_lyricVerticalSpacingKey) ?? 6.0; // 加载歌词垂直间距设置
     _addLyricPadding = prefs.getBool(_addLyricPaddingKey) ?? true; // 加载歌词上下补位设置
@@ -203,6 +252,10 @@ class SettingsProvider with ChangeNotifier {
     _enableLyricBlur = false;
     _lyricBlurStrength =
         prefs.getDouble(_lyricBlurStrengthKey) ?? 2.5; // 加载歌词模糊强度设置
+    _playbackLyricGlowEnabled =
+        prefs.getBool(_playbackLyricGlowEnabledKey) ?? false;
+    _playbackLyricGlowRadius =
+        (prefs.getDouble(_playbackLyricGlowRadiusKey) ?? 8.0).clamp(2.0, 20.0);
     _primaryLyricSource =
         prefs.getString(_primaryLyricSourceKey) ?? 'qq'; // 加载主要歌词源设置
     _secondaryLyricSource =
@@ -244,11 +297,47 @@ class SettingsProvider with ChangeNotifier {
     }
     await prefs.remove('notificationThemeImagePath');
     await prefs.remove('notificationThemeImageEnabled');
-    _homeThemeImageDim = prefs.getDouble(_homeThemeImageDimKey) ?? 0.62;
-    _playbackThemeImageDim = prefs.getDouble(_playbackThemeImageDimKey) ?? 0.68;
+    _homeThemeImageDim = (prefs.getDouble(_homeThemeImageDimKey) ?? 0.62).clamp(
+      0.2,
+      0.9,
+    );
+    _playbackThemeImageDim =
+        (prefs.getDouble(_playbackThemeImageDimKey) ?? 0.68).clamp(0.2, 0.9);
+    _homeThemeImageBlur = (prefs.getDouble(_homeThemeImageBlurKey) ?? 22.0)
+        .clamp(0.0, 40.0);
+    _playbackThemeImageBlur =
+        (prefs.getDouble(_playbackThemeImageBlurKey) ?? 22.0).clamp(0.0, 40.0);
+    _homeAlbumArtBackgroundDim =
+        (prefs.getDouble(_homeAlbumArtBackgroundDimKey) ?? 0.52).clamp(
+          0.2,
+          0.9,
+        );
+    _playbackAlbumArtBackgroundDim =
+        (prefs.getDouble(_playbackAlbumArtBackgroundDimKey) ?? 0.52).clamp(
+          0.2,
+          0.9,
+        );
+    _homeAlbumArtBackgroundBlur =
+        (prefs.getDouble(_homeAlbumArtBackgroundBlurKey) ?? 40.0).clamp(
+          0.0,
+          40.0,
+        );
+    _playbackAlbumArtBackgroundBlur =
+        (prefs.getDouble(_playbackAlbumArtBackgroundBlurKey) ?? 40.0).clamp(
+          0.0,
+          40.0,
+        );
     _followAlbumArtOnHome = prefs.getBool(_followAlbumArtOnHomeKey) ?? false;
     _followAlbumArtOnPlayback =
         prefs.getBool(_followAlbumArtOnPlaybackKey) ?? false;
+    _artistGroupGridView = prefs.getBool(_artistGroupGridViewKey) ?? false;
+    _albumGroupGridView = prefs.getBool(_albumGroupGridViewKey) ?? false;
+    _artistGroupCoverPaths = _decodeStringMap(
+      prefs.getString(_artistGroupCoverPathsKey),
+    );
+    _albumGroupCoverPaths = _decodeStringMap(
+      prefs.getString(_albumGroupCoverPathsKey),
+    );
     _desktopLyricsEnabled = prefs.getBool(_desktopLyricsEnabledKey) ?? false;
     _desktopLyricsLocked = prefs.getBool(_desktopLyricsLockedKey) ?? false;
     _desktopLyricsColor = prefs.getInt(_desktopLyricsColorKey) ?? 0xFF00A9D6;
@@ -338,7 +427,7 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setBool(_useBlurBackgroundKey, value);
   }
 
-  void setUseDynamicColor(bool value) async {
+  Future<void> setUseDynamicColor(bool value) async {
     if (_useDynamicColor != value) {
       _useDynamicColor = value;
       notifyListeners();
@@ -352,6 +441,22 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_enableOnlineLyricsKey, value);
+  }
+
+  Future<void> setEnableLyricTranslation(bool value) async {
+    if (_enableLyricTranslation == value) return;
+    _enableLyricTranslation = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_enableLyricTranslationKey, value);
+  }
+
+  Future<void> setEnableLyricSourceFallback(bool value) async {
+    if (_enableLyricSourceFallback == value) return;
+    _enableLyricSourceFallback = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_enableLyricSourceFallbackKey, value);
   }
 
   void setLyricVerticalSpacing(double value) async {
@@ -601,6 +706,80 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setDouble(_playbackThemeImageDimKey, _playbackThemeImageDim);
   }
 
+  Future<void> setHomeThemeImageBlur(double value) async {
+    _homeThemeImageBlur = value.clamp(0.0, 40.0);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_homeThemeImageBlurKey, _homeThemeImageBlur);
+  }
+
+  Future<void> setPlaybackThemeImageBlur(double value) async {
+    _playbackThemeImageBlur = value.clamp(0.0, 40.0);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_playbackThemeImageBlurKey, _playbackThemeImageBlur);
+  }
+
+  Future<void> setPlaybackLyricGlowEnabled(bool value) async {
+    if (_playbackLyricGlowEnabled == value) return;
+    _playbackLyricGlowEnabled = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_playbackLyricGlowEnabledKey, value);
+  }
+
+  Future<void> setPlaybackLyricGlowRadius(double value) async {
+    final next = value.clamp(2.0, 20.0);
+    if ((_playbackLyricGlowRadius - next).abs() < 0.01) return;
+    _playbackLyricGlowRadius = next;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(
+      _playbackLyricGlowRadiusKey,
+      _playbackLyricGlowRadius,
+    );
+  }
+
+  Future<void> setHomeAlbumArtBackgroundDim(double value) async {
+    _homeAlbumArtBackgroundDim = value.clamp(0.2, 0.9);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(
+      _homeAlbumArtBackgroundDimKey,
+      _homeAlbumArtBackgroundDim,
+    );
+  }
+
+  Future<void> setPlaybackAlbumArtBackgroundDim(double value) async {
+    _playbackAlbumArtBackgroundDim = value.clamp(0.2, 0.9);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(
+      _playbackAlbumArtBackgroundDimKey,
+      _playbackAlbumArtBackgroundDim,
+    );
+  }
+
+  Future<void> setHomeAlbumArtBackgroundBlur(double value) async {
+    _homeAlbumArtBackgroundBlur = value.clamp(0.0, 40.0);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(
+      _homeAlbumArtBackgroundBlurKey,
+      _homeAlbumArtBackgroundBlur,
+    );
+  }
+
+  Future<void> setPlaybackAlbumArtBackgroundBlur(double value) async {
+    _playbackAlbumArtBackgroundBlur = value.clamp(0.0, 40.0);
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(
+      _playbackAlbumArtBackgroundBlurKey,
+      _playbackAlbumArtBackgroundBlur,
+    );
+  }
+
   Future<void> setFollowAlbumArtOnHome(bool value) async {
     if (_followAlbumArtOnHome == value) return;
     _followAlbumArtOnHome = value;
@@ -615,6 +794,61 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_followAlbumArtOnPlaybackKey, value);
+  }
+
+  Future<void> setArtistGroupGridView(bool value) async {
+    if (_artistGroupGridView == value) return;
+    _artistGroupGridView = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_artistGroupGridViewKey, value);
+  }
+
+  Future<void> setAlbumGroupGridView(bool value) async {
+    if (_albumGroupGridView == value) return;
+    _albumGroupGridView = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_albumGroupGridViewKey, value);
+  }
+
+  Future<void> setGroupCoverPath({
+    required bool artist,
+    required String group,
+    String? songPath,
+  }) async {
+    final values = artist
+        ? Map<String, String>.from(_artistGroupCoverPaths)
+        : Map<String, String>.from(_albumGroupCoverPaths);
+    if (songPath == null || songPath.isEmpty) {
+      values.remove(group);
+    } else {
+      values[group] = songPath;
+    }
+    if (artist) {
+      _artistGroupCoverPaths = values;
+    } else {
+      _albumGroupCoverPaths = values;
+    }
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      artist ? _artistGroupCoverPathsKey : _albumGroupCoverPathsKey,
+      jsonEncode(values),
+    );
+  }
+
+  static Map<String, String> _decodeStringMap(String? source) {
+    if (source == null || source.isEmpty) return {};
+    try {
+      final decoded = jsonDecode(source);
+      if (decoded is! Map<String, dynamic>) return {};
+      return decoded.map(
+        (key, value) => MapEntry(key, value is String ? value : ''),
+      )..removeWhere((key, value) => value.isEmpty);
+    } catch (_) {
+      return {};
+    }
   }
 
   Future<void> setDesktopLyricsEnabled(bool value) async {

@@ -6,6 +6,7 @@ import 'dart:convert';
 import 'dart:collection';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -24,6 +25,8 @@ import '../../theme/theme_provider.dart';
 import '../statistics_page/playback_tracker.dart';
 import '../statistics_page/statistics_manager.dart';
 import '../../services/audio_metadata_service.dart';
+import '../../services/cover_disk_cache.dart';
+import '../../services/cover_override_service.dart';
 import '../../services/global_hotkey_manager.dart';
 import '../../services/search_service.dart';
 import '../../widgets/artwork_image.dart';
@@ -42,6 +45,36 @@ enum SortCriterion {
 enum PlayMode { sequence, shuffle, repeatOne }
 
 enum DetailViewContext { playlist, allSongs, artist, album }
+
+const _networkLyricFallbackPriority = ['netease', 'qq', 'kugou'];
+
+List<String> networkLyricSourceOrder(
+  String selectedSource, {
+  bool enableFallback = true,
+}) {
+  final selected = _networkLyricFallbackPriority.contains(selectedSource)
+      ? selectedSource
+      : _networkLyricFallbackPriority.first;
+  if (!enableFallback) return [selected];
+  return [
+    selected,
+    ..._networkLyricFallbackPriority.where((source) => source != selected),
+  ];
+}
+
+List<String> combineNetworkLyricLines(
+  List<String> originalLines,
+  List<String> translatedLines, {
+  required bool includeTranslation,
+}) {
+  return [
+    ...originalLines,
+    if (includeTranslation && translatedLines.isNotEmpty) ...[
+      '',
+      ...translatedLines,
+    ],
+  ];
+}
 
 class ReplayGainWriteSummary {
   final int total;
@@ -94,6 +127,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   final PlaylistManager _playlistManager = PlaylistManager();
   final SettingsProvider _settingsProvider;
   final ThemeProvider _themeProvider;
+  final CoverOverrideService _coverOverrides;
 
   bool _allSongsLoaded = false; // 表示全部歌曲是否已加载完成
   bool get allSongsLoaded => _allSongsLoaded;
@@ -263,6 +297,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   final Map<String, Uint8List?> _coverCache = {};
   final Map<String, int> _coverVersionMs = {};
   final Set<String> _evictableCoverPaths = {};
+  final CoverDiskCache _coverDiskCache = CoverDiskCache();
   static const int _maxCoverCacheSize = 100;
 
   // --- 播放器相关 ---
@@ -307,9 +342,14 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // --- 播放进度相关 ---
   Duration _currentPosition = Duration.zero; // 当前播放进度
+  final ValueNotifier<Duration> _positionListenable = ValueNotifier(
+    Duration.zero,
+  );
+  final Stopwatch _positionNotifyStopwatch = Stopwatch()..start();
   Duration _totalDuration = Duration.zero; // 当前歌曲总时长
 
   Duration get currentPosition => _currentPosition;
+  ValueListenable<Duration> get positionListenable => _positionListenable;
   Duration get totalDuration => _totalDuration;
 
   // --- 音调与倍速 ---
@@ -378,6 +418,11 @@ class PlaylistContentNotifier extends ChangeNotifier
   // --- 歌词相关 --
   List<LyricLine> _currentLyrics = []; // 当前歌曲歌词列表
   int _currentLyricLineIndex = -1; // 当前歌词行索引
+  int _lyricRequestGeneration = 0;
+  Future<void>? _onlineLyricRequest;
+  String? _onlineLyricRequestSongPath;
+  int? _onlineLyricRequestGeneration;
+  int _dynamicColorRequestGeneration = 0;
 
   List<LyricLine> get currentLyrics => _currentLyrics;
   int get currentLyricLineIndex => _currentLyricLineIndex;
@@ -386,7 +431,35 @@ class PlaylistContentNotifier extends ChangeNotifier
   /// has been resolved yet. Existing lyrics are never replaced by this action.
   Future<void> refreshCurrentLyricsIfEmpty() async {
     final song = _currentSong;
-    if (song == null || _currentLyrics.isNotEmpty) return;
+    if (song == null ||
+        _currentLyrics.isNotEmpty ||
+        !_settingsProvider.enableOnlineLyrics) {
+      return;
+    }
+
+    // Re-entering the lyric page while this song is already being resolved
+    // must reuse that request. Starting another fallback chain here makes the
+    // two chains invalidate each other and causes intermittent empty results.
+    final inFlight = _onlineLyricRequest;
+    if (inFlight != null &&
+        _onlineLyricRequestSongPath == song.normalizedPath &&
+        _onlineLyricRequestGeneration == _lyricRequestGeneration) {
+      await inFlight;
+      return;
+    }
+
+    // A completed empty chain is intentionally retryable: every cover -> lyric
+    // transition starts a fresh selected-source + fallback-source round.
+    final requestGeneration = ++_lyricRequestGeneration;
+    await _startOnlineLyricRequest(song, requestGeneration);
+  }
+
+  /// Reloads the current song using the normal external/embedded/network
+  /// priority. This lets lyric display settings take effect without changing
+  /// which source type wins.
+  Future<void> reloadCurrentLyrics() async {
+    final song = _currentSong;
+    if (song == null) return;
     await _loadLyricsForSong(song.filePath);
   }
 
@@ -510,8 +583,13 @@ class PlaylistContentNotifier extends ChangeNotifier
   // 限制日志写入间隔
   static const Duration _audioDeviceErrorInterval = Duration(seconds: 5);
 
-  PlaylistContentNotifier(this._settingsProvider, this._themeProvider) {
+  PlaylistContentNotifier(
+    this._settingsProvider,
+    this._themeProvider,
+    this._coverOverrides,
+  ) {
     WidgetsBinding.instance.addObserver(this);
+    _coverOverrides.addListener(_handleCoverOverridesChanged);
     _setupMediaPlayerListeners(); // 设置 media-kit 的监听器
     _initLogFile();
     _loadAllData(); // 使用一个统一的方法来加载所有数据
@@ -521,6 +599,15 @@ class PlaylistContentNotifier extends ChangeNotifier
     _settingsProvider.initializationFuture.then((_) {
       GlobalHotkeyManager().init(this, _settingsProvider);
     });
+  }
+
+  void _handleCoverOverridesChanged() {
+    for (final signal in _coverSignals.values) {
+      signal.notifyListeners();
+    }
+    notifyListeners();
+    final song = _currentSong;
+    if (song != null) unawaited(_applyDynamicColorForSong(song));
   }
 
   Future<void> _initLogFile() async {
@@ -923,7 +1010,9 @@ class PlaylistContentNotifier extends ChangeNotifier
   // --- 播放器相关 ---
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _coverOverrides.removeListener(_handleCoverOverridesChanged);
     _positionSubscription?.cancel();
+    _positionListenable.dispose();
     _lyricLineIndexController.close();
     _errorStreamController.close();
     _exclusiveModeSubscription?.cancel(); // 取消独占模式订阅
@@ -987,10 +1076,25 @@ class PlaylistContentNotifier extends ChangeNotifier
     _positionSubscription = _audioService.player.stream.position.listen((
       position,
     ) {
-      _currentPosition = position;
+      final previousLyricIndex = _currentLyricLineIndex;
+      _setCurrentPosition(position);
       updateLyricLine(position);
-      notifyListeners();
+      // Progress-sensitive widgets listen to [positionListenable] directly.
+      // Throttling the broad notification prevents retained pages from being
+      // rebuilt for every native position event.
+      if (previousLyricIndex != _currentLyricLineIndex ||
+          _positionNotifyStopwatch.elapsedMilliseconds >= 200) {
+        _positionNotifyStopwatch.reset();
+        notifyListeners();
+      }
     });
+  }
+
+  void _setCurrentPosition(Duration position) {
+    _currentPosition = position;
+    if (_positionListenable.value != position) {
+      _positionListenable.value = position;
+    }
   }
 
   @override
@@ -1000,7 +1104,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     _isAppForeground = isForeground;
     if (isForeground) {
-      _currentPosition = _audioService.player.state.position;
+      _setCurrentPosition(_audioService.player.state.position);
       updateLyricLine(_currentPosition);
       _listenToPositionUpdates();
       notifyListeners();
@@ -1012,7 +1116,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     // the audio output thread; playback itself is deliberately left untouched.
     _positionSubscription?.cancel();
     _positionSubscription = null;
-    _currentPosition = _audioService.player.state.position;
+    _setCurrentPosition(_audioService.player.state.position);
   }
 
   void _setupMediaPlayerListeners() {
@@ -1370,6 +1474,21 @@ class PlaylistContentNotifier extends ChangeNotifier
         final normalizedPath = Uri.file(
           filePath,
         ).toFilePath(windows: Platform.isWindows);
+        final stat = await File(normalizedPath).stat();
+        final modifiedMs = stat.modified.millisecondsSinceEpoch;
+        final diskCover = await _coverDiskCache.read(cacheKey, modifiedMs);
+        if (diskCover != null) {
+          _coverCache[cacheKey] = diskCover;
+          _coverVersionMs[cacheKey] = modifiedMs;
+          return Song(
+            title: basicSong.title,
+            artist: basicSong.artist,
+            album: basicSong.album,
+            filePath: basicSong.filePath,
+            albumArt: diskCover,
+            duration: basicSong.duration,
+          );
+        }
         final metadata = await readAudioInfo(
           path: normalizedPath,
           options: const AudioInfoOptions(
@@ -1417,10 +1536,10 @@ class PlaylistContentNotifier extends ChangeNotifier
             ? extractedCover
             : null;
         _coverCache[cacheKey] = cover;
-        final stat = await File(normalizedPath).stat();
-        _coverVersionMs[cacheKey] = stat.modified.millisecondsSinceEpoch;
+        _coverVersionMs[cacheKey] = modifiedMs;
         if (cover != null) {
           _evictableCoverPaths.remove(cacheKey);
+          unawaited(_coverDiskCache.write(cacheKey, modifiedMs, cover));
         }
 
         return Song(
@@ -1594,6 +1713,8 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 封面处理
   Uint8List? coverForSongPath(String filePath) {
+    final override = _coverOverrides.songCover(filePath);
+    if (override != null && override.isNotEmpty) return override;
     final cacheKey = _normalizePath(filePath);
     final cachedCover = _coverCache[cacheKey];
     if (cachedCover != null && cachedCover.isNotEmpty) {
@@ -1606,6 +1727,34 @@ class PlaylistContentNotifier extends ChangeNotifier
       return embeddedCover;
     }
     return null;
+  }
+
+  /// Artwork used by the UI. User overrides always win over embedded tags.
+  Uint8List? displayCoverForSong(Song song) => coverForSongPath(song.filePath);
+
+  /// Reloads an embedded cover after an explicit source-file edit.
+  Future<void> refreshSongCoverAfterFileEdit(String filePath) async {
+    final cacheKey = _normalizePath(filePath);
+    final normalizedPath = Uri.file(
+      cacheKey,
+    ).toFilePath(windows: Platform.isWindows);
+    final stat = await File(normalizedPath).stat();
+    final metadata = await readAudioInfo(
+      path: normalizedPath,
+      options: const AudioInfoOptions(
+        needCover: true,
+        needLyrics: false,
+        needAudioProps: false,
+        needExtraTags: false,
+        needTrackNumber: false,
+      ),
+    );
+    final cover = metadata.cover?.isNotEmpty == true ? metadata.cover : null;
+    final modifiedMs = stat.modified.millisecondsSinceEpoch;
+    _storeLoadedCover(cacheKey, cover, modifiedMs: modifiedMs);
+    if (cover != null) {
+      await _coverDiskCache.write(cacheKey, modifiedMs, cover);
+    }
   }
 
   Listenable coverListenableForSongPath(String filePath) {
@@ -1815,6 +1964,13 @@ class PlaylistContentNotifier extends ChangeNotifier
           final normalizedPath = Uri.file(
             filePath,
           ).toFilePath(windows: Platform.isWindows);
+          final stat = await File(normalizedPath).stat();
+          final modifiedMs = stat.modified.millisecondsSinceEpoch;
+          final diskCover = await _coverDiskCache.read(cacheKey, modifiedMs);
+          if (diskCover != null) {
+            _storeLoadedCover(cacheKey, diskCover, modifiedMs: modifiedMs);
+            continue;
+          }
           final metadata = await readAudioInfo(
             path: normalizedPath,
             options: const AudioInfoOptions(
@@ -1830,23 +1986,9 @@ class PlaylistContentNotifier extends ChangeNotifier
           final cover = extractedCover != null && extractedCover.isNotEmpty
               ? extractedCover
               : null;
-          _coverCache[cacheKey] = cover;
-          final stat = await File(normalizedPath).stat();
-          _coverVersionMs[cacheKey] = stat.modified.millisecondsSinceEpoch;
-          _notifyCoverChanged(cacheKey);
-
+          _storeLoadedCover(cacheKey, cover, modifiedMs: modifiedMs);
           if (cover != null) {
-            _evictableCoverPaths.remove(cacheKey);
-            _updateSongInCollections(filePath, (song) {
-              return Song(
-                title: song.title,
-                artist: song.artist,
-                album: song.album,
-                filePath: song.filePath,
-                albumArt: cover,
-                duration: song.duration,
-              );
-            });
+            unawaited(_coverDiskCache.write(cacheKey, modifiedMs, cover));
           }
         } catch (e) {
           debugPrint('加载封面失败: ${p.basename(filePath)} - $e');
@@ -1857,6 +1999,30 @@ class PlaylistContentNotifier extends ChangeNotifier
     } finally {
       _activeCoverWorkers--;
       _processCoverQueue();
+    }
+  }
+
+  void _storeLoadedCover(String cacheKey, Uint8List? cover, {int? modifiedMs}) {
+    _coverCache[cacheKey] = cover;
+    if (modifiedMs != null) _coverVersionMs[cacheKey] = modifiedMs;
+    if (cover != null && cover.isNotEmpty) {
+      _evictableCoverPaths.remove(cacheKey);
+      _updateSongInCollections(cacheKey, (song) {
+        if (song.albumArt == cover) return song;
+        return Song(
+          title: song.title,
+          artist: song.artist,
+          album: song.album,
+          filePath: song.filePath,
+          albumArt: cover,
+          duration: song.duration,
+        );
+      });
+    }
+    _notifyCoverChanged(cacheKey);
+    final song = _currentSong;
+    if (song != null && song.normalizedPath == cacheKey) {
+      unawaited(_applyDynamicColorForSong(song));
     }
   }
 
@@ -2926,7 +3092,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     _currentSongIndex = -1;
     _currentLyrics = [];
     _currentLyricLineIndex = -1;
-    _currentPosition = Duration.zero;
+    _setCurrentPosition(Duration.zero);
     _totalDuration = Duration.zero;
     _isPlaying = false;
     notifyListeners();
@@ -3415,7 +3581,7 @@ class PlaylistContentNotifier extends ChangeNotifier
         _currentLyricLineIndex = -1;
         _loadLyricsForSong(songFilePath);
 
-        extractAndApplyDynamicColor(songToPlay.albumArt);
+        unawaited(_applyDynamicColorForSong(songToPlay));
 
         PlaybackTracker().startTracking(songToPlay);
 
@@ -3977,7 +4143,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       _loadLyricsForSong(songFilePath);
 
       // 提取并应用动态主题色
-      extractAndApplyDynamicColor(songToPlay.albumArt);
+      unawaited(_applyDynamicColorForSong(songToPlay));
 
       // 开始跟踪播放
       PlaybackTracker().startTracking(songToPlay);
@@ -4202,7 +4368,7 @@ class PlaylistContentNotifier extends ChangeNotifier
         await _audioService.player.setMediaSession(session);
 
         // 提取并应用动态主题色
-        extractAndApplyDynamicColor(_currentSong!.albumArt);
+        unawaited(_applyDynamicColorForSong(_currentSong!));
 
         // 将歌曲加载到播放器中，但不自动播放
         try {
@@ -4232,7 +4398,7 @@ class PlaylistContentNotifier extends ChangeNotifier
             } else {
               _currentSong = null;
             }
-            _currentPosition = Duration.zero;
+            _setCurrentPosition(Duration.zero);
           }
         } catch (e) {
           // 如果加载失败，清除播放状态
@@ -4250,7 +4416,7 @@ class PlaylistContentNotifier extends ChangeNotifier
           } else {
             _currentSong = null;
           }
-          _currentPosition = Duration.zero;
+          _setCurrentPosition(Duration.zero);
         }
 
         notifyListeners();
@@ -4259,9 +4425,18 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   // -- 主题管理 --
-  // 提取并应用动态主题色
-  Future<void> extractAndApplyDynamicColor(Uint8List? albumArt) async {
-    // 检查设置是否启用了动态颜色
+  Future<void> _applyDynamicColorForSong(Song song) =>
+      extractAndApplyDynamicColor(
+        displayCoverForSong(song),
+        sourceSongPath: song.normalizedPath,
+      );
+
+  // 提取并应用动态主题色。sourceSongPath 用于阻止旧歌曲的异步结果回写。
+  Future<void> extractAndApplyDynamicColor(
+    Uint8List? albumArt, {
+    String? sourceSongPath,
+  }) async {
+    final requestGeneration = ++_dynamicColorRequestGeneration;
     if (!_settingsProvider.useDynamicColor || albumArt == null) {
       return;
     }
@@ -4269,20 +4444,20 @@ class PlaylistContentNotifier extends ChangeNotifier
     try {
       final colors = await extractColor(
         artworkImageProvider(null, albumArt, size: ArtworkSize.medium),
-        1, // 提取一种主色调
+        8,
       );
-      if (colors.isNotEmpty) {
-        final dominantColor = colors[0];
-        final color = Color.fromRGBO(
-          dominantColor.r,
-          dominantColor.g,
-          dominantColor.b,
-          1.0,
-        );
-
-        // 设置主题色
-        _themeProvider.setSeedColor(color);
+      if (requestGeneration != _dynamicColorRequestGeneration ||
+          !_settingsProvider.useDynamicColor ||
+          (sourceSongPath != null &&
+              _currentSong?.normalizedPath != sourceSongPath) ||
+          colors.isEmpty) {
+        return;
       }
+      final palette = colors
+          .map((color) => Color.fromRGBO(color.r, color.g, color.b, 1))
+          .toList(growable: false);
+      final color = selectRepresentativeCoverColor(palette);
+      await _themeProvider.setDynamicSeedColor(color);
     } catch (e) {
       // print('提取颜色失败 $e');
     }
@@ -4569,6 +4744,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 加载指定歌曲的歌词
   Future<void> _loadLyricsForSong(String songFilePath) async {
+    final requestGeneration = ++_lyricRequestGeneration;
     _currentLyrics = []; // 清空之前的歌词
     _currentLyricLineIndex = -1; // 重置歌词行索引
     _lyricLineIndexController.add(-1);
@@ -4576,50 +4752,114 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     if (_settingsProvider.preferExternalLyrics) {
       // 优先读取外置LRC歌词
-      await _loadExternalLyrics(songFilePath);
-      if (_currentLyrics.isNotEmpty) {
+      final externalLyrics = await _readExternalLyrics(songFilePath);
+      if (!_isCurrentLocalLyricRequest(songFilePath, requestGeneration)) return;
+      if (externalLyrics.isNotEmpty) {
+        _currentLyrics = externalLyrics;
+        notifyListeners();
         return;
       }
       // 内嵌歌词
-      await _loadEmbeddedLyrics(songFilePath);
-      if (_currentLyrics.isNotEmpty) {
+      final embeddedLyrics = await _readEmbeddedLyrics(songFilePath);
+      if (!_isCurrentLocalLyricRequest(songFilePath, requestGeneration)) return;
+      if (embeddedLyrics.isNotEmpty) {
+        _currentLyrics = embeddedLyrics;
+        notifyListeners();
         return;
       }
     } else {
       // 优先读取内嵌歌词
-      await _loadEmbeddedLyrics(songFilePath);
-      if (_currentLyrics.isNotEmpty) {
+      final embeddedLyrics = await _readEmbeddedLyrics(songFilePath);
+      if (!_isCurrentLocalLyricRequest(songFilePath, requestGeneration)) return;
+      if (embeddedLyrics.isNotEmpty) {
+        _currentLyrics = embeddedLyrics;
+        notifyListeners();
         return;
       }
       // 外置歌词
-      await _loadExternalLyrics(songFilePath);
-      if (_currentLyrics.isNotEmpty) {
+      final externalLyrics = await _readExternalLyrics(songFilePath);
+      if (!_isCurrentLocalLyricRequest(songFilePath, requestGeneration)) return;
+      if (externalLyrics.isNotEmpty) {
+        _currentLyrics = externalLyrics;
+        notifyListeners();
         return;
       }
     }
 
-    if (_settingsProvider.enableOnlineLyrics && currentSong != null) {
+    if (!_isCurrentLocalLyricRequest(songFilePath, requestGeneration)) return;
+    final song = currentSong;
+    if (_settingsProvider.enableOnlineLyrics && song != null) {
       _currentLyrics = []; // 清空歌词
       notifyListeners();
-
-      // 根据设置选择主选歌词源
-      if (_settingsProvider.primaryLyricSource == 'qq') {
-        // 后台异步加载QQ音乐歌词
-        _loadQQLyrics(currentSong!.title);
-      } else if (_settingsProvider.primaryLyricSource == 'netease') {
-        // 后台异步加载网易云音乐歌词
-        _loadOnlineLyrics(currentSong!.title);
-      } else {
-        // 后台异步加载酷狗音乐歌词
-        _loadKugouLyrics(currentSong!.title);
-      }
+      await _startOnlineLyricRequest(song, requestGeneration);
     } else {
       _currentLyrics = []; // 确保在不执行网络请求时清空歌词
       notifyListeners();
     }
   }
 
-  Future<void> _loadExternalLyrics(String songFilePath) async {
+  Future<void> _startOnlineLyricRequest(Song song, int requestGeneration) {
+    final inFlight = _onlineLyricRequest;
+    if (inFlight != null &&
+        _onlineLyricRequestSongPath == song.normalizedPath &&
+        _onlineLyricRequestGeneration == requestGeneration) {
+      return inFlight;
+    }
+
+    late final Future<void> request;
+    request = _loadOnlineLyricsWithFallback(song, requestGeneration)
+        .whenComplete(() {
+          if (identical(_onlineLyricRequest, request)) {
+            _onlineLyricRequest = null;
+            _onlineLyricRequestSongPath = null;
+            _onlineLyricRequestGeneration = null;
+          }
+        });
+    _onlineLyricRequest = request;
+    _onlineLyricRequestSongPath = song.normalizedPath;
+    _onlineLyricRequestGeneration = requestGeneration;
+    return request;
+  }
+
+  Future<void> _loadOnlineLyricsWithFallback(
+    Song song,
+    int requestGeneration,
+  ) async {
+    for (final source in networkLyricSourceOrder(
+      _settingsProvider.primaryLyricSource,
+      enableFallback: _settingsProvider.enableLyricSourceFallback,
+    )) {
+      if (!_isCurrentLyricRequest(song, requestGeneration)) return;
+      final lyrics = switch (source) {
+        'netease' => await _fetchNeteaseLyrics(song.title),
+        'qq' => await _fetchQQLyrics(song.title),
+        _ => await _fetchKugouLyrics(song.title),
+      };
+      if (!_isCurrentLyricRequest(song, requestGeneration)) return;
+      if (lyrics.isNotEmpty) {
+        _currentLyrics = lyrics;
+        notifyListeners();
+        return;
+      }
+    }
+    if (_isCurrentLyricRequest(song, requestGeneration)) {
+      _currentLyrics = [];
+      notifyListeners();
+    }
+  }
+
+  bool _isCurrentLyricRequest(Song song, int requestGeneration) =>
+      requestGeneration == _lyricRequestGeneration &&
+      _currentSong?.normalizedPath == song.normalizedPath;
+
+  bool _isCurrentLocalLyricRequest(
+    String songFilePath,
+    int requestGeneration,
+  ) =>
+      requestGeneration == _lyricRequestGeneration &&
+      _currentSong?.normalizedPath == _normalizePath(songFilePath);
+
+  Future<List<LyricLine>> _readExternalLyrics(String songFilePath) async {
     final songDirectory = p.dirname(songFilePath);
     final songFileNameWithoutExtension = p.basenameWithoutExtension(
       songFilePath,
@@ -4634,17 +4874,16 @@ class PlaylistContentNotifier extends ChangeNotifier
     if (await lrcFile.exists()) {
       try {
         final lines = await lrcFile.readAsLines();
-        _currentLyrics = _parseLrcContent(lines);
-        notifyListeners();
-        return;
+        return _parseLrcContent(lines);
       } catch (e) {
         // debugPrint('读取.lrc文件失败：$e');
       }
     }
+    return const [];
   }
 
   // 加载内嵌歌词
-  Future<void> _loadEmbeddedLyrics(String songFilePath) async {
+  Future<List<LyricLine>> _readEmbeddedLyrics(String songFilePath) async {
     try {
       final normalizedPath = Uri.file(
         songFilePath,
@@ -4653,8 +4892,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       if (!await file.exists()) {
         _errorStreamController.add('歌曲文件不存在：${p.basename(songFilePath)}');
-        notifyListeners();
-        return;
+        return const [];
       }
 
       final metadata = await readAudioInfo(
@@ -4670,19 +4908,19 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       if (metadata.lyrics != null && metadata.lyrics!.isNotEmpty) {
         final lines = metadata.lyrics!.split(RegExp(r'\r?\n'));
-        _currentLyrics = _parseLrcContent(lines);
-        notifyListeners();
-        return;
+        return _parseLrcContent(lines);
       }
     } catch (e) {
       // _errorStreamController.add('加载歌词失败：${p.basename(songFilePath)}');
       // 未能读取到歌词时不提示错误
     }
+    return const [];
   }
 
-  // 后台异步加载网易歌词
-  Future<void> _loadOnlineLyrics(String songTitle) async {
+  // 获取网易歌词；状态提交由统一回退调度器处理。
+  Future<List<LyricLine>> _fetchNeteaseLyrics(String songTitle) async {
     try {
+      final includeTranslation = _settingsProvider.enableLyricTranslation;
       // 检查 artist 是否为默认值，如果是则设置为空字符串
       final rawArtist = _currentSong?.artist ?? '';
       final artist = (rawArtist == '未知歌手' || rawArtist == '未知歌手 (解析失败)')
@@ -4715,9 +4953,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 如果状态码不为200，清空并返回
       if (searchResponse.statusCode != 200) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 解析搜索结果
@@ -4727,9 +4963,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       if (searchResult['result'] == null ||
           searchResult['result']['songs'] == null ||
           searchResult['result']['songs'].isEmpty) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 取第一首匹配歌曲的id
@@ -4754,30 +4988,10 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 如果状态码不为200，清空并返回
       if (lrcResponse.statusCode != 200) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       final lrcResult = json.decode(lrcResponse.body);
-
-      // 获取翻译歌词
-      final tlyricUrl =
-          'https://music.163.com/api/song/lyric?os=pc&id=$songId&tv=-1';
-      final tlyricUri = Uri.parse(tlyricUrl);
-
-      final tlyricResponse = await http
-          .get(
-            tlyricUri,
-            headers: {
-              'Referer': 'https://music.163.com',
-              'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
-
-      final tlyricResult = json.decode(tlyricResponse.body);
 
       // 处理原文歌词数据
       List<String> lrcLines = [];
@@ -4789,31 +5003,46 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 处理翻译歌词数据
       List<String> tlyricLines = [];
-      if (tlyricResult['tlyric'] != null &&
-          tlyricResult['tlyric']['lyric'] != null &&
-          tlyricResult['tlyric']['lyric'].toString().isNotEmpty) {
-        tlyricLines = tlyricResult['tlyric']['lyric'].toString().split('\n');
+      if (includeTranslation) {
+        final tlyricUri = Uri.parse(
+          'https://music.163.com/api/song/lyric?os=pc&id=$songId&tv=-1',
+        );
+        final tlyricResponse = await http
+            .get(
+              tlyricUri,
+              headers: {
+                'Referer': 'https://music.163.com',
+                'User-Agent':
+                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+              },
+            )
+            .timeout(const Duration(seconds: 10));
+        if (tlyricResponse.statusCode == 200) {
+          final tlyricResult = json.decode(tlyricResponse.body);
+          if (tlyricResult['tlyric'] != null &&
+              tlyricResult['tlyric']['lyric'] != null &&
+              tlyricResult['tlyric']['lyric'].toString().isNotEmpty) {
+            tlyricLines = tlyricResult['tlyric']['lyric'].toString().split(
+              '\n',
+            );
+          }
+        }
       }
 
-      // 合并歌词
-      final List<String> mergedLyrics = [];
-      mergedLyrics.addAll(lrcLines);
-
-      if (tlyricLines.isNotEmpty) {
-        mergedLyrics.add(''); // 空行分隔
-        mergedLyrics.addAll(tlyricLines);
-      }
-
-      // 解析歌词
-      _currentLyrics = _parseLrcContent(mergedLyrics);
+      return _parseLrcContent(
+        combineNetworkLyricLines(
+          lrcLines,
+          tlyricLines,
+          includeTranslation: includeTranslation,
+        ),
+      );
     } catch (e) {
-      _currentLyrics = [];
+      return const [];
     }
-    notifyListeners();
   }
 
-  // 酷狗歌词获取方法
-  Future<void> _loadKugouLyrics(String songTitle) async {
+  // 获取酷狗歌词；状态提交由统一回退调度器处理。
+  Future<List<LyricLine>> _fetchKugouLyrics(String songTitle) async {
     try {
       // 检查 artist 是否为默认值，如果是则设置为空字符串
       final rawArtist = _currentSong?.artist ?? '';
@@ -4840,9 +5069,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 如果状态码不为200，清空并返回
       if (searchResponse.statusCode != 200) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 解析搜索结果
@@ -4852,9 +5079,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       if (searchResult['data'] == null ||
           searchResult['data']['info'] == null ||
           searchResult['data']['info'].isEmpty) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 取第一首匹配歌曲的hash
@@ -4871,9 +5096,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 如果状态码不为200，清空并返回
       if (candidatesResponse.statusCode != 200) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       final candidatesResult = json.decode(candidatesResponse.body);
@@ -4881,9 +5104,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       // 检查是否有候选歌词
       if (candidatesResult['candidates'] == null ||
           candidatesResult['candidates'].isEmpty) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 获取第一个候选歌词的id和accesskey
@@ -4902,35 +5123,31 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 如果状态码不为200，清空并返回
       if (lyricResponse.statusCode != 200) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       final lyricResult = json.decode(lyricResponse.body);
 
       // 检查是否有歌词内容
       if (lyricResult['content'] == null) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 第四步：解码base64歌词
       final base64Lyric = lyricResult['content'].toString();
       final decodedLyric = utf8.decode(base64Decode(base64Lyric));
 
-      // 解析歌词
-      _currentLyrics = _parseLrcContent([decodedLyric]);
+      return _parseLrcContent([decodedLyric]);
     } catch (e) {
-      _currentLyrics = [];
+      return const [];
     }
-    notifyListeners();
   }
 
-  // 企鹅音乐歌词获取方法
-  Future<void> _loadQQLyrics(String songTitle) async {
+  // 获取QQ音乐歌词；状态提交由统一回退调度器处理。
+  Future<List<LyricLine>> _fetchQQLyrics(String songTitle) async {
+    final client = http.Client();
     try {
+      final includeTranslation = _settingsProvider.enableLyricTranslation;
       // 检查 artist 是否为默认值，如果是则设置为空字符串
       final rawArtist = _currentSong?.artist ?? '';
       final artist = (rawArtist == '未知歌手' || rawArtist == '未知歌手 (解析失败)')
@@ -4964,15 +5181,15 @@ class PlaylistContentNotifier extends ChangeNotifier
             'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)'
         ..body = searchBody;
 
-      final searchStreamedResponse = await http.Client().send(searchRequest);
+      final searchStreamedResponse = await client
+          .send(searchRequest)
+          .timeout(const Duration(seconds: 10));
       final searchResponse = await http.Response.fromStream(
         searchStreamedResponse,
       );
 
       if (searchResponse.statusCode != 200) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 直接使用bodyBytes避免Content-Type解析问题
@@ -4989,9 +5206,7 @@ class PlaylistContentNotifier extends ChangeNotifier
               null ||
           searchResult['music.search.SearchCgiService']['data']['body']['song']['list']
               .isEmpty) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 获取第一首歌曲的信息
@@ -5015,15 +5230,15 @@ class PlaylistContentNotifier extends ChangeNotifier
         ..headers['User-Agent'] =
             'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.5005.63 Safari/537.36';
 
-      final lyricStreamedResponse = await http.Client().send(lyricRequest);
+      final lyricStreamedResponse = await client
+          .send(lyricRequest)
+          .timeout(const Duration(seconds: 10));
       final lyricResponse = await http.Response.fromStream(
         lyricStreamedResponse,
       );
 
       if (lyricResponse.statusCode != 200) {
-        _currentLyrics = [];
-        notifyListeners();
-        return;
+        return const [];
       }
 
       // 手动处理响应体，避免因Content-Type导致的解析问题
@@ -5043,7 +5258,9 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 处理翻译歌词内容
       List<String> tlyricLines = [];
-      if (lyricResult['trans'] != null && lyricResult['trans'].isNotEmpty) {
+      if (includeTranslation &&
+          lyricResult['trans'] != null &&
+          lyricResult['trans'].isNotEmpty) {
         try {
           final transBase64 = lyricResult['trans'];
           final transData = utf8.decode(base64Decode(transBase64));
@@ -5053,21 +5270,18 @@ class PlaylistContentNotifier extends ChangeNotifier
         }
       }
 
-      // 合并歌词
-      final List<String> mergedLyrics = [];
-      mergedLyrics.addAll(lrcLines);
-
-      if (tlyricLines.isNotEmpty) {
-        mergedLyrics.add(''); // 空行分隔
-        mergedLyrics.addAll(tlyricLines);
-      }
-
-      // 解析歌词
-      _currentLyrics = _parseLrcContent(mergedLyrics);
+      return _parseLrcContent(
+        combineNetworkLyricLines(
+          lrcLines,
+          tlyricLines,
+          includeTranslation: includeTranslation,
+        ),
+      );
     } catch (e) {
-      _currentLyrics = [];
+      return const [];
+    } finally {
+      client.close();
     }
-    notifyListeners();
   }
 
   // 解析歌词

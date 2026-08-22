@@ -1,6 +1,7 @@
 import 'dart:math' as math;
-import 'dart:typed_data';
+import 'dart:ui' as ui;
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 /// Decode targets for embedded artwork. These only affect display-time image
@@ -35,9 +36,89 @@ ImageProvider<Object> artworkImageProvider(
   double? logicalSize,
 }) {
   final targetPixels = size.resolvePixels(context, logicalSize: logicalSize);
-  final source = MemoryImage(bytes);
-  if (targetPixels == null) return source;
-  return ResizeImage.resizeIfNeeded(targetPixels, targetPixels, source);
+  if (targetPixels == null) return MemoryImage(bytes);
+  return CoverMemoryImage(bytes, targetPixels: targetPixels);
+}
+
+/// Returns the smallest proportional decode size that fully covers a square.
+///
+/// The old strategy requested an exact square from the codec, which stretched
+/// non-square artwork before [BoxFit.cover] could crop it. This computes the
+/// cover crop first, then downsamples proportionally to the minimum resolution
+/// needed by the destination.
+({int width, int height}) coverDecodeDimensions({
+  required int intrinsicWidth,
+  required int intrinsicHeight,
+  required int targetPixels,
+}) {
+  assert(intrinsicWidth > 0);
+  assert(intrinsicHeight > 0);
+  assert(targetPixels > 0);
+  final scale = math.min(
+    1.0,
+    math.max(targetPixels / intrinsicWidth, targetPixels / intrinsicHeight),
+  );
+  return (
+    width: math.max(1, (intrinsicWidth * scale).round()),
+    height: math.max(1, (intrinsicHeight * scale).round()),
+  );
+}
+
+/// A memory image provider optimized for cover-cropped artwork.
+///
+/// It preserves the source aspect ratio while decoding only the pixels that a
+/// square cover can use. The final center crop remains the responsibility of
+/// the [Image] widget's [BoxFit.cover], so alignment continues to work.
+@immutable
+class CoverMemoryImage extends ImageProvider<CoverMemoryImage> {
+  const CoverMemoryImage(this.bytes, {required this.targetPixels});
+
+  final Uint8List bytes;
+  final int targetPixels;
+
+  @override
+  Future<CoverMemoryImage> obtainKey(ImageConfiguration configuration) =>
+      SynchronousFuture<CoverMemoryImage>(this);
+
+  @override
+  ImageStreamCompleter loadImage(
+    CoverMemoryImage key,
+    ImageDecoderCallback decode,
+  ) {
+    assert(key == this);
+    return MultiFrameImageStreamCompleter(
+      codec: _loadAsync(decode),
+      scale: 1,
+      debugLabel: 'CoverMemoryImage(${describeIdentity(bytes)}, $targetPixels)',
+    );
+  }
+
+  Future<ui.Codec> _loadAsync(ImageDecoderCallback decode) async {
+    final buffer = await ui.ImmutableBuffer.fromUint8List(bytes);
+    return decode(
+      buffer,
+      getTargetSize: (intrinsicWidth, intrinsicHeight) {
+        final dimensions = coverDecodeDimensions(
+          intrinsicWidth: intrinsicWidth,
+          intrinsicHeight: intrinsicHeight,
+          targetPixels: targetPixels,
+        );
+        return ui.TargetImageSize(
+          width: dimensions.width,
+          height: dimensions.height,
+        );
+      },
+    );
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is CoverMemoryImage &&
+      other.bytes == bytes &&
+      other.targetPixels == targetPixels;
+
+  @override
+  int get hashCode => Object.hash(bytes.hashCode, targetPixels);
 }
 
 /// An artwork image with a size-specific decode/cache key.

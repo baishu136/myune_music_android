@@ -144,12 +144,14 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer> {
                 path: settings.homeThemeImagePath,
                 enabled: settings.homeThemeImageEnabled,
                 dim: settings.homeThemeImageDim,
+                blurSigma: settings.homeThemeImageBlur,
                 coverBytes: currentCover,
                 coverEnabled:
                     settings.followAlbumArtOnHome &&
                     currentCover != null &&
                     currentCover.isNotEmpty,
-                coverDim: 0.52,
+                coverDim: settings.homeAlbumArtBackgroundDim,
+                coverBlurSigma: settings.homeAlbumArtBackgroundBlur,
                 child: safeContent,
               );
         if (widget.transparentBackground) {

@@ -36,6 +36,29 @@ void main() {
     expect(tester.getCenter(finalLine).dy, closeTo(110, 24));
   });
 
+  testWidgets('first async lyric batch starts with the active line centered', (
+    tester,
+  ) async {
+    final hostKey = GlobalKey<_LyricsHostState>();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 220,
+            child: _LyricsHost(key: hostKey, initiallyEmpty: true),
+          ),
+        ),
+      ),
+    );
+
+    hostKey.currentState!.loadLinesAt(25);
+    await tester.pump();
+
+    final active = find.byKey(const ValueKey('mobile_lyric_25'));
+    expect(active, findsOneWidget);
+    expect(tester.getCenter(active).dy, closeTo(110, 24));
+  });
+
   testWidgets('uses the configured lyric font size', (tester) async {
     final lines = [
       LyricLine(timestamp: Duration.zero, texts: const ['当前歌词']),
@@ -190,6 +213,72 @@ void main() {
     expect(tester.getCenter(active).dy, closeTo(110, 24));
   });
 
+  testWidgets('controller settles smoothly on a selected lyric timestamp', (
+    tester,
+  ) async {
+    final hostKey = GlobalKey<_LyricsHostState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(height: 220, child: _LyricsHost(key: hostKey)),
+        ),
+      ),
+    );
+    hostKey.currentState!.setActive(8);
+    await tester.pumpAndSettle();
+
+    hostKey.currentState!.settleOn(const Duration(seconds: 35));
+    hostKey.currentState!.setActive(35);
+    await tester.pumpAndSettle();
+    final selected = find.byKey(const ValueKey('mobile_lyric_35'));
+    expect(tester.getCenter(selected).dy, closeTo(110, 24));
+  });
+
+  testWidgets('manual browsing reports the lyric nearest the viewport center', (
+    tester,
+  ) async {
+    Duration? target;
+    final lines = List.generate(
+      30,
+      (index) => LyricLine(
+        timestamp: Duration(seconds: index * 5),
+        texts: ['第 ${index + 1} 行'],
+      ),
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 220,
+            child: MobileLyricsList(
+              lines: lines,
+              active: 0,
+              onBrowseTargetChanged: (value) => target = value,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.drag(
+      find.byType(ScrollablePositionedList),
+      const Offset(0, -150),
+    );
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(target, isNotNull);
+    expect(target, isNot(Duration.zero));
+
+    await tester.pump(const Duration(seconds: 2));
+    expect(target, isNotNull);
+
+    await tester.pump(const Duration(seconds: 1));
+    expect(target, isNull);
+  });
+
   testWidgets('edge fade is opt-in', (tester) async {
     final lines = [
       LyricLine(timestamp: Duration.zero, texts: const ['第一行']),
@@ -272,10 +361,184 @@ void main() {
     expect(spans.first.style!.color, isNot(spans.last.style!.color));
     expect(spans.last.style!.color, Colors.white.withValues(alpha: .5));
   });
+
+  testWidgets('karaoke progress can update without rebuilding the lyric list', (
+    tester,
+  ) async {
+    final position = ValueNotifier(const Duration(milliseconds: 500));
+    addTearDown(position.dispose);
+    final line = LyricLine(
+      timestamp: Duration.zero,
+      texts: const ['Hello世界'],
+      tokens: [
+        [
+          LyricToken(
+            text: 'Hello',
+            start: Duration.zero,
+            end: const Duration(seconds: 1),
+          ),
+          LyricToken(
+            text: '世界',
+            start: const Duration(seconds: 1),
+            end: const Duration(seconds: 2),
+          ),
+        ],
+      ],
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          body: MobileLyricsList(
+            lines: [line],
+            active: 0,
+            positionListenable: position,
+          ),
+        ),
+      ),
+    );
+
+    Text richText() => tester.widget<Text>(
+      find
+          .descendant(
+            of: find.byKey(const ValueKey('mobile_lyric_0')),
+            matching: find.byType(Text),
+          )
+          .last,
+    );
+
+    var spans = (richText().textSpan! as TextSpan).children!.cast<TextSpan>();
+    expect(spans.first.text, 'He');
+
+    position.value = const Duration(milliseconds: 1500);
+    await tester.pump();
+
+    spans = (richText().textSpan! as TextSpan).children!.cast<TextSpan>();
+    expect(spans.first.text, 'Hello');
+  });
+
+  testWidgets('light lyrics use stronger unplayed text and optional glow', (
+    tester,
+  ) async {
+    final lines = [
+      LyricLine(timestamp: Duration.zero, texts: const ['正在播放']),
+      LyricLine(timestamp: const Duration(seconds: 1), texts: const ['尚未播放']),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        home: Scaffold(
+          body: MobileLyricsList(
+            lines: lines,
+            active: 0,
+            glowEnabled: true,
+            glowRadius: 14,
+          ),
+        ),
+      ),
+    );
+
+    final inactiveStyle = tester
+        .widget<AnimatedDefaultTextStyle>(
+          find.descendant(
+            of: find.byKey(const ValueKey('mobile_lyric_1')),
+            matching: find.byType(AnimatedDefaultTextStyle),
+          ),
+        )
+        .style;
+    expect(inactiveStyle.color, const Color(0xFF757575).withValues(alpha: .80));
+    expect(inactiveStyle.shadows, hasLength(1));
+    expect(
+      inactiveStyle.shadows!.single.color,
+      const Color(0xFFBDBDBD).withValues(alpha: .30),
+    );
+    expect(inactiveStyle.shadows!.single.blurRadius, 14);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        home: Scaffold(body: MobileLyricsList(lines: lines, active: 0)),
+      ),
+    );
+    final defaultStyle = tester
+        .widget<AnimatedDefaultTextStyle>(
+          find.descendant(
+            of: find.byKey(const ValueKey('mobile_lyric_1')),
+            matching: find.byType(AnimatedDefaultTextStyle),
+          ),
+        )
+        .style;
+    expect(defaultStyle.shadows, isNull);
+  });
+
+  testWidgets('light playback backgrounds use dark-mode lyric treatment', (
+    tester,
+  ) async {
+    final lines = [
+      LyricLine(timestamp: Duration.zero, texts: const ['正在播放']),
+      LyricLine(timestamp: const Duration(seconds: 1), texts: const ['尚未播放']),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.light(),
+        home: Scaffold(
+          body: MobileLyricsList(
+            lines: lines,
+            active: 0,
+            brightForeground: true,
+            glowEnabled: true,
+          ),
+        ),
+      ),
+    );
+
+    final style = tester
+        .widget<AnimatedDefaultTextStyle>(
+          find.descendant(
+            of: find.byKey(const ValueKey('mobile_lyric_1')),
+            matching: find.byType(AnimatedDefaultTextStyle),
+          ),
+        )
+        .style;
+    expect(style.color, Colors.white.withValues(alpha: .50));
+    expect(style.shadows, hasLength(1));
+    expect(style.shadows!.single.color, Colors.white.withValues(alpha: .30));
+  });
+
+  testWidgets('dark background lyrics use a 30 percent white glow', (
+    tester,
+  ) async {
+    final lines = [
+      LyricLine(timestamp: Duration.zero, texts: const ['正在播放']),
+    ];
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: Scaffold(
+          body: MobileLyricsList(lines: lines, active: 0, glowEnabled: true),
+        ),
+      ),
+    );
+
+    final style = tester
+        .widget<AnimatedDefaultTextStyle>(
+          find.descendant(
+            of: find.byKey(const ValueKey('mobile_lyric_0')),
+            matching: find.byType(AnimatedDefaultTextStyle),
+          ),
+        )
+        .style;
+    expect(style.shadows, hasLength(1));
+    expect(style.shadows!.single.color, Colors.white.withValues(alpha: .30));
+  });
 }
 
 class _LyricsHost extends StatefulWidget {
-  const _LyricsHost({super.key});
+  const _LyricsHost({super.key, this.initiallyEmpty = false});
+
+  final bool initiallyEmpty;
 
   @override
   State<_LyricsHost> createState() => _LyricsHostState();
@@ -285,7 +548,9 @@ class _LyricsHostState extends State<_LyricsHost> {
   int active = 0;
   double fontSize = 20;
   final controller = MobileLyricsListController();
-  final lines = List.generate(
+  late List<LyricLine> lines;
+
+  List<LyricLine> _makeLines() => List.generate(
     50,
     (index) => LyricLine(
       timestamp: Duration(seconds: index),
@@ -293,11 +558,24 @@ class _LyricsHostState extends State<_LyricsHost> {
     ),
   );
 
+  @override
+  void initState() {
+    super.initState();
+    lines = widget.initiallyEmpty ? [] : _makeLines();
+  }
+
   void setActive(int value) => setState(() => active = value);
 
   void setFontSize(double value) => setState(() => fontSize = value);
 
+  void loadLinesAt(int value) => setState(() {
+    active = value;
+    lines = _makeLines();
+  });
+
   void recenter() => controller.recenter();
+
+  void settleOn(Duration target) => controller.settleOn(target);
 
   @override
   Widget build(BuildContext context) => MobileLyricsList(

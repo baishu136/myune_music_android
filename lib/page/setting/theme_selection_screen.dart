@@ -4,39 +4,12 @@ import 'package:provider/provider.dart';
 import '../../theme/theme_provider.dart';
 import 'settings_provider.dart';
 
-const _presetColors = <Color>[
-  Color(0xFFE53935),
-  Color(0xFFD81B60),
-  Color(0xFF8E24AA),
-  Color(0xFF5E35B1),
-  Color(0xFF3949AB),
-  Color(0xFF1E88E5),
-  Color(0xFF039BE5),
-  Color(0xFF00ACC1),
-  Color(0xFF00897B),
-  Color(0xFF43A047),
-  Color(0xFF7CB342),
-  Color(0xFFC0CA33),
-  Color(0xFFFDD835),
-  Color(0xFFFFB300),
-  Color(0xFFFB8C00),
-  Color(0xFFF4511E),
-  Color(0xFF6D4C41),
-  Color(0xFF757575),
-  Color(0xFF546E7A),
-  Color(0xFF283593),
-  Color(0xFF00695C),
-  Color(0xFF2E7D32),
-  Color(0xFFEF6C00),
-  Color(0xFFC62828),
-];
-
 class ThemeSelectionScreen extends StatelessWidget {
   const ThemeSelectionScreen({super.key});
 
   Future<void> _applyColor(BuildContext context, Color color) async {
     final settings = context.read<SettingsProvider>();
-    if (settings.useDynamicColor) settings.setUseDynamicColor(false);
+    if (settings.useDynamicColor) await settings.setUseDynamicColor(false);
     if (!context.mounted) return;
     await context.read<ThemeProvider>().setSeedColor(color, isManual: true);
   }
@@ -53,6 +26,19 @@ class ThemeSelectionScreen extends StatelessWidget {
             children: [
               Text('主题配色', style: Theme.of(context).textTheme.titleMedium),
               const Spacer(),
+              Container(
+                key: const ValueKey('exact-custom-theme-color'),
+                width: 58,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: selected,
+                  borderRadius: BorderRadius.circular(9),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
               IconButton.filledTonal(
                 tooltip: '打开自定义取色盘',
                 icon: const Icon(Icons.colorize),
@@ -77,9 +63,9 @@ class ThemeSelectionScreen extends StatelessWidget {
               mainAxisSpacing: 8,
               crossAxisSpacing: 8,
             ),
-            itemCount: _presetColors.length,
+            itemCount: themePresetColors.length,
             itemBuilder: (context, index) {
-              final color = _presetColors[index];
+              final color = themePresetColors[index];
               final isSelected = color.toARGB32() == selected.toARGB32();
               return Semantics(
                 button: true,

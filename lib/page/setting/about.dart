@@ -1,7 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:flutter/gestures.dart';
-import 'setting_page.dart';
+
+import '../../app_version.dart';
 
 class About extends StatelessWidget {
   const About({super.key});
@@ -47,7 +48,9 @@ class About extends StatelessWidget {
         children: [
           Text('应用信息与说明', style: Theme.of(context).textTheme.titleMedium),
           ElevatedButton.icon(
-            onPressed: () {
+            onPressed: () async {
+              final appVersion = await AppVersion.current();
+              if (!context.mounted) return;
               showAboutDialog(
                 context: context,
                 applicationName: 'Myune music for Android',

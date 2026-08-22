@@ -1,12 +1,10 @@
 import 'dart:io';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../../../services/custom_theme_image_service.dart';
-import '../../../services/notification_service.dart';
-import '../../../widgets/custom_theme_image_editor.dart';
+import '../custom_theme_background_page.dart';
 import '../settings_provider.dart';
 
 class CustomThemeSettingsSection extends StatelessWidget {
@@ -74,6 +72,17 @@ class _AlbumArtFollowCard extends StatelessWidget {
             value: settings.followAlbumArtOnHome,
             onChanged: settings.setFollowAlbumArtOnHome,
           ),
+          if (settings.followAlbumArtOnHome)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: _BackgroundTuningControls(
+                dim: settings.homeAlbumArtBackgroundDim,
+                blur: settings.homeAlbumArtBackgroundBlur,
+                onDimChanged: settings.setHomeAlbumArtBackgroundDim,
+                onBlurChanged: settings.setHomeAlbumArtBackgroundBlur,
+              ),
+            ),
+          const Divider(height: 1),
           SwitchListTile.adaptive(
             secondary: const Icon(Icons.play_circle_outline),
             title: const Text('应用到播放页'),
@@ -81,8 +90,85 @@ class _AlbumArtFollowCard extends StatelessWidget {
             value: settings.followAlbumArtOnPlayback,
             onChanged: settings.setFollowAlbumArtOnPlayback,
           ),
+          if (settings.followAlbumArtOnPlayback)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+              child: _BackgroundTuningControls(
+                dim: settings.playbackAlbumArtBackgroundDim,
+                blur: settings.playbackAlbumArtBackgroundBlur,
+                onDimChanged: settings.setPlaybackAlbumArtBackgroundDim,
+                onBlurChanged: settings.setPlaybackAlbumArtBackgroundBlur,
+              ),
+            ),
         ],
       ),
+    );
+  }
+}
+
+class _BackgroundTuningControls extends StatelessWidget {
+  const _BackgroundTuningControls({
+    required this.dim,
+    required this.blur,
+    required this.onDimChanged,
+    required this.onBlurChanged,
+  });
+
+  final double dim;
+  final double blur;
+  final ValueChanged<double> onDimChanged;
+  final ValueChanged<double> onBlurChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.contrast, size: 20),
+            const SizedBox(width: 8),
+            const Text('遮罩强度'),
+            Expanded(
+              child: Slider(
+                value: dim,
+                min: 0.2,
+                max: 0.9,
+                divisions: 14,
+                label: '${(dim * 100).round()}%',
+                onChanged: onDimChanged,
+              ),
+            ),
+            SizedBox(
+              width: 40,
+              child: Text('${(dim * 100).round()}%', textAlign: TextAlign.end),
+            ),
+          ],
+        ),
+        Row(
+          children: [
+            const Icon(Icons.blur_on_outlined, size: 20),
+            const SizedBox(width: 8),
+            const Text('模糊程度'),
+            Expanded(
+              child: Slider(
+                value: blur,
+                min: 0,
+                max: 40,
+                divisions: 20,
+                label: blur == 0 ? '关闭' : blur.toStringAsFixed(0),
+                onChanged: onBlurChanged,
+              ),
+            ),
+            SizedBox(
+              width: 40,
+              child: Text(
+                blur == 0 ? '关闭' : blur.toStringAsFixed(0),
+                textAlign: TextAlign.end,
+              ),
+            ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -116,7 +202,10 @@ class _ThemeImageCard extends StatelessWidget {
       CustomThemeSurface.home => settings.homeThemeImageDim,
       CustomThemeSurface.playback => settings.playbackThemeImageDim,
     };
-
+    final blur = switch (surface) {
+      CustomThemeSurface.home => settings.homeThemeImageBlur,
+      CustomThemeSurface.playback => settings.playbackThemeImageBlur,
+    };
     return Card(
       elevation: 0,
       color: Theme.of(context).colorScheme.surfaceContainerLow,
@@ -173,24 +262,15 @@ class _ThemeImageCard extends StatelessWidget {
             ),
             if (exists) ...[
               const SizedBox(height: 8),
-              Row(
-                children: [
-                  const Icon(Icons.contrast, size: 20),
-                  const SizedBox(width: 8),
-                  const Text('遮罩强度'),
-                  Expanded(
-                    child: Slider(
-                      value: dim,
-                      min: 0.2,
-                      max: 0.9,
-                      divisions: 14,
-                      label: '${(dim * 100).round()}%',
-                      onChanged: (value) => surface == CustomThemeSurface.home
-                          ? settings.setHomeThemeImageDim(value)
-                          : settings.setPlaybackThemeImageDim(value),
-                    ),
-                  ),
-                ],
+              _BackgroundTuningControls(
+                dim: dim,
+                blur: blur,
+                onDimChanged: (value) => surface == CustomThemeSurface.home
+                    ? settings.setHomeThemeImageDim(value)
+                    : settings.setPlaybackThemeImageDim(value),
+                onBlurChanged: (value) => surface == CustomThemeSurface.home
+                    ? settings.setHomeThemeImageBlur(value)
+                    : settings.setPlaybackThemeImageBlur(value),
               ),
             ],
             const SizedBox(height: 8),
@@ -199,12 +279,12 @@ class _ThemeImageCard extends StatelessWidget {
               children: [
                 if (exists)
                   TextButton.icon(
-                    onPressed: () => _remove(context, path),
+                    onPressed: () => _restoreDefault(context),
                     icon: const Icon(Icons.restore),
                     label: const Text('恢复默认'),
                   ),
                 FilledButton.tonalIcon(
-                  onPressed: () => _import(context),
+                  onPressed: () => _openBackgroundHistory(context),
                   icon: const Icon(Icons.add_photo_alternate_outlined),
                   label: Text(exists ? '重新导入' : '导入图片'),
                 ),
@@ -228,50 +308,15 @@ class _ThemeImageCard extends StatelessWidget {
     }
   }
 
-  Future<void> _import(BuildContext context) async {
-    final result = await FilePicker.platform.pickFiles(type: FileType.image);
-    final sourcePath = result?.files.single.path;
-    if (sourcePath == null || !context.mounted) return;
-    final bytes = await showCustomThemeImageEditor(
-      context,
-      sourcePath: sourcePath,
-      square: false,
-      title: '调整主题背景',
+  Future<void> _openBackgroundHistory(BuildContext context) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute<void>(
+        builder: (_) => CustomThemeBackgroundPage(surface: surface),
+      ),
     );
-    if (bytes == null || !context.mounted) return;
-    try {
-      final settings = context.read<SettingsProvider>();
-      final previousPath = switch (surface) {
-        CustomThemeSurface.home => settings.homeThemeImagePath,
-        CustomThemeSurface.playback => settings.playbackThemeImagePath,
-      };
-      final savedPath = await CustomThemeImageService.save(surface, bytes);
-      if (!context.mounted) return;
-      switch (surface) {
-        case CustomThemeSurface.home:
-          await settings.setHomeThemeImage(savedPath, enabled: true);
-          break;
-        case CustomThemeSurface.playback:
-          await settings.setPlaybackThemeImage(savedPath, enabled: true);
-          break;
-      }
-      if (previousPath != null && previousPath != savedPath) {
-        await FileImage(File(previousPath)).evict();
-        await CustomThemeImageService.remove(previousPath);
-      }
-      if (context.mounted) {
-        context.read<NotificationService>().success('图片主题已立即应用');
-      }
-    } catch (_) {
-      if (context.mounted) {
-        context.read<NotificationService>().error('无法保存图片，请重试');
-      }
-    }
   }
 
-  Future<void> _remove(BuildContext context, String? path) async {
-    await CustomThemeImageService.remove(path);
-    if (!context.mounted) return;
+  Future<void> _restoreDefault(BuildContext context) async {
     final settings = context.read<SettingsProvider>();
     switch (surface) {
       case CustomThemeSurface.home:

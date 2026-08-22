@@ -206,11 +206,10 @@ class _StatisticsState extends State<Statistics> {
                   Text('歌曲播放排行', style: Theme.of(context).textTheme.titleLarge),
                   if (_statsManager.getTopPlayedSongs(5).length >= 5)
                     TextButton(
-                      onPressed: () {
-                        setState(() {
-                          _showAllSongs = !_showAllSongs;
-                        });
-                      },
+                      onPressed: () => _toggleRanking(
+                        expanded: _showAllSongs,
+                        update: (value) => _showAllSongs = value,
+                      ),
                       child: Text(_showAllSongs ? '收起' : '查看更多'),
                     ),
                 ],
@@ -230,11 +229,10 @@ class _StatisticsState extends State<Statistics> {
                   ),
                   if (_statsManager.getTopArtists(5, separators).length >= 5)
                     TextButton(
-                      onPressed: () {
-                        setState(() {
-                          _showAllArtists = !_showAllArtists;
-                        });
-                      },
+                      onPressed: () => _toggleRanking(
+                        expanded: _showAllArtists,
+                        update: (value) => _showAllArtists = value,
+                      ),
                       child: Text(_showAllArtists ? '收起' : '查看更多'),
                     ),
                 ],
@@ -251,11 +249,10 @@ class _StatisticsState extends State<Statistics> {
                   Text('专辑播放排行', style: Theme.of(context).textTheme.titleLarge),
                   if (_statsManager.getTopAlbums(5).length >= 5)
                     TextButton(
-                      onPressed: () {
-                        setState(() {
-                          _showAllAlbums = !_showAllAlbums;
-                        });
-                      },
+                      onPressed: () => _toggleRanking(
+                        expanded: _showAllAlbums,
+                        update: (value) => _showAllAlbums = value,
+                      ),
                       child: Text(_showAllAlbums ? '收起' : '查看更多'),
                     ),
                 ],
@@ -267,6 +264,28 @@ class _StatisticsState extends State<Statistics> {
         ),
       ),
     );
+  }
+
+  void _toggleRanking({
+    required bool expanded,
+    required ValueChanged<bool> update,
+  }) {
+    // SilkyScroll may still own a ballistic activity when a long ranking is
+    // collapsed. Cancel it before changing the page extent, then clamp the
+    // preserved offset after the shorter layout has been measured.
+    if (scrollController.hasClients) {
+      scrollController.jumpTo(scrollController.offset);
+    }
+    setState(() => update(!expanded));
+    if (!expanded) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scrollController.hasClients) return;
+      final position = scrollController.position;
+      final target = position.pixels
+          .clamp(position.minScrollExtent, position.maxScrollExtent)
+          .toDouble();
+      scrollController.jumpTo(target);
+    });
   }
 
   Widget _buildStatCard({

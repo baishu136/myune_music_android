@@ -1,9 +1,159 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_fonts/system_fonts.dart';
 import 'package:flutter/foundation.dart';
 
 import '../services/font_service.dart';
+
+const themePresetColors = <Color>[
+  Color(0xFFE53935),
+  Color(0xFFD81B60),
+  Color(0xFF8E24AA),
+  Color(0xFF5E35B1),
+  Color(0xFF3949AB),
+  Color(0xFF1E88E5),
+  Color(0xFF039BE5),
+  Color(0xFF00ACC1),
+  Color(0xFF00897B),
+  Color(0xFF43A047),
+  Color(0xFF7CB342),
+  Color(0xFFC0CA33),
+  Color(0xFFFDD835),
+  Color(0xFFFFB300),
+  Color(0xFFFB8C00),
+  Color(0xFFF4511E),
+  Color(0xFF6D4C41),
+  Color(0xFF757575),
+  Color(0xFF546E7A),
+  Color(0xFF283593),
+  Color(0xFF00695C),
+  Color(0xFF2E7D32),
+  Color(0xFFEF6C00),
+  Color(0xFFC62828),
+];
+
+const _dynamicHueRange = 7.5;
+const _dynamicSaturationRange = .18;
+
+/// Picks a visually useful color that is also harmonious with the dominant
+/// cover palette. The extractor returns colors in dominance order, but the
+/// first non-black color may be a small foreground accent that clashes with a
+/// blurred full-cover background. A rank-weighted palette medoid favors color
+/// families repeated across the cover while still respecting dominance.
+Color selectRepresentativeCoverColor(List<Color> dominantColors) {
+  if (dominantColors.isEmpty) {
+    throw ArgumentError.value(dominantColors, 'dominantColors', '不能为空');
+  }
+  final candidates = <({Color color, int rank})>[];
+  for (var index = 0; index < dominantColors.length && index < 8; index++) {
+    final color = dominantColors[index];
+    final lightness = HSLColor.fromColor(color).lightness;
+    if (lightness >= .08 && lightness <= .92) {
+      candidates.add((color: color, rank: index));
+    }
+  }
+  if (candidates.isEmpty) return dominantColors.first;
+  if (candidates.length == 1) return candidates.first.color;
+
+  var best = candidates.first;
+  var bestScore = double.infinity;
+  for (final candidate in candidates) {
+    var weightedDistance = 0.0;
+    var totalWeight = 0.0;
+    for (final paletteColor in candidates) {
+      final weight = 1 / (1 + paletteColor.rank * .7);
+      weightedDistance +=
+          _paletteColorDistance(candidate.color, paletteColor.color) * weight;
+      totalWeight += weight;
+    }
+    final score = weightedDistance / totalWeight + candidate.rank * .012;
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+  }
+  return best.color;
+}
+
+double _paletteColorDistance(Color first, Color second) {
+  final firstHsl = HSLColor.fromColor(first);
+  final secondHsl = HSLColor.fromColor(second);
+  // Hue is less meaningful when either color is close to neutral.
+  final hueReliability =
+      .15 + .85 * math.min(firstHsl.saturation, secondHsl.saturation);
+  final hueDistance = _circularHueDistance(firstHsl.hue, secondHsl.hue) / 180;
+  return hueDistance * hueReliability * .55 +
+      (firstHsl.saturation - secondHsl.saturation).abs() * .28 +
+      (firstHsl.lightness - secondHsl.lightness).abs() * .17;
+}
+
+double _circularHueDistance(double first, double second) {
+  final distance = (first - second).abs() % 360;
+  return distance > 180 ? 360 - distance : distance;
+}
+
+/// Keeps an extracted cover color inside the family of the closest one of the
+/// original 24 theme colors without snapping it to that exact swatch.
+Color constrainDynamicSeedToPresetRange(Color color) {
+  final source = HSLColor.fromColor(color);
+  HSLColor closest = HSLColor.fromColor(themePresetColors.first);
+  var closestScore = double.infinity;
+
+  for (final presetColor in themePresetColors) {
+    final preset = HSLColor.fromColor(presetColor);
+    final hueWeight = source.saturation < .12 ? 0.0 : .62;
+    final hueDistance = _circularHueDistance(source.hue, preset.hue) / 180;
+    final saturationDistance = source.saturation - preset.saturation;
+    final lightnessDistance = source.lightness - preset.lightness;
+    final score =
+        hueDistance * hueDistance * hueWeight +
+        saturationDistance * saturationDistance * .23 +
+        lightnessDistance * lightnessDistance * .15;
+    if (score < closestScore) {
+      closestScore = score;
+      closest = preset;
+    }
+  }
+
+  if (closest.saturation < .12) {
+    return source
+        .withSaturation(source.saturation.clamp(0.0, .12))
+        .toColor()
+        .withValues(alpha: color.a);
+  }
+
+  final rawHueDelta = (source.hue - closest.hue + 540) % 360 - 180;
+  final hue =
+      (closest.hue + rawHueDelta.clamp(-_dynamicHueRange, _dynamicHueRange)) %
+      360;
+  final minSaturation = (closest.saturation - _dynamicSaturationRange).clamp(
+    0.0,
+    1.0,
+  );
+  final maxSaturation = (closest.saturation + _dynamicSaturationRange).clamp(
+    0.0,
+    1.0,
+  );
+  return source
+      .withHue(hue)
+      .withSaturation(source.saturation.clamp(minSaturation, maxSaturation))
+      .toColor()
+      .withValues(alpha: color.a);
+}
+
+Color adaptDynamicSeedColor(Color color, Brightness brightness) {
+  final rangedColor = constrainDynamicSeedToPresetRange(color);
+  final hsl = HSLColor.fromColor(rangedColor);
+  final targetLightness = brightness == Brightness.dark
+      ? hsl.lightness.clamp(.62, 1.0)
+      : hsl.lightness.clamp(0.0, .38);
+  return hsl
+      .withLightness(targetLightness)
+      .toColor()
+      .withValues(alpha: color.a);
+}
 
 class ThemeProvider with ChangeNotifier {
   static const TextStyle defaultStyle = TextStyle(fontWeight: FontWeight.w400);
@@ -33,10 +183,17 @@ class ThemeProvider with ChangeNotifier {
   Color _lastManualSeedColor = Color(
     _defaultSeedColorValue,
   ); // 用户最后一次手动选择的种子色，用于在关闭动态配色时恢复
+  Color? _dynamicSourceColor;
 
   ThemeMode _themeMode = ThemeMode.system;
   ThemeMode get themeMode => _themeMode;
   bool get isDarkMode => _themeMode == ThemeMode.dark;
+  Brightness get resolvedBrightness => switch (_themeMode) {
+    ThemeMode.light => Brightness.light,
+    ThemeMode.dark => Brightness.dark,
+    ThemeMode.system =>
+      WidgetsBinding.instance.platformDispatcher.platformBrightness,
+  };
 
   static const String _seedColorKey = 'user_seed_color';
   static const String _lastManualSeedColorKey =
@@ -67,19 +224,32 @@ class ThemeProvider with ChangeNotifier {
       _fontOnlyLyrics ? 'Misans' : _currentFontFamily;
 
   ColorScheme get currentColorScheme {
-    return ColorScheme.fromSeed(seedColor: _currentSeedColor);
+    return _buildColorScheme(Brightness.light);
   }
 
   ThemeData get lightThemeData => _lightThemeData;
 
   ThemeData get darkThemeData => _darkThemeData;
 
-  ThemeData _buildThemeData(Brightness brightness) => ThemeData(
-    useMaterial3: true,
-    colorScheme: ColorScheme.fromSeed(
+  ColorScheme _buildColorScheme(Brightness brightness) {
+    final generated = ColorScheme.fromSeed(
       seedColor: _currentSeedColor,
       brightness: brightness,
-    ),
+      dynamicSchemeVariant: DynamicSchemeVariant.fidelity,
+    );
+    final onSeed = _currentSeedColor.computeLuminance() > .45
+        ? Colors.black
+        : Colors.white;
+    return generated.copyWith(
+      primary: _currentSeedColor,
+      onPrimary: onSeed,
+      surfaceTint: _currentSeedColor,
+    );
+  }
+
+  ThemeData _buildThemeData(Brightness brightness) => ThemeData(
+    useMaterial3: true,
+    colorScheme: _buildColorScheme(brightness),
     fontFamily: _interfaceFontFamily,
     textTheme: misansTextTheme,
   ).makeMouseClickable();
@@ -90,6 +260,7 @@ class ThemeProvider with ChangeNotifier {
   }
 
   Future<void> setSeedColor(Color newColor, {bool isManual = false}) async {
+    if (isManual) _dynamicSourceColor = null;
     if (_currentSeedColor != newColor) {
       _currentSeedColor = newColor;
       _rebuildThemeData();
@@ -100,6 +271,16 @@ class ThemeProvider with ChangeNotifier {
       _lastManualSeedColor = newColor;
       await _saveLastManualSeedColor(newColor);
     }
+  }
+
+  Future<void> setDynamicSeedColor(Color sourceColor) async {
+    _dynamicSourceColor = sourceColor;
+    final adjusted = adaptDynamicSeedColor(sourceColor, resolvedBrightness);
+    if (_currentSeedColor == adjusted) return;
+    _currentSeedColor = adjusted;
+    _rebuildThemeData();
+    notifyListeners();
+    await _saveSeedColor(adjusted);
   }
 
   Future<void> _loadSeedColor() async {
@@ -129,6 +310,7 @@ class ThemeProvider with ChangeNotifier {
   }
 
   Future<void> restoreLastManualColor() async {
+    _dynamicSourceColor = null;
     final prefs = await SharedPreferences.getInstance();
     final int? savedColorValue = prefs.getInt(_lastManualSeedColorKey);
     final color = savedColorValue != null
@@ -167,6 +349,15 @@ class ThemeProvider with ChangeNotifier {
   Future<void> setThemeMode(ThemeMode mode) async {
     if (_themeMode == mode) return;
     _themeMode = mode;
+    final dynamicColor = _dynamicSourceColor;
+    if (dynamicColor != null) {
+      _currentSeedColor = adaptDynamicSeedColor(
+        dynamicColor,
+        resolvedBrightness,
+      );
+      _rebuildThemeData();
+      await _saveSeedColor(_currentSeedColor);
+    }
     notifyListeners();
 
     final prefs = await SharedPreferences.getInstance();

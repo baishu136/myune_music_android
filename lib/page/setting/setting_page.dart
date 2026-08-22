@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -8,9 +9,6 @@ import 'tabs/playback_page_tab.dart';
 import 'tabs/playback_settings_tab.dart';
 import 'tabs/hotkeys_tab.dart';
 import 'tabs/advanced_tab.dart';
-
-// 定义应用版本号常量
-const String appVersion = '0.9.7-android.77';
 
 class SettingPage extends StatefulWidget {
   const SettingPage({
@@ -29,14 +27,16 @@ class SettingPage extends StatefulWidget {
 class _SettingPageState extends State<SettingPage> {
   int _selectedIndex = 1;
   late final PageController _androidPageController;
+  int? _programmaticSectionTarget;
   double _leadingEdgeDragDistance = 0;
   bool _leadingEdgeSwipeHandled = false;
+  static const double _leadingEdgeSwipeTriggerDistance = 24;
 
   static const _androidDestinations = <(int, String, IconData)>[
     (1, '个性化', Icons.palette_outlined),
-    (0, '常规', Icons.settings_outlined),
     (3, '播放', Icons.volume_up_outlined),
     (5, '高级', Icons.construction_outlined),
+    (0, '常规', Icons.settings_outlined),
   ];
 
   @override
@@ -64,12 +64,40 @@ class _SettingPageState extends State<SettingPage> {
   void _animateToAndroidSection(int pageIndex) {
     final section = _androidDestinations[pageIndex];
     _selectAndroidSection(section);
-    if (!_androidPageController.hasClients) return;
-    _androidPageController.animateToPage(
-      pageIndex,
+    if (!_androidPageController.hasClients) {
+      _programmaticSectionTarget = null;
+      return;
+    }
+    final currentPage = (_androidPageController.page ?? 0).round();
+    if (currentPage == pageIndex) {
+      _programmaticSectionTarget = null;
+      return;
+    }
+    _programmaticSectionTarget = pageIndex;
+    unawaited(_completeAndroidSectionAnimation(pageIndex));
+  }
+
+  Future<void> _completeAndroidSectionAnimation(int target) async {
+    await _androidPageController.animateToPage(
+      target,
       duration: const Duration(milliseconds: 320),
       curve: Curves.easeOutCubic,
     );
+    if (!mounted || _programmaticSectionTarget != target) return;
+    _programmaticSectionTarget = null;
+    final settledPage = (_androidPageController.page ?? target.toDouble())
+        .round()
+        .clamp(0, _androidDestinations.length - 1);
+    _selectAndroidSection(_androidDestinations[settledPage]);
+  }
+
+  void _handleAndroidPageChanged(int index) {
+    final target = _programmaticSectionTarget;
+    if (target != null) {
+      if (index != target) return;
+      _programmaticSectionTarget = null;
+    }
+    _selectAndroidSection(_androidDestinations[index]);
   }
 
   Widget _androidPager() => NotificationListener<ScrollNotification>(
@@ -77,9 +105,7 @@ class _SettingPageState extends State<SettingPage> {
     child: PageView.builder(
       controller: _androidPageController,
       physics: const PageScrollPhysics(parent: BouncingScrollPhysics()),
-      onPageChanged: (index) {
-        _selectAndroidSection(_androidDestinations[index]);
-      },
+      onPageChanged: _handleAndroidPageChanged,
       itemCount: _androidDestinations.length,
       itemBuilder: (context, index) => _SettingsKeepAlivePage(
         key: ValueKey('android-setting-page-$index'),
@@ -129,7 +155,7 @@ class _SettingPageState extends State<SettingPage> {
         notification.overscroll < 0) {
       _leadingEdgeDragDistance += -notification.overscroll;
     }
-    if (_leadingEdgeDragDistance >= 48) {
+    if (_leadingEdgeDragDistance >= _leadingEdgeSwipeTriggerDistance) {
       _leadingEdgeSwipeHandled = true;
       widget.onSwipeBackFromFirstSection?.call();
     }

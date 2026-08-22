@@ -27,6 +27,7 @@ import 'page/statistics_page/statistics_manager.dart';
 import 'layout/navigation_notifier.dart';
 import 'services/notification_service.dart';
 import 'services/desktop_lyrics_controller.dart';
+import 'services/cover_override_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -139,16 +140,21 @@ void main() async {
   final statsManager = StatisticsManager();
   await statsManager.init();
 
+  final coverOverrideService = CoverOverrideService();
+  await coverOverrideService.initializationFuture;
+
   runApp(
     MultiProvider(
       providers: [
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
         ChangeNotifierProvider(create: (_) => NotificationService()),
+        ChangeNotifierProvider.value(value: coverOverrideService),
         ChangeNotifierProvider.value(value: themeProvider),
         ChangeNotifierProvider(
           create: (context) => PlaylistContentNotifier(
             context.read<SettingsProvider>(),
             context.read<ThemeProvider>(),
+            context.read<CoverOverrideService>(),
           ),
         ),
         ChangeNotifierProxyProvider3<

@@ -15,6 +15,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import '../page/playlist/playlist_content_notifier.dart';
 import '../page/playlist/playlist_models.dart';
+import '../page/lyric_copy_page.dart';
 import '../page/pages/statistics_page.dart';
 import '../page/pages/audio_analysis_page.dart';
 import '../page/setting/setting_page.dart';
@@ -24,10 +25,15 @@ import '../widgets/playing_queue_drawer.dart';
 import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/play_pause_button.dart';
 import '../widgets/sort_dialog.dart';
+import '../widgets/transparent_chip_surface.dart';
 import '../services/notification_service.dart';
 import '../services/desktop_lyrics_controller.dart';
+import '../services/song_group_presentation.dart';
+import '../services/audio_cover_editor_service.dart';
+import '../services/cover_override_service.dart';
 import '../theme/theme_provider.dart';
 import '../widgets/custom_theme_background.dart';
+import '../widgets/custom_theme_image_editor.dart';
 import '../widgets/artwork_image.dart';
 
 bool _hasCustomPlaybackTheme(SettingsProvider settings) {
@@ -52,6 +58,125 @@ bool _hasResolvedPlaybackTheme(
       (settings.followAlbumArtOnPlayback &&
           (_hasUsableAlbumArt(song) ||
               (cachedArtwork != null && cachedArtwork.isNotEmpty)));
+}
+
+enum _CoverApplyTarget { appOnly, sourceFile }
+
+Future<Uint8List?> _pickAndCropCover(BuildContext context) async {
+  String? path;
+  try {
+    if (Platform.isAndroid) {
+      path = await AudioCoverEditorService.pickImageFromGallery();
+    } else {
+      final result = await FilePicker.platform.pickFiles(
+        dialogTitle: '选择封面图片',
+        type: FileType.custom,
+        allowedExtensions: const ['jpg', 'jpeg', 'png', 'webp'],
+      );
+      path = result?.files.single.path;
+    }
+  } catch (error) {
+    if (context.mounted) {
+      context.read<NotificationService>().error(
+        '打开系统相册失败：${_coverWriteError(error)}',
+      );
+    }
+    return null;
+  }
+  if (path == null || !context.mounted) return null;
+  return showCustomThemeImageEditor(
+    context,
+    sourcePath: path,
+    square: true,
+    title: '裁剪封面',
+  );
+}
+
+Future<_CoverApplyTarget?> _chooseCoverApplyTarget(
+  BuildContext context, {
+  required bool group,
+}) => showModalBottomSheet<_CoverApplyTarget>(
+  context: context,
+  showDragHandle: true,
+  builder: (sheetContext) => SafeArea(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ListTile(
+          leading: const Icon(Icons.layers_outlined),
+          title: const Text('在播放器内更换'),
+          subtitle: const Text('不修改音频文件，可随时重置'),
+          onTap: () => Navigator.pop(sheetContext, _CoverApplyTarget.appOnly),
+        ),
+        ListTile(
+          leading: const Icon(Icons.edit_note_outlined),
+          title: Text(group ? '替换组内歌曲文件封面' : '替换文件封面'),
+          subtitle: Text(group ? '写入该歌手/专辑内所有可写音频文件' : '直接写入当前音频文件的标签'),
+          onTap: () =>
+              Navigator.pop(sheetContext, _CoverApplyTarget.sourceFile),
+        ),
+        const SizedBox(height: 8),
+      ],
+    ),
+  ),
+);
+
+Future<bool> _confirmSourceCoverWrite(
+  BuildContext context, {
+  required int count,
+}) async =>
+    await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('替换文件封面？'),
+        content: Text(
+          count == 1
+              ? '此操作会修改音频文件本身。写入过程会先创建临时副本，失败时保留原文件。'
+              : '此操作会修改 $count 个音频文件本身。只会处理可写文件，失败的文件将保留原样。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('继续'),
+          ),
+        ],
+      ),
+    ) ??
+    false;
+
+Future<void> _downloadCover(
+  BuildContext context,
+  Uint8List bytes,
+  String name,
+) async {
+  final safeName = name.replaceAll(RegExp(r'[\\/:*?"<>|]'), '_').trim();
+  try {
+    final result = await FilePicker.platform.saveFile(
+      dialogTitle: '保存封面',
+      fileName: '${safeName.isEmpty ? 'cover' : safeName}_cover.png',
+      type: FileType.custom,
+      allowedExtensions: const ['png'],
+      bytes: bytes,
+    );
+    if (result != null && context.mounted) {
+      context.read<NotificationService>().success('封面已保存');
+    }
+  } catch (error) {
+    if (context.mounted) {
+      context.read<NotificationService>().error('保存封面失败：$error');
+    }
+  }
+}
+
+String _coverWriteError(Object error) {
+  if (error is PlatformException) {
+    return error.message ?? error.code;
+  }
+  return error.toString();
 }
 
 /// Touch-first Android presentation. The desktop pages and their data model stay
@@ -198,12 +323,9 @@ class _MobileShellState extends State<MobileShell> {
         settings.homeThemeImageEnabled &&
         settings.homeThemeImagePath != null &&
         File(settings.homeThemeImagePath!).existsSync();
-    final directAlbumArt = currentSong?.albumArt;
     final currentAlbumArt = currentSong == null
         ? null
-        : directAlbumArt != null && directAlbumArt.isNotEmpty
-        ? directAlbumArt
-        : notifier.coverForSongPath(currentSong.filePath);
+        : notifier.displayCoverForSong(currentSong);
     final useAlbumArtOnHome =
         settings.followAlbumArtOnHome && currentAlbumArt != null;
     final useHomeTheme = useCustomHomeTheme || useAlbumArtOnHome;
@@ -553,9 +675,11 @@ class _MobileShellState extends State<MobileShell> {
         path: settings.homeThemeImagePath,
         enabled: useCustomHomeTheme,
         dim: settings.homeThemeImageDim,
+        blurSigma: settings.homeThemeImageBlur,
         coverBytes: currentAlbumArt,
         coverEnabled: useAlbumArtOnHome,
-        coverDim: 0.56,
+        coverDim: settings.homeAlbumArtBackgroundDim,
+        coverBlurSigma: settings.homeAlbumArtBackgroundBlur,
         child: scaffold,
       ),
     );
@@ -1242,30 +1366,454 @@ class _GroupTab extends StatelessWidget {
     final entries = groups.entries.toList()
       ..sort((a, b) => a.key.compareTo(b.key));
     if (entries.isEmpty) return const _EmptyLibrary();
-    return _TopEdgeFade(
-      enabled: topEdgeFadeEnabled,
-      child: ListView.separated(
-        itemCount: entries.length,
-        separatorBuilder: (_, __) => const Divider(height: 1),
-        itemBuilder: (context, index) {
-          final item = entries[index];
-          return ListTile(
-            leading: CircleAvatar(
-              child: Icon(kind == '歌手' ? Icons.person : Icons.album),
+    final settings = context.watch<SettingsProvider>();
+    final coverOverrides = context.watch<CoverOverrideService>();
+    final statistics = context.watch<StatisticsManager>();
+    final playCounts = SongGroupPresentation.normalizedPlayCounts(
+      statistics.statisticsData.songStats,
+    );
+    final gridView = kind == '歌手'
+        ? settings.artistGroupGridView
+        : settings.albumGroupGridView;
+    final scheme = Theme.of(context).colorScheme;
+    final collection = gridView
+        ? GridView.builder(
+            key: ValueKey('$kind-grid-view'),
+            padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
+            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+              crossAxisCount: 2,
+              mainAxisSpacing: 12,
+              crossAxisSpacing: 12,
+              childAspectRatio: .78,
             ),
-            title: Text(item.key),
-            subtitle: Text('${item.value.length} 首歌曲'),
-            trailing: const Icon(Icons.chevron_right),
-            onTap: () => Navigator.of(context).push(
-              CupertinoPageRoute<void>(
-                builder: (_) =>
-                    _SongCollectionPage(title: item.key, songs: item.value),
-              ),
-            ),
+            itemCount: entries.length,
+            itemBuilder: (context, index) {
+              final item = entries[index];
+              final artwork = _groupArtworkWidget(
+                settings,
+                coverOverrides,
+                item,
+                playCounts,
+              );
+              return Card(
+                elevation: 0,
+                color: scheme.surfaceContainerLow.withValues(
+                  alpha: topEdgeFadeEnabled ? .62 : 1,
+                ),
+                clipBehavior: Clip.antiAlias,
+                child: InkWell(
+                  onTap: () => _openCollection(context, item),
+                  onLongPress: () => _showCoverPicker(
+                    context,
+                    notifier,
+                    settings,
+                    item,
+                    playCounts,
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Expanded(child: artwork),
+                      Padding(
+                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              item.key,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.titleMedium,
+                            ),
+                            const SizedBox(height: 3),
+                            Text(
+                              '${item.value.length} 首歌曲',
+                              maxLines: 1,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            },
+          )
+        : ListView.separated(
+            key: ValueKey('$kind-list-view'),
+            padding: const EdgeInsets.only(bottom: 20),
+            itemCount: entries.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final item = entries[index];
+              final artwork = _groupArtworkWidget(
+                settings,
+                coverOverrides,
+                item,
+                playCounts,
+              );
+              return ListTile(
+                leading: ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox.square(dimension: 52, child: artwork),
+                ),
+                title: Text(item.key),
+                subtitle: Text('${item.value.length} 首歌曲'),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => _openCollection(context, item),
+                onLongPress: () => _showCoverPicker(
+                  context,
+                  notifier,
+                  settings,
+                  item,
+                  playCounts,
+                ),
+              );
+            },
           );
-        },
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  kind == '歌手'
+                      ? '共 ${entries.length} 位歌手'
+                      : '共 ${entries.length} 张专辑',
+                  style: Theme.of(context).textTheme.bodyMedium,
+                ),
+              ),
+              SegmentedButton<bool>(
+                showSelectedIcon: false,
+                style: ButtonStyle(
+                  minimumSize: const WidgetStatePropertyAll(Size(62, 44)),
+                  padding: const WidgetStatePropertyAll(
+                    EdgeInsets.symmetric(horizontal: 14),
+                  ),
+                  visualDensity: VisualDensity.standard,
+                  side: WidgetStatePropertyAll(
+                    BorderSide(color: scheme.outlineVariant),
+                  ),
+                ),
+                segments: const [
+                  ButtonSegment<bool>(
+                    value: false,
+                    icon: Icon(Icons.view_list_outlined),
+                  ),
+                  ButtonSegment<bool>(
+                    value: true,
+                    icon: Icon(Icons.grid_view_outlined),
+                  ),
+                ],
+                selected: {gridView},
+                onSelectionChanged: (selection) {
+                  final value = selection.first;
+                  if (kind == '歌手') {
+                    settings.setArtistGroupGridView(value);
+                  } else {
+                    settings.setAlbumGroupGridView(value);
+                  }
+                },
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        Expanded(
+          child: _TopEdgeFade(enabled: topEdgeFadeEnabled, child: collection),
+        ),
+      ],
+    );
+  }
+
+  void _openCollection(
+    BuildContext context,
+    MapEntry<String, List<Song>> item,
+  ) {
+    Navigator.of(context).push(
+      CupertinoPageRoute<void>(
+        builder: (_) => _SongCollectionPage(title: item.key, songs: item.value),
       ),
     );
+  }
+
+  Song? _representativeSong(
+    SettingsProvider settings,
+    MapEntry<String, List<Song>> item,
+    Map<String, int> playCounts,
+  ) {
+    final overridePath = kind == '歌手'
+        ? settings.artistGroupCoverPaths[item.key]
+        : settings.albumGroupCoverPaths[item.key];
+    if (overridePath != null) {
+      for (final song in item.value) {
+        if (song.normalizedPath.toLowerCase() == overridePath.toLowerCase()) {
+          return song;
+        }
+      }
+    }
+    return SongGroupPresentation.representativeSong(item.value, playCounts);
+  }
+
+  Uint8List? _groupArtwork(
+    PlaylistContentNotifier notifier,
+    SettingsProvider settings,
+    CoverOverrideService coverOverrides,
+    MapEntry<String, List<Song>> item,
+    Map<String, int> playCounts,
+  ) {
+    final override = coverOverrides.groupCover(
+      artist: kind == '歌手',
+      group: item.key,
+    );
+    if (override != null && override.isNotEmpty) return override;
+    final song = _representativeSong(settings, item, playCounts);
+    if (song == null) return null;
+    return notifier.displayCoverForSong(song);
+  }
+
+  Widget _groupArtworkWidget(
+    SettingsProvider settings,
+    CoverOverrideService coverOverrides,
+    MapEntry<String, List<Song>> item,
+    Map<String, int> playCounts,
+  ) {
+    final override = coverOverrides.groupCover(
+      artist: kind == '歌手',
+      group: item.key,
+    );
+    return _RequestedGroupArtwork(
+      song: _representativeSong(settings, item, playCounts),
+      overrideArtwork: override,
+      fallbackIcon: kind == '歌手' ? Icons.person : Icons.album,
+    );
+  }
+
+  Widget _groupArtworkView(BuildContext context, Uint8List? artwork) {
+    if (artwork != null && artwork.isNotEmpty) {
+      return ArtworkImage(
+        bytes: artwork,
+        size: ArtworkSize.medium,
+        width: double.infinity,
+        height: double.infinity,
+        fit: BoxFit.cover,
+      );
+    }
+    final scheme = Theme.of(context).colorScheme;
+    return ColoredBox(
+      color: scheme.surfaceContainerHigh,
+      child: Icon(
+        kind == '歌手' ? Icons.person : Icons.album,
+        size: 42,
+        color: scheme.onSurfaceVariant,
+      ),
+    );
+  }
+
+  Future<void> _showCoverPicker(
+    BuildContext context,
+    PlaylistContentNotifier notifier,
+    SettingsProvider settings,
+    MapEntry<String, List<Song>> item,
+    Map<String, int> playCounts,
+  ) async {
+    final coverOverrides = context.read<CoverOverrideService>();
+    final sorted = SongGroupPresentation.sortByPlayCount(
+      item.value,
+      playCounts,
+    );
+    final currentArtwork = _groupArtwork(
+      notifier,
+      settings,
+      coverOverrides,
+      item,
+      playCounts,
+    );
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 520),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                child: Text(
+                  '设置“${item.key}”封面',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              ListTile(
+                leading: const Icon(Icons.auto_awesome),
+                title: const Text('自动选择'),
+                subtitle: const Text('使用播放次数最多的歌曲封面'),
+                onTap: () async {
+                  await coverOverrides.setGroupCover(
+                    artist: kind == '歌手',
+                    group: item.key,
+                  );
+                  await settings.setGroupCoverPath(
+                    artist: kind == '歌手',
+                    group: item.key,
+                  );
+                  if (sheetContext.mounted) Navigator.pop(sheetContext);
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('从相册选取并裁剪'),
+                onTap: () {
+                  Navigator.pop(sheetContext);
+                  Future.microtask(() async {
+                    if (!context.mounted) return;
+                    final artwork = await _pickAndCropCover(context);
+                    if (!context.mounted || artwork == null) return;
+                    await _applyGroupCover(
+                      context,
+                      notifier,
+                      settings,
+                      coverOverrides,
+                      item,
+                      artwork,
+                    );
+                  });
+                },
+              ),
+              ListTile(
+                leading: const Icon(Icons.download_outlined),
+                title: const Text('下载当前封面'),
+                enabled: currentArtwork != null && currentArtwork.isNotEmpty,
+                onTap: currentArtwork == null || currentArtwork.isEmpty
+                    ? null
+                    : () {
+                        Navigator.pop(sheetContext);
+                        unawaited(
+                          _downloadCover(context, currentArtwork, item.key),
+                        );
+                      },
+              ),
+              const Divider(height: 1),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: sorted.length,
+                  itemBuilder: (context, index) {
+                    final song = sorted[index];
+                    final artwork = notifier.displayCoverForSong(song);
+                    return ListTile(
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: SizedBox.square(
+                          dimension: 44,
+                          child: _groupArtworkView(context, artwork),
+                        ),
+                      ),
+                      title: Text(song.title),
+                      subtitle: Text(
+                        '${SongGroupPresentation.playCount(song, playCounts)} 次播放',
+                      ),
+                      enabled: artwork != null && artwork.isNotEmpty,
+                      onTap: artwork == null || artwork.isEmpty
+                          ? null
+                          : () {
+                              Navigator.pop(sheetContext);
+                              Future.microtask(() async {
+                                if (!context.mounted) return;
+                                await _applyGroupCover(
+                                  context,
+                                  notifier,
+                                  settings,
+                                  coverOverrides,
+                                  item,
+                                  artwork,
+                                  sourceSongPath: song.normalizedPath,
+                                );
+                              });
+                            },
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _applyGroupCover(
+    BuildContext context,
+    PlaylistContentNotifier notifier,
+    SettingsProvider settings,
+    CoverOverrideService coverOverrides,
+    MapEntry<String, List<Song>> item,
+    Uint8List artwork, {
+    String? sourceSongPath,
+  }) async {
+    final target = await _chooseCoverApplyTarget(context, group: true);
+    if (!context.mounted || target == null) return;
+    if (target == _CoverApplyTarget.appOnly) {
+      if (sourceSongPath != null) {
+        await coverOverrides.setGroupCover(
+          artist: kind == '歌手',
+          group: item.key,
+        );
+        await settings.setGroupCoverPath(
+          artist: kind == '歌手',
+          group: item.key,
+          songPath: sourceSongPath,
+        );
+      } else {
+        await settings.setGroupCoverPath(artist: kind == '歌手', group: item.key);
+        await coverOverrides.setGroupCover(
+          artist: kind == '歌手',
+          group: item.key,
+          bytes: artwork,
+        );
+      }
+      if (context.mounted) {
+        context.read<NotificationService>().success('$kind封面已更换');
+      }
+      return;
+    }
+
+    if (!await _confirmSourceCoverWrite(context, count: item.value.length) ||
+        !context.mounted) {
+      return;
+    }
+    var success = 0;
+    var failed = 0;
+    for (final song in item.value) {
+      try {
+        await AudioCoverEditorService.replaceEmbeddedCover(
+          song.filePath,
+          artwork,
+        );
+        await coverOverrides.setSongCover(song.filePath, null);
+        await notifier.refreshSongCoverAfterFileEdit(song.filePath);
+        success++;
+      } catch (_) {
+        failed++;
+      }
+    }
+    if (!context.mounted) return;
+    if (success == 0) {
+      context.read<NotificationService>().error(
+        '没有文件被修改，请检查文件格式、权限或 Android 版本',
+      );
+    } else if (failed > 0) {
+      context.read<NotificationService>().warning(
+        '已替换 $success 首，$failed 首失败并保留原文件',
+      );
+    } else {
+      context.read<NotificationService>().success('已替换 $success 首歌曲的文件封面');
+    }
   }
 }
 
@@ -1422,6 +1970,14 @@ class _SongCollectionPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final notifier = context.watch<PlaylistContentNotifier>();
+    final statistics = context.watch<StatisticsManager>();
+    final playCounts = SongGroupPresentation.normalizedPlayCounts(
+      statistics.statisticsData.songStats,
+    );
+    final sortedSongs = SongGroupPresentation.sortByPlayCount(
+      songs,
+      playCounts,
+    );
     final settings = context.watch<SettingsProvider>();
     final customBackgroundEnabled =
         settings.homeThemeImageEnabled &&
@@ -1430,9 +1986,7 @@ class _SongCollectionPage extends StatelessWidget {
     final backgroundSong = notifier.currentSong;
     final backgroundAlbumArt = backgroundSong == null
         ? null
-        : backgroundSong.albumArt?.isNotEmpty == true
-        ? backgroundSong.albumArt
-        : notifier.coverForSongPath(backgroundSong.filePath);
+        : notifier.displayCoverForSong(backgroundSong);
     final albumArtBackgroundEnabled =
         settings.followAlbumArtOnHome && backgroundAlbumArt != null;
     final useBackground = customBackgroundEnabled || albumArtBackgroundEnabled;
@@ -1445,8 +1999,8 @@ class _SongCollectionPage extends StatelessWidget {
         scrolledUnderElevation: useBackground ? 0 : null,
       ),
       body: _SongList(
-        songs: songs,
-        onPlay: (index) => notifier.playFromDynamicList(songs, index),
+        songs: sortedSongs,
+        onPlay: (index) => notifier.playFromDynamicList(sortedSongs, index),
       ),
     );
 
@@ -1454,9 +2008,11 @@ class _SongCollectionPage extends StatelessWidget {
       path: settings.homeThemeImagePath,
       enabled: customBackgroundEnabled,
       dim: settings.homeThemeImageDim,
+      blurSigma: settings.homeThemeImageBlur,
       coverBytes: backgroundAlbumArt,
       coverEnabled: albumArtBackgroundEnabled,
-      coverDim: 0.56,
+      coverDim: settings.homeAlbumArtBackgroundDim,
+      coverBlurSigma: settings.homeAlbumArtBackgroundBlur,
       child: scaffold,
     );
   }
@@ -1663,16 +2219,23 @@ class _MiniPlayer extends StatelessWidget {
   final bool translucent;
   @override
   Widget build(BuildContext context) {
-    final notifier = context.watch<PlaylistContentNotifier>();
-    final song = notifier.currentSong;
+    final playback = context
+        .select<
+          PlaylistContentNotifier,
+          ({Song? song, bool isPlaying, Duration totalDuration})
+        >(
+          (notifier) => (
+            song: notifier.currentSong,
+            isPlaying: notifier.isPlaying,
+            totalDuration: notifier.totalDuration,
+          ),
+        );
+    final notifier = context.read<PlaylistContentNotifier>();
+    final song = playback.song;
     if (song == null) return const SizedBox.shrink();
     final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
     if (isTablet) {
-      final totalMs = notifier.totalDuration.inMilliseconds;
-      final positionMs = notifier.currentPosition.inMilliseconds.clamp(
-        0,
-        totalMs > 0 ? totalMs : 1,
-      );
+      final totalMs = playback.totalDuration.inMilliseconds;
       return Material(
         color: Theme.of(context).colorScheme.surfaceContainerHigh.withValues(
           alpha: translucent ? 0.82 : 1,
@@ -1707,10 +2270,19 @@ class _MiniPlayer extends StatelessWidget {
                           style: Theme.of(context).textTheme.bodyMedium,
                         ),
                         const SizedBox(height: 5),
-                        LinearProgressIndicator(
-                          value: totalMs > 0 ? positionMs / totalMs : 0,
-                          minHeight: 3,
-                          borderRadius: BorderRadius.circular(3),
+                        ValueListenableBuilder<Duration>(
+                          valueListenable: notifier.positionListenable,
+                          builder: (context, position, _) {
+                            final positionMs = position.inMilliseconds.clamp(
+                              0,
+                              totalMs > 0 ? totalMs : 1,
+                            );
+                            return LinearProgressIndicator(
+                              value: totalMs > 0 ? positionMs / totalMs : 0,
+                              minHeight: 3,
+                              borderRadius: BorderRadius.circular(3),
+                            );
+                          },
                         ),
                       ],
                     ),
@@ -1722,13 +2294,13 @@ class _MiniPlayer extends StatelessWidget {
                     onPressed: () => notifier.playPrevious(),
                   ),
                   PlayPauseButton(
-                    isPlaying: notifier.isPlaying,
-                    tooltip: notifier.isPlaying ? '暂停' : '播放',
+                    isPlaying: playback.isPlaying,
+                    tooltip: playback.isPlaying ? '暂停' : '播放',
                     color: Theme.of(context).colorScheme.onSecondaryContainer,
                     backgroundColor: Theme.of(
                       context,
                     ).colorScheme.secondaryContainer,
-                    onPressed: notifier.isPlaying
+                    onPressed: playback.isPlaying
                         ? notifier.pause
                         : notifier.play,
                   ),
@@ -1760,12 +2332,12 @@ class _MiniPlayer extends StatelessWidget {
           CupertinoPageRoute<void>(builder: (_) => const _NowPlayingPage()),
         ),
         trailing: PlayPauseButton(
-          isPlaying: notifier.isPlaying,
+          isPlaying: playback.isPlaying,
           size: 34,
           padding: const EdgeInsets.all(5),
-          tooltip: notifier.isPlaying ? '暂停' : '播放',
+          tooltip: playback.isPlaying ? '暂停' : '播放',
           color: Theme.of(context).colorScheme.onSurfaceVariant,
-          onPressed: notifier.isPlaying ? notifier.pause : notifier.play,
+          onPressed: playback.isPlaying ? notifier.pause : notifier.play,
         ),
       ),
     );
@@ -1781,10 +2353,11 @@ class _NowPlayingPage extends StatefulWidget {
 
 class _NowPlayingPageState extends State<_NowPlayingPage>
     with TickerProviderStateMixin {
+  static const _playbackGlassBlur = 7.0;
+  static const _playbackGlassFillAlpha = .10;
+  static const _playbackGlassBorderAlpha = .72;
   static const _coverExitDuration = Duration(milliseconds: 210);
   static const _coverEnterDuration = Duration(milliseconds: 155);
-  static const _lyricsBackgroundEnterDuration = Duration(milliseconds: 190);
-  static const _lyricsBackgroundExitDuration = Duration(milliseconds: 170);
   static const _lyricsContentEnterDuration = Duration(milliseconds: 140);
   static const _lyricsContentExitDuration = Duration(milliseconds: 100);
 
@@ -1793,12 +2366,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   bool _lyricsLayerBuilt = false;
   final MobileLyricsListController _lyricsListController =
       MobileLyricsListController();
+  final ValueNotifier<Duration?> _lyricBrowseTarget = ValueNotifier(null);
   late final AnimationController _coverTransitionController;
-  late final AnimationController _lyricsBackgroundTransitionController;
   late final AnimationController _lyricsContentTransitionController;
   final List<Timer> _visualTransitionTimers = [];
   int _visualTransitionRevision = 0;
-  double? _seekPositionMs;
+  int _lyricsEntryRevision = 0;
+  final ValueNotifier<double?> _seekPosition = ValueNotifier(null);
   bool _isDraggingSeek = false;
   int _seekSessionId = 0;
   Timer? _seekSettleTimer;
@@ -1813,8 +2387,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   Future<void>? _edgePlaybackSetup;
   String? _lastSongPath;
   final Map<int, Offset> _lyricPointers = {};
+  final Map<int, Offset> _lyricPointerOrigins = {};
   double? _lyricPinchStartDistance;
   double? _lyricPinchStartFontSize;
+  Timer? _lyricCopyHoldTimer;
+  bool _lyricCopyGestureTriggered = false;
 
   @override
   void initState() {
@@ -1822,10 +2399,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _coverTransitionController = AnimationController(
       vsync: this,
       duration: _coverExitDuration,
-    );
-    _lyricsBackgroundTransitionController = AnimationController(
-      vsync: this,
-      duration: _lyricsBackgroundEnterDuration,
     );
     _lyricsContentTransitionController = AnimationController(
       vsync: this,
@@ -1837,7 +2410,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     final revision = ++_visualTransitionRevision;
     _cancelVisualTransitionTimers();
     _coverTransitionController.stop(canceled: false);
-    _lyricsBackgroundTransitionController.stop(canceled: false);
     _lyricsContentTransitionController.stop(canceled: false);
 
     void schedule(Duration delay, VoidCallback action) {
@@ -1864,15 +2436,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         ),
       );
       schedule(
-        const Duration(milliseconds: 50),
-        () => _animateVisualLayer(
-          _lyricsBackgroundTransitionController,
-          target: 1,
-          fullDuration: _lyricsBackgroundEnterDuration,
-          curve: Curves.easeOutCubic,
-        ),
-      );
-      schedule(
         const Duration(milliseconds: 100),
         () => _animateVisualLayer(
           _lyricsContentTransitionController,
@@ -1889,15 +2452,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           target: 0,
           fullDuration: _lyricsContentExitDuration,
           curve: Curves.easeOutCubic,
-        ),
-      );
-      schedule(
-        const Duration(milliseconds: 35),
-        () => _animateVisualLayer(
-          _lyricsBackgroundTransitionController,
-          target: 0,
-          fullDuration: _lyricsBackgroundExitDuration,
-          curve: Curves.easeInCubic,
         ),
       );
       schedule(
@@ -1944,11 +2498,23 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _seekSettleTimer?.cancel();
     _edgeSeekTimer?.cancel();
     _edgeSeekStopwatch?.stop();
+    _lyricCopyHoldTimer?.cancel();
     _cancelVisualTransitionTimers();
     _coverTransitionController.dispose();
-    _lyricsBackgroundTransitionController.dispose();
     _lyricsContentTransitionController.dispose();
+    _lyricBrowseTarget.dispose();
+    _seekPosition.dispose();
     super.dispose();
+  }
+
+  Future<void> _seekToBrowsedLyric(
+    Duration target,
+    PlaylistContentNotifier notifier,
+  ) async {
+    _lyricBrowseTarget.value = null;
+    _lyricsListController.settleOn(target);
+    await notifier.mediaPlayer.seek(target);
+    if (!notifier.isPlaying) await notifier.play();
   }
 
   void _startEdgeSeek(int direction, PlaylistContentNotifier notifier) {
@@ -1969,10 +2535,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         .toDouble();
     _edgeSeekTargetMs = _edgeSeekOriginMs;
     _edgeSeekStopwatch = Stopwatch()..start();
-    setState(() {
-      _isDraggingSeek = false;
-      _seekPositionMs = _edgeSeekTargetMs;
-    });
+    setState(() => _isDraggingSeek = false);
+    _seekPosition.value = _edgeSeekTargetMs;
     unawaited(HapticFeedback.mediumImpact());
     _edgePlaybackSetup = _startEdgePlayback(notifier);
     _tickEdgeSeek(notifier);
@@ -2007,7 +2571,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             .toDouble();
     if ((targetMs - _edgeSeekTargetMs).abs() < 40) return;
     _edgeSeekTargetMs = targetMs;
-    setState(() => _seekPositionMs = targetMs);
+    _seekPosition.value = targetMs;
 
     if (targetMs <= 0 || targetMs >= totalMs) {
       _edgeSeekTimer?.cancel();
@@ -2024,10 +2588,18 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     final shouldResume = _edgeSeekWasPlaying;
     final baseRate = _edgeSeekBaseRate;
     final setup = _edgePlaybackSetup;
-    _edgeSeekDirection = 0;
-    _edgeSeekWasPlaying = false;
-    _edgePlaybackSetup = null;
-    if (mounted) setState(() => _seekPositionMs = targetMs);
+    if (mounted) {
+      setState(() {
+        _edgeSeekDirection = 0;
+        _edgeSeekWasPlaying = false;
+        _edgePlaybackSetup = null;
+      });
+    } else {
+      _edgeSeekDirection = 0;
+      _edgeSeekWasPlaying = false;
+      _edgePlaybackSetup = null;
+    }
+    _seekPosition.value = targetMs;
 
     if (!mounted || sessionId != _seekSessionId) return;
     try {
@@ -2060,15 +2632,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   void _beginSeek(double value) {
     _seekSettleTimer?.cancel();
     _seekSessionId++;
-    setState(() {
-      _isDraggingSeek = true;
-      _seekPositionMs = value;
-    });
+    _isDraggingSeek = true;
+    _seekPosition.value = value;
   }
 
   void _updateSeek(double value) {
     if (!_isDraggingSeek) return;
-    setState(() => _seekPositionMs = value);
+    _seekPosition.value = value;
   }
 
   Future<void> _commitSeek(
@@ -2076,10 +2646,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     PlaylistContentNotifier notifier,
   ) async {
     final sessionId = _seekSessionId;
-    setState(() {
-      _isDraggingSeek = false;
-      _seekPositionMs = value;
-    });
+    _isDraggingSeek = false;
+    _seekPosition.value = value;
 
     await notifier.mediaPlayer.seek(Duration(milliseconds: value.round()));
     if (!mounted || sessionId != _seekSessionId) return;
@@ -2100,7 +2668,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       final hasCaughtUp = (actualMs - targetMs).abs() <= 750;
       final timedOutWhilePlaying = notifier.isPlaying && attempt >= 30;
       if (hasCaughtUp || timedOutWhilePlaying) {
-        setState(() => _seekPositionMs = null);
+        _seekPosition.value = null;
         return;
       }
 
@@ -2108,7 +2676,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     });
   }
 
-  void _resetSeekTracking() {
+  void _resetSeekTracking({bool deferPositionReset = false}) {
     _seekSessionId++;
     _seekSettleTimer?.cancel();
     _edgeSeekTimer?.cancel();
@@ -2117,47 +2685,88 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _edgeSeekWasPlaying = false;
     _edgePlaybackSetup = null;
     _isDraggingSeek = false;
-    _seekPositionMs = null;
+    if (deferPositionReset && _seekPosition.value != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _seekPosition.value = null;
+      });
+    } else {
+      _seekPosition.value = null;
+    }
   }
 
   @override
   Widget build(BuildContext context) {
-    final notifier = context.watch<PlaylistContentNotifier>();
+    final themeProvider = context.watch<ThemeProvider>();
+    return Theme(
+      data: themeProvider.darkThemeData,
+      child: Builder(
+        builder: (darkContext) => _buildDarkNowPlayingPage(
+          darkContext,
+          lyricFontFamily: themeProvider.currentFontFamily,
+        ),
+      ),
+    );
+  }
+
+  Widget _buildDarkNowPlayingPage(
+    BuildContext context, {
+    required String? lyricFontFamily,
+  }) {
+    final playback = context
+        .select<
+          PlaylistContentNotifier,
+          ({
+            Song? song,
+            List<LyricLine> lyrics,
+            int activeLyric,
+            Duration totalDuration,
+            bool isPlaying,
+            bool isFavorite,
+            PlayMode playMode,
+            String equalizerPreset,
+            double playbackRate,
+            Uint8List? cover,
+          })
+        >((notifier) {
+          final song = notifier.currentSong;
+          return (
+            song: song,
+            lyrics: notifier.currentLyrics,
+            activeLyric: notifier.currentLyricLineIndex,
+            totalDuration: notifier.totalDuration,
+            isPlaying: notifier.isPlaying,
+            isFavorite: song != null && notifier.isFavorite(song),
+            playMode: notifier.playMode,
+            equalizerPreset: notifier.equalizerPresetName,
+            playbackRate: notifier.currentPlaybackRate,
+            cover: song == null ? null : notifier.displayCoverForSong(song),
+          );
+        });
+    final notifier = context.read<PlaylistContentNotifier>();
     final settings = context.watch<SettingsProvider>();
-    final lyricFontFamily = context.watch<ThemeProvider>().currentFontFamily;
-    final song = notifier.currentSong;
+    final song = playback.song;
     final useCustomPlaybackTheme = _hasCustomPlaybackTheme(settings);
     if (song == null) {
       return const Scaffold(body: Center(child: Text('尚未播放歌曲')));
     }
-    final directAlbumArt = song.albumArt;
-    final currentAlbumArt = directAlbumArt != null && directAlbumArt.isNotEmpty
-        ? directAlbumArt
-        : notifier.coverForSongPath(song.filePath);
+    final currentAlbumArt = playback.cover;
     final useAlbumArtOnPlayback =
         settings.followAlbumArtOnPlayback && currentAlbumArt != null;
     final usePlaybackTheme = useCustomPlaybackTheme || useAlbumArtOnPlayback;
     if (_lastSongPath != song.filePath) {
       _lastSongPath = song.filePath;
-      _resetSeekTracking();
+      _lyricsEntryRevision++;
+      _resetSeekTracking(deferPositionReset: true);
       _showLyrics = usePlaybackTheme;
       _coverLayerBuilt = !_showLyrics;
       _lyricsLayerBuilt = _showLyrics;
       final initialVisualValue = _showLyrics ? 1.0 : 0.0;
       _cancelVisualTransitionTimers();
       _coverTransitionController.value = initialVisualValue;
-      _lyricsBackgroundTransitionController.value = initialVisualValue;
       _lyricsContentTransitionController.value = initialVisualValue;
     }
 
-    final totalMs = notifier.totalDuration.inMilliseconds.toDouble();
-    final playerPosition = notifier.currentPosition.inMilliseconds
-        .toDouble()
-        .clamp(0, totalMs > 0 ? totalMs : 1)
-        .toDouble();
-    final displayPosition = (_seekPositionMs ?? playerPosition)
-        .clamp(0, totalMs > 0 ? totalMs : 1)
-        .toDouble();
+    final totalMs = playback.totalDuration.inMilliseconds.toDouble();
 
     final mediaSize = MediaQuery.sizeOf(context);
     final isTablet = mediaSize.shortestSide >= 600;
@@ -2167,6 +2776,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       notifier: notifier,
       settings: settings,
       song: song,
+      lyrics: playback.lyrics,
+      activeLyric: playback.activeLyric,
       lyricFontFamily: lyricFontFamily,
       usePlaybackTheme: usePlaybackTheme,
       maxCoverSize: useSplitLayout
@@ -2181,7 +2792,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       settings: settings,
       song: song,
       totalMs: totalMs,
-      displayPosition: displayPosition,
       tablet: isTablet,
       usePlaybackTheme: usePlaybackTheme,
     );
@@ -2274,9 +2884,12 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       path: settings.playbackThemeImagePath,
       enabled: useCustomPlaybackTheme,
       dim: settings.playbackThemeImageDim,
+      blurSigma: settings.playbackThemeImageBlur,
       coverBytes: currentAlbumArt,
       coverEnabled: useAlbumArtOnPlayback,
-      coverDim: 0.52,
+      coverDim: settings.playbackAlbumArtBackgroundDim,
+      coverBlurSigma: settings.playbackAlbumArtBackgroundBlur,
+      brightnessOverride: Brightness.dark,
       child: scaffold,
     );
   }
@@ -2286,6 +2899,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required PlaylistContentNotifier notifier,
     required SettingsProvider settings,
     required Song song,
+    required List<LyricLine> lyrics,
+    required int activeLyric,
     required String? lyricFontFamily,
     required bool usePlaybackTheme,
     required double maxCoverSize,
@@ -2294,6 +2909,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       behavior: HitTestBehavior.opaque,
       onTap: () {
         final showLyrics = !_showLyrics;
+        final entryRevision = ++_lyricsEntryRevision;
         setState(() {
           _showLyrics = showLyrics;
           if (showLyrics) {
@@ -2302,9 +2918,29 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             _coverLayerBuilt = true;
           }
         });
-        _runVisualTransition(showLyrics: _showLyrics);
         if (showLyrics) {
+          // Center the retained lyric list while it is still fully transparent,
+          // then start the visual transition on the next frame. This keeps the
+          // expensive positioned-list jump out of the animation's first frame.
           _lyricsListController.recenter();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted ||
+                !_showLyrics ||
+                entryRevision != _lyricsEntryRevision) {
+              return;
+            }
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (!mounted ||
+                  !_showLyrics ||
+                  entryRevision != _lyricsEntryRevision) {
+                return;
+              }
+              _runVisualTransition(showLyrics: true);
+            });
+            WidgetsBinding.instance.scheduleFrame();
+          });
+        } else {
+          _runVisualTransition(showLyrics: false);
         }
         if (showLyrics && notifier.currentLyrics.isEmpty) {
           unawaited(notifier.refreshCurrentLyricsIfEmpty());
@@ -2348,50 +2984,24 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                               .clamp(180.0, maxCoverSize)
                               .toDouble();
                           return Center(
-                            child: Hero(
-                              tag: song.filePath,
-                              child: _Cover(
-                                song: song,
-                                size: size,
-                                artworkSize: ArtworkSize.large,
+                            child: GestureDetector(
+                              onLongPress: () => _showSongCoverActions(
+                                context,
+                                notifier,
+                                song,
+                              ),
+                              child: Hero(
+                                tag: song.filePath,
+                                child: _Cover(
+                                  song: song,
+                                  size: size,
+                                  artworkSize: ArtworkSize.large,
+                                ),
                               ),
                             ),
                           );
                         },
                       ),
-                    ),
-                  ),
-                ),
-              ),
-            if (_lyricsLayerBuilt && !usePlaybackTheme)
-              IgnorePointer(
-                child: ExcludeSemantics(
-                  child: AnimatedBuilder(
-                    animation: _lyricsBackgroundTransitionController,
-                    builder: (context, child) {
-                      final progress =
-                          _lyricsBackgroundTransitionController.value;
-                      final opacity = (progress / 0.90).clamp(0.0, 1.0);
-                      return Opacity(
-                        opacity: opacity,
-                        child: Transform.translate(
-                          offset: Offset(0, 4 * (1 - progress)),
-                          child: Transform.scale(
-                            scale: 0.92 + 0.08 * progress,
-                            alignment: Alignment.center,
-                            child: child,
-                          ),
-                        ),
-                      );
-                    },
-                    child: Card(
-                      clipBehavior: Clip.antiAlias,
-                      elevation: usePlaybackTheme ? 0 : null,
-                      color: usePlaybackTheme ? Colors.transparent : null,
-                      surfaceTintColor: usePlaybackTheme
-                          ? Colors.transparent
-                          : null,
-                      child: const SizedBox.expand(),
                     ),
                   ),
                 ),
@@ -2407,13 +3017,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                       final progress = _lyricsContentTransitionController.value;
                       return Opacity(
                         opacity: progress,
-                        child: Transform.translate(
-                          offset: Offset(0, -12 * (1 - progress)),
-                          child: Transform.scale(
-                            scale: 0.98 + 0.02 * progress,
-                            alignment: Alignment.center,
-                            child: child,
-                          ),
+                        child: Transform.scale(
+                          scale: 0.98 + 0.02 * progress,
+                          alignment: Alignment.center,
+                          child: child,
                         ),
                       );
                     },
@@ -2422,12 +3029,18 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                         borderRadius: BorderRadius.circular(12),
                         child: MobileLyricsList(
                           controller: _lyricsListController,
-                          lines: notifier.currentLyrics,
-                          active: notifier.currentLyricLineIndex,
-                          position: notifier.currentPosition,
+                          lines: lyrics,
+                          active: activeLyric,
+                          positionListenable: notifier.positionListenable,
                           fontSize: settings.fontSize,
                           fontFamily: lyricFontFamily,
-                          edgeFadeEnabled: usePlaybackTheme,
+                          edgeFadeEnabled: true,
+                          glowEnabled: settings.playbackLyricGlowEnabled,
+                          glowRadius: settings.playbackLyricGlowRadius,
+                          brightForeground: usePlaybackTheme,
+                          onBrowseTargetChanged: (target) {
+                            _lyricBrowseTarget.value = target;
+                          },
                         ),
                       ),
                     ),
@@ -2449,8 +3062,12 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                         right: edgeWidth,
                         child: GestureDetector(
                           behavior: HitTestBehavior.translucent,
-                          onLongPress: () =>
-                              _showLyricsFontSizeSheet(context, settings),
+                          onLongPress: () {
+                            if (_lyricPointers.length <= 1 &&
+                                !_lyricCopyGestureTriggered) {
+                              _showLyricsFontSizeSheet(context, settings);
+                            }
+                          },
                         ),
                       ),
                       _buildLyricsEdgeSeekZone(
@@ -2464,6 +3081,77 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                         notifier: notifier,
                         direction: 1,
                         width: edgeWidth,
+                      ),
+                    ],
+                  );
+                },
+              ),
+            if (_showLyrics)
+              ValueListenableBuilder<Duration?>(
+                valueListenable: _lyricBrowseTarget,
+                builder: (context, target, _) {
+                  if (target == null) return const SizedBox.shrink();
+                  final contentColor = Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withValues(alpha: .50);
+                  final lineColor = Theme.of(
+                    context,
+                  ).colorScheme.onSurface.withValues(alpha: .50);
+                  return Stack(
+                    key: const ValueKey('mobile_lyrics_progress_guide'),
+                    children: [
+                      Positioned.fill(
+                        child: IgnorePointer(
+                          child: Center(
+                            child: Padding(
+                              padding: const EdgeInsets.only(left: 2),
+                              child: Row(
+                                children: [
+                                  SizedBox(
+                                    width: 52,
+                                    child: Text(
+                                      _duration(target),
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .labelLarge
+                                          ?.copyWith(
+                                            color: contentColor,
+                                            fontWeight: FontWeight.w600,
+                                          ),
+                                    ),
+                                  ),
+                                  Expanded(
+                                    child: Container(
+                                      height: 1,
+                                      color: lineColor,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 52),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                      Positioned.fill(
+                        child: Align(
+                          alignment: Alignment.centerRight,
+                          child: IconButton(
+                            key: const ValueKey('mobile_lyrics_progress_seek'),
+                            tooltip: '从此处播放',
+                            color: contentColor,
+                            padding: EdgeInsets.zero,
+                            constraints: const BoxConstraints.tightFor(
+                              width: 48,
+                              height: 48,
+                            ),
+                            iconSize: 34,
+                            icon: const Icon(Icons.play_arrow_rounded),
+                            onPressed: () => unawaited(
+                              _seekToBrowsedLyric(target, notifier),
+                            ),
+                          ),
+                        ),
                       ),
                     ],
                   );
@@ -2491,7 +3179,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       width: width,
       child: GestureDetector(
         behavior: HitTestBehavior.translucent,
-        onLongPressStart: (_) => _startEdgeSeek(direction, notifier),
+        onLongPressStart: (_) {
+          if (_lyricPointers.length <= 1 && !_lyricCopyGestureTriggered) {
+            _startEdgeSeek(direction, notifier);
+          }
+        },
         onLongPressEnd: (_) => unawaited(_stopEdgeSeek(notifier)),
         onLongPressCancel: () => unawaited(_stopEdgeSeek(notifier)),
         child: AnimatedContainer(
@@ -2540,35 +3232,53 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required SettingsProvider settings,
     required Song song,
     required double totalMs,
-    required double displayPosition,
     required bool tablet,
     required bool usePlaybackTheme,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
-    final timelineControls = Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SizedBox(
-          height: tablet ? 42 : 34,
-          child: Slider(
-            value: displayPosition,
-            max: totalMs > 0 ? totalMs : 1,
-            onChangeStart: _beginSeek,
-            onChanged: _updateSeek,
-            onChangeEnd: (value) => _commitSeek(value, notifier),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+    final timelineControls = ValueListenableBuilder<double?>(
+      valueListenable: _seekPosition,
+      builder: (context, seekPosition, _) => ValueListenableBuilder<Duration>(
+        valueListenable: notifier.positionListenable,
+        builder: (context, position, _) {
+          final playerPosition = position.inMilliseconds
+              .toDouble()
+              .clamp(0, totalMs > 0 ? totalMs : 1)
+              .toDouble();
+          final displayPosition = (seekPosition ?? playerPosition)
+              .clamp(0, totalMs > 0 ? totalMs : 1)
+              .toDouble();
+          return Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(_duration(Duration(milliseconds: displayPosition.round()))),
-              Text(_duration(notifier.totalDuration)),
+              SizedBox(
+                height: tablet ? 42 : 34,
+                child: Slider(
+                  value: displayPosition,
+                  max: totalMs > 0 ? totalMs : 1,
+                  onChangeStart: _beginSeek,
+                  onChanged: _updateSeek,
+                  onChangeEnd: (value) => _commitSeek(value, notifier),
+                ),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text(
+                      _duration(
+                        Duration(milliseconds: displayPosition.round()),
+                      ),
+                    ),
+                    Text(_duration(notifier.totalDuration)),
+                  ],
+                ),
+              ),
             ],
-          ),
-        ),
-      ],
+          );
+        },
+      ),
     );
     final transportControls = SizedBox(
       height: tablet ? 80 : 72,
@@ -2594,7 +3304,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                 tooltip: '上一首',
                 icon: const Icon(Icons.skip_previous, size: 38),
                 onPressed: () {
-                  setState(_resetSeekTracking);
+                  _resetSeekTracking();
                   notifier.playPrevious();
                 },
               ),
@@ -2612,7 +3322,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                   if (notifier.isPlaying) {
                     notifier.pause();
                   } else {
-                    setState(_resetSeekTracking);
+                    _resetSeekTracking();
                     notifier.play();
                   }
                 },
@@ -2625,7 +3335,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                 tooltip: '下一首',
                 icon: const Icon(Icons.skip_next, size: 38),
                 onPressed: () {
-                  setState(_resetSeekTracking);
+                  _resetSeekTracking();
                   notifier.playNext();
                 },
               ),
@@ -2694,15 +3404,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
               ),
             ),
             const SizedBox(width: 8),
-            ActionChip(
-              avatar: const Icon(Icons.equalizer, size: 18),
-              label: Text(notifier.equalizerPresetName),
-              backgroundColor: usePlaybackTheme ? Colors.transparent : null,
-              surfaceTintColor: usePlaybackTheme ? Colors.transparent : null,
-              side: usePlaybackTheme
-                  ? BorderSide(color: Theme.of(context).colorScheme.outline)
-                  : null,
-              onPressed: () => _showPresetPicker(context, notifier),
+            _buildEqualizerPresetButton(
+              context,
+              notifier: notifier,
+              usePlaybackTheme: usePlaybackTheme,
             ),
           ],
         ),
@@ -2765,25 +3470,93 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     );
   }
 
+  Widget _buildEqualizerPresetButton(
+    BuildContext context, {
+    required PlaylistContentNotifier notifier,
+    required bool usePlaybackTheme,
+  }) {
+    if (!usePlaybackTheme) {
+      return ActionChip(
+        avatar: const Icon(Icons.equalizer, size: 18),
+        label: Text(notifier.equalizerPresetName),
+        onPressed: () => _showPresetPicker(context, notifier),
+      );
+    }
+
+    final scheme = Theme.of(context).colorScheme;
+    final brightForeground = Theme.of(context).brightness == Brightness.light;
+    final labelColor = brightForeground ? Colors.white : scheme.onSurface;
+    final borderColor = brightForeground
+        ? Colors.white.withValues(alpha: .82)
+        : scheme.outline;
+    final radius = BorderRadius.circular(14);
+    return _playbackThemePanel(
+      context,
+      enabled: true,
+      borderRadius: radius,
+      drawBorder: false,
+      child: Semantics(
+        button: true,
+        label: '均衡器预设：${notifier.equalizerPresetName}',
+        child: InkWell(
+          borderRadius: radius,
+          onTap: () => _showPresetPicker(context, notifier),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              borderRadius: radius,
+              border: Border.all(color: borderColor),
+            ),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(minHeight: 40),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.equalizer, size: 18, color: scheme.primary),
+                    const SizedBox(width: 8),
+                    Text(
+                      notifier.equalizerPresetName,
+                      style: Theme.of(
+                        context,
+                      ).textTheme.labelLarge?.copyWith(color: labelColor),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _playbackThemePanel(
     BuildContext context, {
     required bool enabled,
     required Widget child,
+    BorderRadius? borderRadius,
+    bool drawBorder = true,
   }) {
     if (!enabled) return child;
     final scheme = Theme.of(context).colorScheme;
-    final radius = BorderRadius.circular(22);
+    final borderColor = Theme.of(context).brightness == Brightness.light
+        ? Colors.white.withValues(alpha: _playbackGlassBorderAlpha)
+        : scheme.outlineVariant.withValues(alpha: _playbackGlassBorderAlpha);
+    final radius = borderRadius ?? BorderRadius.circular(22);
     return ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+        filter: ui.ImageFilter.blur(
+          sigmaX: _playbackGlassBlur,
+          sigmaY: _playbackGlassBlur,
+        ),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: scheme.surface.withValues(alpha: .10),
+            color: scheme.surface.withValues(alpha: _playbackGlassFillAlpha),
             borderRadius: radius,
-            border: Border.all(
-              color: scheme.outlineVariant.withValues(alpha: .72),
-            ),
+            border: drawBorder ? Border.all(color: borderColor) : null,
           ),
           child: Material(
             color: Colors.transparent,
@@ -2800,73 +3573,112 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     BuildContext context,
     SettingsProvider settings,
   ) async {
+    final usePlaybackTheme = _hasResolvedPlaybackTheme(
+      settings,
+      context.read<PlaylistContentNotifier>(),
+    );
     double currentSize = settings.fontSize;
     await showModalBottomSheet<void>(
       context: context,
-      showDragHandle: true,
-      builder: (sheetContext) => SafeArea(
-        child: StatefulBuilder(
-          builder: (context, setSheetState) => Padding(
-            padding: const EdgeInsets.fromLTRB(24, 4, 24, 20),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '歌词字体大小',
-                        style: Theme.of(context).textTheme.titleLarge,
+      showDragHandle: !usePlaybackTheme,
+      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+      shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
+      clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      builder: (sheetContext) {
+        final content = SafeArea(
+          child: StatefulBuilder(
+            builder: (context, setSheetState) => Padding(
+              padding: EdgeInsets.fromLTRB(
+                24,
+                usePlaybackTheme ? 16 : 4,
+                24,
+                20,
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '歌词字体大小',
+                          style: Theme.of(context).textTheme.titleLarge,
+                        ),
                       ),
-                    ),
-                    IconButton(
-                      tooltip: '恢复默认大小',
-                      icon: const Icon(Icons.restart_alt),
-                      onPressed: () {
-                        const value = SettingsProvider.defaultLyricFontSize;
-                        setSheetState(() => currentSize = value);
-                        settings.setFontSize(value);
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 12),
-                Slider(
-                  value: currentSize,
-                  min: 12,
-                  max: 32,
-                  divisions: 20,
-                  label: currentSize.toStringAsFixed(0),
-                  onChanged: (value) {
-                    setSheetState(() => currentSize = value);
-                    settings.setFontSize(value);
-                  },
-                ),
-                Text(
-                  '当前大小: ${currentSize.toStringAsFixed(1)}',
-                  style: Theme.of(context).textTheme.titleMedium,
-                ),
-              ],
+                      IconButton(
+                        tooltip: '恢复默认大小',
+                        icon: const Icon(Icons.restart_alt),
+                        onPressed: () {
+                          const value = SettingsProvider.defaultLyricFontSize;
+                          setSheetState(() => currentSize = value);
+                          settings.setFontSize(value);
+                        },
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  Slider(
+                    value: currentSize,
+                    min: 12,
+                    max: 32,
+                    divisions: 20,
+                    label: currentSize.toStringAsFixed(0),
+                    onChanged: (value) {
+                      setSheetState(() => currentSize = value);
+                      settings.setFontSize(value);
+                    },
+                  ),
+                  Text(
+                    '当前大小: ${currentSize.toStringAsFixed(1)}',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                ],
+              ),
             ),
           ),
-        ),
-      ),
+        );
+        return usePlaybackTheme
+            ? _playbackThemeSheetSurface(sheetContext, child: content)
+            : content;
+      },
     );
   }
 
   void _onLyricPointerDown(PointerDownEvent event) {
     _lyricPointers[event.pointer] = event.localPosition;
+    _lyricPointerOrigins[event.pointer] = event.localPosition;
     if (_lyricPointers.length == 2) {
       final points = _lyricPointers.values.toList(growable: false);
       _lyricPinchStartDistance = (points[0] - points[1]).distance;
       _lyricPinchStartFontSize = context.read<SettingsProvider>().fontSize;
+      _lyricCopyGestureTriggered = false;
+      _lyricCopyHoldTimer?.cancel();
+      if (_edgeSeekDirection != 0) return;
+      _lyricCopyHoldTimer = Timer(const Duration(milliseconds: 650), () {
+        if (!mounted || !_showLyrics || _lyricPointers.length != 2) return;
+        final originalFontSize = _lyricPinchStartFontSize;
+        if (originalFontSize != null) {
+          context.read<SettingsProvider>().previewFontSize(originalFontSize);
+        }
+        _lyricCopyGestureTriggered = true;
+        _lyricPinchStartDistance = null;
+        _lyricPinchStartFontSize = null;
+        unawaited(HapticFeedback.mediumImpact());
+        unawaited(_showLyricCopyOptions());
+      });
+    } else if (_lyricPointers.length > 2) {
+      _lyricCopyHoldTimer?.cancel();
     }
   }
 
   void _onLyricPointerMove(PointerMoveEvent event) {
     if (!_lyricPointers.containsKey(event.pointer)) return;
     _lyricPointers[event.pointer] = event.localPosition;
+    final origin = _lyricPointerOrigins[event.pointer];
+    if (origin != null && (event.localPosition - origin).distance > 12) {
+      _lyricCopyHoldTimer?.cancel();
+    }
     if (_lyricPointers.length != 2 ||
         _lyricPinchStartDistance == null ||
         _lyricPinchStartFontSize == null) {
@@ -2876,20 +3688,84 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     final distance = (points[0] - points[1]).distance;
     if (_lyricPinchStartDistance! > 0) {
       final scale = distance / _lyricPinchStartDistance!;
+      if ((scale - 1).abs() > .04) _lyricCopyHoldTimer?.cancel();
       final target = (_lyricPinchStartFontSize! * scale).clamp(12.0, 32.0);
       context.read<SettingsProvider>().previewFontSize(target);
     }
   }
 
   void _onLyricPointerEnd(PointerEvent event, SettingsProvider settings) {
-    if (_lyricPinchStartDistance != null) {
+    _lyricCopyHoldTimer?.cancel();
+    if (_lyricPinchStartDistance != null && !_lyricCopyGestureTriggered) {
       settings.setFontSize(settings.fontSize);
     }
     _lyricPointers.remove(event.pointer);
+    _lyricPointerOrigins.remove(event.pointer);
     if (_lyricPointers.length < 2) {
       _lyricPinchStartDistance = null;
       _lyricPinchStartFontSize = null;
     }
+    if (_lyricPointers.isEmpty) _lyricCopyGestureTriggered = false;
+  }
+
+  Future<void> _showLyricCopyOptions() async {
+    final notifier = context.read<PlaylistContentNotifier>();
+    if (notifier.currentLyrics.isEmpty) return;
+    final lines = List<LyricLine>.unmodifiable(notifier.currentLyrics);
+    final activeLineIndex = notifier.currentLyricLineIndex;
+    final fontFamily = context.read<ThemeProvider>().currentFontFamily;
+    final usePlaybackTheme = _hasResolvedPlaybackTheme(
+      context.read<SettingsProvider>(),
+      notifier,
+    );
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+      shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
+      clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      builder: (sheetContext) {
+        final content = SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                leading: const Icon(Icons.copy_all_outlined),
+                title: const Text('复制完整歌词'),
+                onTap: () => Navigator.pop(sheetContext, 'all'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.checklist_outlined),
+                title: const Text('仅复制部分歌词'),
+                onTap: () => Navigator.pop(sheetContext, 'partial'),
+              ),
+              const SizedBox(height: 8),
+            ],
+          ),
+        );
+        return usePlaybackTheme
+            ? _playbackThemeSheetSurface(sheetContext, child: content)
+            : content;
+      },
+    );
+    if (!mounted || choice == null) return;
+    if (choice == 'all') {
+      final text = lyricsClipboardText(lines);
+      if (text.isEmpty) return;
+      await Clipboard.setData(ClipboardData(text: text));
+      if (mounted) {
+        context.read<NotificationService>().success('已复制完整歌词');
+      }
+      return;
+    }
+    await Navigator.of(context).push(
+      CupertinoPageRoute<void>(
+        builder: (_) => LyricCopyPage(
+          lines: lines,
+          activeLineIndex: activeLineIndex,
+          fontFamily: fontFamily,
+        ),
+      ),
+    );
   }
 
   void _showQueue(BuildContext context) {
@@ -2950,27 +3826,30 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                     children: PlaylistContentNotifier.equalizerPresets
                         .skip(1)
                         .map(
-                          (preset) => ChoiceChip(
-                            label: Text(preset.name),
-                            selected:
-                                preset.name == notifier.equalizerPresetName,
-                            backgroundColor: usePlaybackTheme
-                                ? Colors.transparent
-                                : null,
-                            selectedColor: usePlaybackTheme
-                                ? Colors.transparent
-                                : null,
-                            side: usePlaybackTheme
-                                ? BorderSide(
-                                    color: Theme.of(
-                                      context,
-                                    ).colorScheme.outline,
-                                  )
-                                : null,
-                            onSelected: (_) {
-                              notifier.applyEqualizerPreset(preset);
-                              Navigator.pop(sheetContext);
-                            },
+                          (preset) => TransparentChipSurface(
+                            enabled: usePlaybackTheme,
+                            child: ChoiceChip(
+                              label: Text(preset.name),
+                              selected:
+                                  preset.name == notifier.equalizerPresetName,
+                              backgroundColor: usePlaybackTheme
+                                  ? Colors.transparent
+                                  : null,
+                              selectedColor: usePlaybackTheme
+                                  ? Colors.transparent
+                                  : null,
+                              side: usePlaybackTheme
+                                  ? BorderSide(
+                                      color: Theme.of(
+                                        context,
+                                      ).colorScheme.outline,
+                                    )
+                                  : null,
+                              onSelected: (_) {
+                                notifier.applyEqualizerPreset(preset);
+                                Navigator.pop(sheetContext);
+                              },
+                            ),
                           ),
                         )
                         .toList(),
@@ -3076,6 +3955,36 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                     value: settings.enableOnlineLyrics,
                     onChanged: settings.setEnableOnlineLyrics,
                   ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('翻译'),
+                    subtitle: const Text('显示网络歌词中的翻译内容'),
+                    value: settings.enableLyricTranslation,
+                    onChanged: (value) async {
+                      await settings.setEnableLyricTranslation(value);
+                      if (!context.mounted || !settings.enableOnlineLyrics) {
+                        return;
+                      }
+                      await context
+                          .read<PlaylistContentNotifier>()
+                          .reloadCurrentLyrics();
+                    },
+                  ),
+                  SwitchListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('歌词源自动回退'),
+                    value: settings.enableLyricSourceFallback,
+                    onChanged: (value) async {
+                      await settings.setEnableLyricSourceFallback(value);
+                      if (!context.mounted || !settings.enableOnlineLyrics) {
+                        return;
+                      }
+                      await context
+                          .read<PlaylistContentNotifier>()
+                          .reloadCurrentLyrics();
+                    },
+                  ),
+                  const SizedBox(height: 10),
                   SegmentedButton<String>(
                     style: usePlaybackTheme
                         ? ButtonStyle(
@@ -3090,8 +3999,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                           )
                         : null,
                     segments: const [
-                      ButtonSegment(value: 'qq', label: Text('企鹅')),
                       ButtonSegment(value: 'netease', label: Text('网抑')),
+                      ButtonSegment(value: 'qq', label: Text('企鹅')),
                       ButtonSegment(value: 'kugou', label: Text('库狗')),
                     ],
                     selected: {settings.primaryLyricSource},
@@ -3100,7 +4009,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                       final primary = selection.first;
                       settings.setPrimaryLyricSource(primary);
                       settings.setSecondaryLyricSource(
-                        primary == 'qq' ? 'netease' : 'qq',
+                        networkLyricSourceOrder(primary)[1],
                       );
                     },
                   ),
@@ -3151,24 +4060,34 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required Widget child,
   }) {
     final scheme = Theme.of(context).colorScheme;
+    final brightForeground = Theme.of(context).brightness == Brightness.light;
+    final borderColor = brightForeground
+        ? Colors.white.withValues(alpha: _playbackGlassBorderAlpha)
+        : scheme.outlineVariant.withValues(alpha: _playbackGlassBorderAlpha);
+    final themedChild = _playbackForegroundTheme(
+      context,
+      enabled: brightForeground,
+      child: child,
+    );
     const radius = BorderRadius.vertical(top: Radius.circular(28));
     return ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7),
+        filter: ui.ImageFilter.blur(
+          sigmaX: _playbackGlassBlur,
+          sigmaY: _playbackGlassBlur,
+        ),
         child: DecoratedBox(
           decoration: BoxDecoration(
-            color: scheme.surface.withValues(alpha: .10),
+            color: scheme.surface.withValues(alpha: _playbackGlassFillAlpha),
             borderRadius: radius,
-            border: Border.all(
-              color: scheme.outlineVariant.withValues(alpha: .72),
-            ),
+            border: Border.all(color: borderColor),
           ),
           child: Material(
             color: Colors.transparent,
             shape: const RoundedRectangleBorder(borderRadius: radius),
             clipBehavior: Clip.antiAlias,
-            child: child,
+            child: themedChild,
           ),
         ),
       ),
@@ -3176,9 +4095,222 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   }
 
   RoundedRectangleBorder _playbackSheetShape(BuildContext context) {
+    final theme = Theme.of(context);
+    final borderColor = theme.brightness == Brightness.light
+        ? Colors.white.withValues(alpha: _playbackGlassBorderAlpha)
+        : theme.colorScheme.outlineVariant;
     return RoundedRectangleBorder(
       borderRadius: const BorderRadius.vertical(top: Radius.circular(28)),
-      side: BorderSide(color: Theme.of(context).colorScheme.outlineVariant),
+      side: BorderSide(color: borderColor),
+    );
+  }
+
+  Widget _playbackForegroundTheme(
+    BuildContext context, {
+    required bool enabled,
+    required Widget child,
+  }) {
+    if (!enabled) return child;
+    final theme = Theme.of(context);
+    const foreground = Colors.white;
+    final secondaryForeground = foreground.withValues(alpha: .82);
+    final outline = foreground.withValues(alpha: .82);
+    final scheme = theme.colorScheme.copyWith(
+      onSurface: foreground,
+      onSurfaceVariant: secondaryForeground,
+      onPrimaryContainer: foreground,
+      onSecondaryContainer: foreground,
+      outline: outline,
+      outlineVariant: foreground.withValues(alpha: .56),
+    );
+    return Theme(
+      data: theme.copyWith(
+        colorScheme: scheme,
+        textTheme: theme.textTheme.apply(
+          bodyColor: foreground,
+          displayColor: foreground,
+        ),
+        primaryTextTheme: theme.primaryTextTheme.apply(
+          bodyColor: foreground,
+          displayColor: foreground,
+        ),
+        iconTheme: theme.iconTheme.copyWith(color: foreground),
+        primaryIconTheme: theme.primaryIconTheme.copyWith(color: foreground),
+        dividerColor: foreground.withValues(alpha: .30),
+        disabledColor: foreground.withValues(alpha: .38),
+        textButtonTheme: TextButtonThemeData(
+          style: TextButton.styleFrom(foregroundColor: foreground),
+        ),
+        outlinedButtonTheme: OutlinedButtonThemeData(
+          style: OutlinedButton.styleFrom(
+            foregroundColor: foreground,
+            side: BorderSide(color: outline),
+          ),
+        ),
+        listTileTheme: theme.listTileTheme.copyWith(
+          textColor: foreground,
+          iconColor: foreground,
+        ),
+      ),
+      child: DefaultTextStyle.merge(
+        style: const TextStyle(color: foreground),
+        child: IconTheme.merge(
+          data: const IconThemeData(color: foreground),
+          child: child,
+        ),
+      ),
+    );
+  }
+
+  Future<void> _showSongCoverActions(
+    BuildContext context,
+    PlaylistContentNotifier notifier,
+    Song song,
+  ) async {
+    final overrides = context.read<CoverOverrideService>();
+    final currentArtwork = notifier.displayCoverForSong(song);
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.queue_music),
+              title: const Text('从歌曲列表选取'),
+              onTap: () => Navigator.pop(sheetContext, 'songs'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.photo_library_outlined),
+              title: const Text('从相册选取并裁剪'),
+              onTap: () => Navigator.pop(sheetContext, 'gallery'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.download_outlined),
+              title: const Text('下载当前封面'),
+              enabled: currentArtwork != null && currentArtwork.isNotEmpty,
+              onTap: currentArtwork == null || currentArtwork.isEmpty
+                  ? null
+                  : () => Navigator.pop(sheetContext, 'download'),
+            ),
+            if (overrides.hasSongCover(song.filePath))
+              ListTile(
+                leading: const Icon(Icons.restore),
+                title: const Text('重置播放器内封面'),
+                onTap: () => Navigator.pop(sheetContext, 'reset'),
+              ),
+            const SizedBox(height: 8),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted || action == null) return;
+    if (action == 'download' && currentArtwork != null) {
+      await _downloadCover(context, currentArtwork, song.title);
+      return;
+    }
+    if (action == 'reset') {
+      await overrides.setSongCover(song.filePath, null);
+      if (context.mounted) {
+        context.read<NotificationService>().success('已恢复文件内封面');
+      }
+      return;
+    }
+
+    Uint8List? selectedArtwork;
+    if (action == 'gallery') {
+      selectedArtwork = await _pickAndCropCover(context);
+    } else if (action == 'songs') {
+      selectedArtwork = await _pickCoverFromSongs(context, notifier);
+    }
+    if (!context.mounted || selectedArtwork == null) return;
+    final target = await _chooseCoverApplyTarget(context, group: false);
+    if (!context.mounted || target == null) return;
+    if (target == _CoverApplyTarget.appOnly) {
+      await overrides.setSongCover(song.filePath, selectedArtwork);
+      if (context.mounted) {
+        context.read<NotificationService>().success('播放器内封面已更换');
+      }
+      return;
+    }
+    if (!await _confirmSourceCoverWrite(context, count: 1) ||
+        !context.mounted) {
+      return;
+    }
+    try {
+      await AudioCoverEditorService.replaceEmbeddedCover(
+        song.filePath,
+        selectedArtwork,
+      );
+      await overrides.setSongCover(song.filePath, null);
+      await notifier.refreshSongCoverAfterFileEdit(song.filePath);
+      if (context.mounted) {
+        context.read<NotificationService>().success('音频文件封面已替换');
+      }
+    } catch (error) {
+      if (context.mounted) {
+        context.read<NotificationService>().error(
+          '替换文件封面失败：${_coverWriteError(error)}',
+        );
+      }
+    }
+  }
+
+  Future<Uint8List?> _pickCoverFromSongs(
+    BuildContext context,
+    PlaylistContentNotifier notifier,
+  ) {
+    final candidates = notifier.allSongs
+        .where((song) => notifier.displayCoverForSong(song)?.isNotEmpty == true)
+        .toList();
+    return showModalBottomSheet<Uint8List>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (sheetContext) => SafeArea(
+        child: SizedBox(
+          height: MediaQuery.sizeOf(sheetContext).height * .72,
+          child: Column(
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(20, 4, 20, 8),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    '选择歌曲封面',
+                    style: Theme.of(sheetContext).textTheme.titleLarge,
+                  ),
+                ),
+              ),
+              Expanded(
+                child: ListView.builder(
+                  itemCount: candidates.length,
+                  itemBuilder: (_, index) {
+                    final candidate = candidates[index];
+                    final artwork = notifier.displayCoverForSong(candidate)!;
+                    return ListTile(
+                      leading: ClipRRect(
+                        borderRadius: BorderRadius.circular(8),
+                        child: ArtworkImage(
+                          bytes: artwork,
+                          size: ArtworkSize.thumbnail,
+                          width: 46,
+                          height: 46,
+                          fit: BoxFit.cover,
+                        ),
+                      ),
+                      title: Text(candidate.title),
+                      subtitle: Text(candidate.artist),
+                      onTap: () => Navigator.pop(sheetContext, artwork),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -3437,24 +4569,27 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
                 .map(
                   (preset) => Padding(
                     padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(preset.name),
-                      selected: preset.name == notifier.equalizerPresetName,
-                      backgroundColor: widget.transparentBackground
-                          ? Colors.transparent
-                          : null,
-                      selectedColor: widget.transparentBackground
-                          ? Colors.transparent
-                          : null,
-                      side: widget.transparentBackground
-                          ? BorderSide(
-                              color: Theme.of(context).colorScheme.outline,
-                            )
-                          : null,
-                      onSelected: (_) {
-                        setState(_draggingEqualizerGains.clear);
-                        notifier.applyEqualizerPreset(preset);
-                      },
+                    child: TransparentChipSurface(
+                      enabled: widget.transparentBackground,
+                      child: ChoiceChip(
+                        label: Text(preset.name),
+                        selected: preset.name == notifier.equalizerPresetName,
+                        backgroundColor: widget.transparentBackground
+                            ? Colors.transparent
+                            : null,
+                        selectedColor: widget.transparentBackground
+                            ? Colors.transparent
+                            : null,
+                        side: widget.transparentBackground
+                            ? BorderSide(
+                                color: Theme.of(context).colorScheme.outline,
+                              )
+                            : null,
+                        onSelected: (_) {
+                          setState(_draggingEqualizerGains.clear);
+                          notifier.applyEqualizerPreset(preset);
+                        },
+                      ),
                     ),
                   ),
                 )
@@ -3514,30 +4649,33 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
           runSpacing: 10,
           children: effects.map((effect) {
             final selected = notifier.isEffectEnabled(effect.id);
-            return FilterChip(
-              selected: selected,
-              showCheckmark: true,
-              backgroundColor: widget.transparentBackground
-                  ? Colors.transparent
-                  : null,
-              selectedColor: widget.transparentBackground
-                  ? Colors.transparent
-                  : null,
-              side: widget.transparentBackground
-                  ? BorderSide(color: Theme.of(context).colorScheme.outline)
-                  : null,
-              avatar: Icon(_effectIcon(effect.id), size: 18),
-              label: Text(effect.label),
-              onSelected: (enabled) async {
-                if (effect.id == 'arnndn' &&
-                    enabled &&
-                    notifier.arnndnModelPath == null) {
-                  final path = await _pickNoiseModel();
-                  if (path == null) return;
-                  await notifier.setArnndnModelPath(path);
-                }
-                await notifier.toggleEffect(effect.id, enabled);
-              },
+            return TransparentChipSurface(
+              enabled: widget.transparentBackground,
+              child: FilterChip(
+                selected: selected,
+                showCheckmark: true,
+                backgroundColor: widget.transparentBackground
+                    ? Colors.transparent
+                    : null,
+                selectedColor: widget.transparentBackground
+                    ? Colors.transparent
+                    : null,
+                side: widget.transparentBackground
+                    ? BorderSide(color: Theme.of(context).colorScheme.outline)
+                    : null,
+                avatar: Icon(_effectIcon(effect.id), size: 18),
+                label: Text(effect.label),
+                onSelected: (enabled) async {
+                  if (effect.id == 'arnndn' &&
+                      enabled &&
+                      notifier.arnndnModelPath == null) {
+                    final path = await _pickNoiseModel();
+                    if (path == null) return;
+                    await notifier.setArnndnModelPath(path);
+                  }
+                  await notifier.toggleEffect(effect.id, enabled);
+                },
+              ),
             );
           }).toList(),
         ),
@@ -3668,6 +4806,116 @@ class _DetailRow extends StatelessWidget {
   );
 }
 
+class _RequestedGroupArtwork extends StatefulWidget {
+  const _RequestedGroupArtwork({
+    required this.song,
+    required this.overrideArtwork,
+    required this.fallbackIcon,
+  });
+
+  final Song? song;
+  final Uint8List? overrideArtwork;
+  final IconData fallbackIcon;
+
+  @override
+  State<_RequestedGroupArtwork> createState() => _RequestedGroupArtworkState();
+}
+
+class _RequestedGroupArtworkState extends State<_RequestedGroupArtwork> {
+  PlaylistContentNotifier? _notifier;
+  String? _requestedPath;
+  Listenable? _coverListenable;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _notifier ??= context.read<PlaylistContentNotifier>();
+    _syncCoverRequest();
+  }
+
+  @override
+  void didUpdateWidget(covariant _RequestedGroupArtwork oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final overrideChanged =
+        (oldWidget.overrideArtwork?.isNotEmpty ?? false) !=
+        (widget.overrideArtwork?.isNotEmpty ?? false);
+    if (oldWidget.song?.filePath != widget.song?.filePath || overrideChanged) {
+      _syncCoverRequest();
+    }
+  }
+
+  void _syncCoverRequest() {
+    if (widget.overrideArtwork?.isNotEmpty == true) {
+      _releaseCover();
+      return;
+    }
+    final filePath = widget.song?.filePath;
+    if (filePath == _requestedPath) return;
+    _releaseCover();
+    _requestCover(filePath);
+  }
+
+  void _requestCover(String? filePath) {
+    if (filePath == null || filePath == _requestedPath) return;
+    final notifier = _notifier;
+    if (notifier == null) return;
+    _requestedPath = filePath;
+    _coverListenable = notifier.coverListenableForSongPath(filePath)
+      ..addListener(_handleCoverChanged);
+    notifier.requestSongCover(filePath);
+  }
+
+  void _releaseCover() {
+    final path = _requestedPath;
+    if (path == null) return;
+    _coverListenable?.removeListener(_handleCoverChanged);
+    _coverListenable = null;
+    _notifier?.releaseSongCover(path);
+    _requestedPath = null;
+  }
+
+  void _handleCoverChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _releaseCover();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final override = widget.overrideArtwork;
+    final song = widget.song;
+    final artwork = override != null && override.isNotEmpty
+        ? override
+        : song == null
+        ? null
+        : _notifier?.displayCoverForSong(song);
+    if (artwork == null || artwork.isEmpty) {
+      final scheme = Theme.of(context).colorScheme;
+      return ColoredBox(
+        color: scheme.surfaceContainerHigh,
+        child: Center(
+          child: Icon(
+            widget.fallbackIcon,
+            size: 42,
+            color: scheme.onSurfaceVariant,
+          ),
+        ),
+      );
+    }
+    return ArtworkImage(
+      bytes: artwork,
+      size: ArtworkSize.medium,
+      width: double.infinity,
+      height: double.infinity,
+      fit: BoxFit.cover,
+    );
+  }
+}
+
 class _Cover extends StatefulWidget {
   const _Cover({
     required this.song,
@@ -3735,10 +4983,7 @@ class _CoverState extends State<_Cover> {
 
   @override
   Widget build(BuildContext context) {
-    final directArt = widget.song.albumArt;
-    final art = directArt != null && directArt.isNotEmpty
-        ? directArt
-        : _notifier?.coverForSongPath(widget.song.filePath);
+    final art = _notifier?.displayCoverForSong(widget.song);
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: SizedBox(

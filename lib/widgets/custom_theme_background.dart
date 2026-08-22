@@ -9,6 +9,15 @@ import '../theme/theme_motion.dart';
 import '../theme/theme_provider.dart';
 import 'artwork_image.dart';
 
+/// Maps the existing user-facing 0–40 strength to a true Gaussian standard
+/// deviation. A wider sigma removes recognizable cover details while keeping
+/// the setting range and persisted values backward compatible.
+double backgroundGaussianSigma(double strength) {
+  final normalized = strength.clamp(0.0, 40.0);
+  if (normalized <= 0) return 0;
+  return (normalized * 2.25).clamp(0.0, 90.0);
+}
+
 class CustomThemeBackground extends StatelessWidget {
   const CustomThemeBackground({
     super.key,
@@ -18,8 +27,10 @@ class CustomThemeBackground extends StatelessWidget {
     required this.child,
     this.coverBytes,
     this.coverEnabled = false,
+    this.blurSigma = 22,
     this.coverBlurSigma = 22,
     this.coverDim = 0.56,
+    this.brightnessOverride,
   });
 
   final String? path;
@@ -28,8 +39,10 @@ class CustomThemeBackground extends StatelessWidget {
   final Widget child;
   final Uint8List? coverBytes;
   final bool coverEnabled;
+  final double blurSigma;
   final double coverBlurSigma;
   final double coverDim;
+  final Brightness? brightnessOverride;
 
   bool get _canShowCover =>
       coverEnabled && coverBytes != null && coverBytes!.isNotEmpty;
@@ -44,13 +57,15 @@ class CustomThemeBackground extends StatelessWidget {
     final showCover = _canShowCover;
     if (!showCover && !_canShowCustomImage) return child;
     final mode = context.watch<ThemeProvider?>()?.themeMode;
-    final dark = switch (mode) {
-      ThemeMode.light => false,
-      ThemeMode.dark => true,
-      ThemeMode.system =>
-        MediaQuery.platformBrightnessOf(context) == Brightness.dark,
-      null => Theme.of(context).brightness == Brightness.dark,
-    };
+    final dark = brightnessOverride != null
+        ? brightnessOverride == Brightness.dark
+        : switch (mode) {
+            ThemeMode.light => false,
+            ThemeMode.dark => true,
+            ThemeMode.system =>
+              MediaQuery.platformBrightnessOf(context) == Brightness.dark,
+            null => Theme.of(context).brightness == Brightness.dark,
+          };
     Widget image = showCover
         ? ArtworkImage(
             bytes: coverBytes!,
@@ -69,14 +84,18 @@ class CustomThemeBackground extends StatelessWidget {
             errorBuilder: (_, __, ___) =>
                 const ColoredBox(color: Colors.transparent),
           );
-    if (showCover && coverBlurSigma > 0) {
+    final effectiveBlur = backgroundGaussianSigma(
+      showCover ? coverBlurSigma : blurSigma,
+    );
+    if (effectiveBlur > 0) {
       image = ClipRect(
         child: Transform.scale(
-          scale: 1.08,
+          scale: (1 + effectiveBlur / 450).clamp(1.0, 1.20),
           child: ImageFiltered(
             imageFilter: ui.ImageFilter.blur(
-              sigmaX: coverBlurSigma,
-              sigmaY: coverBlurSigma,
+              sigmaX: effectiveBlur,
+              sigmaY: effectiveBlur,
+              tileMode: TileMode.mirror,
             ),
             child: image,
           ),

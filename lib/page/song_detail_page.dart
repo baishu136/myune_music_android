@@ -18,6 +18,7 @@ import '../widgets/playing_queue_drawer.dart';
 import '../widgets/lyrics_settings_drawer.dart';
 import 'playlist/playlist_models.dart';
 import '../widgets/artwork_image.dart';
+import '../widgets/custom_theme_background.dart' show backgroundGaussianSigma;
 
 // 公共模糊背景组件
 class BackgroundBlurWidget extends StatefulWidget {
@@ -282,9 +283,9 @@ class _BackgroundBlurWidgetState extends State<BackgroundBlurWidget>
           children: [
             ImageFiltered(
               imageFilter: ui.ImageFilter.blur(
-                sigmaX: 40,
-                sigmaY: 40,
-                tileMode: TileMode.decal,
+                sigmaX: backgroundGaussianSigma(40),
+                sigmaY: backgroundGaussianSigma(40),
+                tileMode: TileMode.mirror,
               ),
               child: ArtworkImage(
                 bytes: currentCover,
