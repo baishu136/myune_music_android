@@ -2697,10 +2697,19 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   @override
   Widget build(BuildContext context) {
     final themeProvider = context.watch<ThemeProvider>();
+    final settings = context.watch<SettingsProvider>();
+    final forceDarkPlaybackTheme =
+        _hasCustomPlaybackTheme(settings) || settings.followAlbumArtOnPlayback;
+    if (!forceDarkPlaybackTheme) {
+      return _buildNowPlayingPage(
+        context,
+        lyricFontFamily: themeProvider.currentFontFamily,
+      );
+    }
     return Theme(
       data: themeProvider.darkThemeData,
       child: Builder(
-        builder: (darkContext) => _buildDarkNowPlayingPage(
+        builder: (darkContext) => _buildNowPlayingPage(
           darkContext,
           lyricFontFamily: themeProvider.currentFontFamily,
         ),
@@ -2708,7 +2717,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     );
   }
 
-  Widget _buildDarkNowPlayingPage(
+  Widget _buildNowPlayingPage(
     BuildContext context, {
     required String? lyricFontFamily,
   }) {
@@ -2889,7 +2898,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       coverEnabled: useAlbumArtOnPlayback,
       coverDim: settings.playbackAlbumArtBackgroundDim,
       coverBlurSigma: settings.playbackAlbumArtBackgroundBlur,
-      brightnessOverride: Brightness.dark,
+      brightnessOverride: usePlaybackTheme ? Brightness.dark : null,
       child: scaffold,
     );
   }
