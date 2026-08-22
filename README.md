@@ -118,23 +118,19 @@ Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手
 
 ## 📸 软件截图
 
-### 播放页：封面与歌词
+### 播放页：封面、歌曲信息与歌词
 
-![安卓播放页：封面与歌词](screenshot/android-now-playing.jpg)
+![安卓播放页：封面、歌曲信息与歌词](screenshot/android-playback-overview.jpg)
 
-### 自定义均衡器与音频效果
-
-![安卓自定义均衡器与音频效果](screenshot/android-audio-effects.jpg)
-
-### 歌词源、均衡器预设与歌词字体大小
+### 自定义背景与历史背景
 
 <p align="center">
-  <img src="screenshot/android-lyrics-controls.jpg" width="420" alt="安卓歌词源、均衡器预设与歌词字体设置">
+  <img src="screenshot/android-background-history.png" width="420" alt="安卓自定义背景与历史背景">
 </p>
 
-### 音乐库、歌单、歌手、专辑与设置
+### 音乐库、歌单、歌手、专辑与个性化设置
 
-![安卓音乐库、歌单、歌手、专辑与设置](screenshot/android-library-and-settings.jpg)
+![安卓音乐库、歌单、歌手、专辑与个性化设置](screenshot/android-interface-overview.jpg)
 
 
 ## 🚀 快速开始
