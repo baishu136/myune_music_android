@@ -5,6 +5,8 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
+enum PlaybackInitialView { cover, lyrics }
+
 class SettingsProvider with ChangeNotifier {
   static const double defaultLyricFontSize = 20.0;
   static const _enableGlobalHotkeysKey = 'enableGlobalHotkeys';
@@ -39,6 +41,7 @@ class SettingsProvider with ChangeNotifier {
   static const _lyricBlurStrengthKey = 'lyricBlurStrength'; // 歌词模糊强度设置的 key
   static const _playbackLyricGlowEnabledKey = 'playbackLyricGlowEnabled';
   static const _playbackLyricGlowRadiusKey = 'playbackLyricGlowRadius';
+  static const _playbackInitialViewKey = 'playbackInitialView';
   static const _showTaskbarProgressKey =
       'showTaskbarProgress'; // 任务栏进度显示设置的 key
   static const _hiddenPagesKey = 'hiddenPages'; // 隐藏页面设置的 key
@@ -95,6 +98,7 @@ class SettingsProvider with ChangeNotifier {
   double _lyricBlurStrength = 2.5; // 歌词模糊强度，范围 1.0~4.0
   bool _playbackLyricGlowEnabled = false;
   double _playbackLyricGlowRadius = 8.0;
+  PlaybackInitialView _playbackInitialView = PlaybackInitialView.cover;
   bool _showAlbumName = false; // 默认不显示专辑名称
   bool _enableDynamicBackground = false; // 默认不启用动态背景
   bool _audioDeviceIsAuto = true; // 默认音频设备为自动
@@ -165,6 +169,7 @@ class SettingsProvider with ChangeNotifier {
   double get lyricBlurStrength => _lyricBlurStrength; // 获取歌词模糊强度设置
   bool get playbackLyricGlowEnabled => _playbackLyricGlowEnabled;
   double get playbackLyricGlowRadius => _playbackLyricGlowRadius;
+  PlaybackInitialView get playbackInitialView => _playbackInitialView;
   bool get showTaskbarProgress => _showTaskbarProgress; // 获取任务栏进度显示设置
   bool get showAlbumName => _showAlbumName; // 获取显示专辑名称设置
   bool get enableDynamicBackground => _enableDynamicBackground; // 获取动态背景设置
@@ -231,59 +236,118 @@ class SettingsProvider with ChangeNotifier {
     initializationFuture = _loadFromPrefs();
   }
 
+  T? _readPreference<T>(SharedPreferences prefs, String key) {
+    final value = prefs.get(key);
+    if (value == null) return null;
+    if (value is T) return value as T;
+    debugPrint('忽略类型不兼容的设置项 $key：期望 $T，实际 ${value.runtimeType}');
+    return null;
+  }
+
+  double? _readDoublePreference(SharedPreferences prefs, String key) {
+    final value = prefs.get(key);
+    if (value == null) return null;
+    if (value is num) return value.toDouble();
+    debugPrint('忽略类型不兼容的数值设置项 $key：实际 ${value.runtimeType}');
+    return null;
+  }
+
   Future<void> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
-    _maxLinesPerLyric = prefs.getInt(_prefsKey) ?? 2;
-    _fontSize = prefs.getDouble(_fontSizeKey) ?? defaultLyricFontSize;
-    _useBlurBackground = prefs.getBool(_useBlurBackgroundKey) ?? true;
-    _useDynamicColor = prefs.getBool(_useDynamicColorKey) ?? true; // 加载动态颜色设置
-    _allowAnyFormat = prefs.getBool(_allowAnyFormatKey) ?? false; // 加载允许任何格式设置
+    _maxLinesPerLyric = _readPreference<int>(prefs, _prefsKey) ?? 2;
+    _fontSize =
+        _readDoublePreference(prefs, _fontSizeKey) ?? defaultLyricFontSize;
+    _useBlurBackground =
+        _readPreference<bool>(prefs, _useBlurBackgroundKey) ?? true;
+    _useDynamicColor =
+        _readPreference<bool>(prefs, _useDynamicColorKey) ?? true; // 加载动态颜色设置
+    _allowAnyFormat =
+        _readPreference<bool>(prefs, _allowAnyFormatKey) ?? false; // 加载允许任何格式设置
     _forceSingleLineLyric =
-        prefs.getBool(_forceSingleLineLyricKey) ?? false; // 加载强制单行歌词设置
-    _showAlbumName = prefs.getBool(_showAlbumNameKey) ?? false; // 加载显示专辑名称设置
-    _enableOnlineLyrics = prefs.getBool(_enableOnlineLyricsKey) ?? false;
-    _enableLyricTranslation = prefs.getBool(_enableLyricTranslationKey) ?? true;
+        _readPreference<bool>(prefs, _forceSingleLineLyricKey) ??
+        false; // 加载强制单行歌词设置
+    _showAlbumName =
+        _readPreference<bool>(prefs, _showAlbumNameKey) ?? false; // 加载显示专辑名称设置
+    _enableOnlineLyrics =
+        _readPreference<bool>(prefs, _enableOnlineLyricsKey) ?? false;
+    _enableLyricTranslation =
+        _readPreference<bool>(prefs, _enableLyricTranslationKey) ?? true;
     _enableLyricSourceFallback =
-        prefs.getBool(_enableLyricSourceFallbackKey) ?? false;
+        _readPreference<bool>(prefs, _enableLyricSourceFallbackKey) ?? false;
     _lyricVerticalSpacing =
-        prefs.getDouble(_lyricVerticalSpacingKey) ?? 6.0; // 加载歌词垂直间距设置
-    _addLyricPadding = prefs.getBool(_addLyricPaddingKey) ?? true; // 加载歌词上下补位设置
-    _minimizeToTray = prefs.getBool(_minimizeToTrayKey) ?? false; // 加载最小化到托盘设置
+        _readDoublePreference(prefs, _lyricVerticalSpacingKey) ??
+        6.0; // 加载歌词垂直间距设置
+    _addLyricPadding =
+        _readPreference<bool>(prefs, _addLyricPaddingKey) ?? true; // 加载歌词上下补位设置
+    _minimizeToTray =
+        _readPreference<bool>(prefs, _minimizeToTrayKey) ?? false; // 加载最小化到托盘设置
     _enableLyricBlur = false;
     _lyricBlurStrength =
-        prefs.getDouble(_lyricBlurStrengthKey) ?? 2.5; // 加载歌词模糊强度设置
+        _readDoublePreference(prefs, _lyricBlurStrengthKey) ??
+        2.5; // 加载歌词模糊强度设置
     _playbackLyricGlowEnabled =
-        prefs.getBool(_playbackLyricGlowEnabledKey) ?? false;
+        _readPreference<bool>(prefs, _playbackLyricGlowEnabledKey) ?? false;
     _playbackLyricGlowRadius =
-        (prefs.getDouble(_playbackLyricGlowRadiusKey) ?? 8.0).clamp(2.0, 20.0);
+        (_readDoublePreference(prefs, _playbackLyricGlowRadiusKey) ?? 8.0)
+            .clamp(2.0, 20.0);
+    _playbackInitialView =
+        _readPreference<String>(prefs, _playbackInitialViewKey) ==
+            PlaybackInitialView.lyrics.name
+        ? PlaybackInitialView.lyrics
+        : PlaybackInitialView.cover;
     _primaryLyricSource =
-        prefs.getString(_primaryLyricSourceKey) ?? 'qq'; // 加载主要歌词源设置
+        _readPreference<String>(prefs, _primaryLyricSourceKey) ??
+        'qq'; // 加载主要歌词源设置
     _secondaryLyricSource =
-        prefs.getString(_secondaryLyricSourceKey) ?? 'netease'; // 加载备用歌词源设置
+        _readPreference<String>(prefs, _secondaryLyricSourceKey) ??
+        'netease'; // 加载备用歌词源设置
     _showTaskbarProgress =
-        prefs.getBool(_showTaskbarProgressKey) ?? false; // 加载任务栏进度显示设置
+        _readPreference<bool>(prefs, _showTaskbarProgressKey) ??
+        false; // 加载任务栏进度显示设置
     _enableDynamicBackground = false;
 
-    _audioDeviceIsAuto = prefs.getBool(_audioDeviceIsAutoKey) ?? true;
-    _audioDeviceName = prefs.getString(_audioDeviceNameKey);
-    _audioDeviceDesc = prefs.getString(_audioDeviceDescKey);
-    _ignorePlaybackErrors = prefs.getBool(_ignorePlaybackErrorsKey) ?? false;
-    _preferExternalLyrics = prefs.getBool(_preferExternalLyricsKey) ?? false;
+    _audioDeviceIsAuto =
+        _readPreference<bool>(prefs, _audioDeviceIsAutoKey) ?? true;
+    _audioDeviceName = _readPreference<String>(prefs, _audioDeviceNameKey);
+    _audioDeviceDesc = _readPreference<String>(prefs, _audioDeviceDescKey);
+    _ignorePlaybackErrors =
+        _readPreference<bool>(prefs, _ignorePlaybackErrorsKey) ?? false;
+    _preferExternalLyrics =
+        _readPreference<bool>(prefs, _preferExternalLyricsKey) ?? false;
     _autoAdjustLyricLayout = false;
     await prefs.remove(_enableLyricBlurKey);
     await prefs.remove(_enableDynamicBackgroundKey);
     await prefs.remove(_autoAdjustLyricLayoutKey);
     await prefs.remove('enableLyricElasticScroll');
-    _enableLoudness = prefs.getBool(_enableLoudnessKey) ?? false;
-    _enableReplayGain = prefs.getBool(_enableReplayGainKey) ?? false;
-    _enableGaplessPlayback = prefs.getBool(_enableGaplessPlaybackKey) ?? false;
-    _showAudioAnalysis = prefs.getBool(_showAudioAnalysisKey) ?? false;
-    _homeThemeImagePath = prefs.getString(_homeThemeImagePathKey);
-    _playbackThemeImagePath = prefs.getString(_playbackThemeImagePathKey);
-    _homeThemeImageEnabled = prefs.getBool(_homeThemeImageEnabledKey) ?? false;
+    _enableLoudness = _readPreference<bool>(prefs, _enableLoudnessKey) ?? false;
+    _enableReplayGain =
+        _readPreference<bool>(prefs, _enableReplayGainKey) ?? false;
+    _enableGaplessPlayback =
+        _readPreference<bool>(prefs, _enableGaplessPlaybackKey) ?? false;
+    _showAudioAnalysis =
+        _readPreference<bool>(prefs, _showAudioAnalysisKey) ?? false;
+    _homeThemeImagePath = _readPreference<String>(
+      prefs,
+      _homeThemeImagePathKey,
+    );
+    _playbackThemeImagePath = _readPreference<String>(
+      prefs,
+      _playbackThemeImagePathKey,
+    );
+    _homeThemeImageEnabled =
+        _readPreference<bool>(prefs, _homeThemeImageEnabledKey) ?? false;
     _playbackThemeImageEnabled =
-        prefs.getBool(_playbackThemeImageEnabledKey) ?? false;
-    final removedNotificationThemePath = prefs.getString(
+        _readPreference<bool>(prefs, _playbackThemeImageEnabledKey) ?? false;
+    if (_playbackThemeImageEnabled) {
+      final path = _playbackThemeImagePath;
+      _playbackThemeImageEnabled =
+          path != null && path.isNotEmpty && await File(path).exists();
+      if (!_playbackThemeImageEnabled) {
+        await prefs.setBool(_playbackThemeImageEnabledKey, false);
+      }
+    }
+    final removedNotificationThemePath = _readPreference<String>(
+      prefs,
       'notificationThemeImagePath',
     );
     if (removedNotificationThemePath != null &&
@@ -297,69 +361,84 @@ class SettingsProvider with ChangeNotifier {
     }
     await prefs.remove('notificationThemeImagePath');
     await prefs.remove('notificationThemeImageEnabled');
-    _homeThemeImageDim = (prefs.getDouble(_homeThemeImageDimKey) ?? 0.62).clamp(
-      0.2,
-      0.9,
-    );
+    _homeThemeImageDim =
+        (_readDoublePreference(prefs, _homeThemeImageDimKey) ?? 0.62).clamp(
+          0.2,
+          0.9,
+        );
     _playbackThemeImageDim =
-        (prefs.getDouble(_playbackThemeImageDimKey) ?? 0.68).clamp(0.2, 0.9);
-    _homeThemeImageBlur = (prefs.getDouble(_homeThemeImageBlurKey) ?? 22.0)
-        .clamp(0.0, 40.0);
+        (_readDoublePreference(prefs, _playbackThemeImageDimKey) ?? 0.68).clamp(
+          0.2,
+          0.9,
+        );
+    _homeThemeImageBlur =
+        (_readDoublePreference(prefs, _homeThemeImageBlurKey) ?? 22.0).clamp(
+          0.0,
+          40.0,
+        );
     _playbackThemeImageBlur =
-        (prefs.getDouble(_playbackThemeImageBlurKey) ?? 22.0).clamp(0.0, 40.0);
+        (_readDoublePreference(prefs, _playbackThemeImageBlurKey) ?? 22.0)
+            .clamp(0.0, 40.0);
     _homeAlbumArtBackgroundDim =
-        (prefs.getDouble(_homeAlbumArtBackgroundDimKey) ?? 0.52).clamp(
-          0.2,
-          0.9,
-        );
+        (_readDoublePreference(prefs, _homeAlbumArtBackgroundDimKey) ?? 0.52)
+            .clamp(0.2, 0.9);
     _playbackAlbumArtBackgroundDim =
-        (prefs.getDouble(_playbackAlbumArtBackgroundDimKey) ?? 0.52).clamp(
-          0.2,
-          0.9,
-        );
+        (_readDoublePreference(prefs, _playbackAlbumArtBackgroundDimKey) ??
+                0.52)
+            .clamp(0.2, 0.9);
     _homeAlbumArtBackgroundBlur =
-        (prefs.getDouble(_homeAlbumArtBackgroundBlurKey) ?? 40.0).clamp(
-          0.0,
-          40.0,
-        );
+        (_readDoublePreference(prefs, _homeAlbumArtBackgroundBlurKey) ?? 40.0)
+            .clamp(0.0, 40.0);
     _playbackAlbumArtBackgroundBlur =
-        (prefs.getDouble(_playbackAlbumArtBackgroundBlurKey) ?? 40.0).clamp(
-          0.0,
-          40.0,
-        );
-    _followAlbumArtOnHome = prefs.getBool(_followAlbumArtOnHomeKey) ?? false;
+        (_readDoublePreference(prefs, _playbackAlbumArtBackgroundBlurKey) ??
+                40.0)
+            .clamp(0.0, 40.0);
+    _followAlbumArtOnHome =
+        _readPreference<bool>(prefs, _followAlbumArtOnHomeKey) ?? false;
     _followAlbumArtOnPlayback =
-        prefs.getBool(_followAlbumArtOnPlaybackKey) ?? false;
-    _artistGroupGridView = prefs.getBool(_artistGroupGridViewKey) ?? false;
-    _albumGroupGridView = prefs.getBool(_albumGroupGridViewKey) ?? false;
+        _readPreference<bool>(prefs, _followAlbumArtOnPlaybackKey) ?? false;
+    _artistGroupGridView =
+        _readPreference<bool>(prefs, _artistGroupGridViewKey) ?? false;
+    _albumGroupGridView =
+        _readPreference<bool>(prefs, _albumGroupGridViewKey) ?? false;
     _artistGroupCoverPaths = _decodeStringMap(
-      prefs.getString(_artistGroupCoverPathsKey),
+      _readPreference<String>(prefs, _artistGroupCoverPathsKey),
     );
     _albumGroupCoverPaths = _decodeStringMap(
-      prefs.getString(_albumGroupCoverPathsKey),
+      _readPreference<String>(prefs, _albumGroupCoverPathsKey),
     );
-    _desktopLyricsEnabled = prefs.getBool(_desktopLyricsEnabledKey) ?? false;
-    _desktopLyricsLocked = prefs.getBool(_desktopLyricsLockedKey) ?? false;
-    _desktopLyricsColor = prefs.getInt(_desktopLyricsColorKey) ?? 0xFF00A9D6;
-    _desktopLyricsFontSize = prefs.getDouble(_desktopLyricsFontSizeKey) ?? 22.0;
+    _desktopLyricsEnabled =
+        _readPreference<bool>(prefs, _desktopLyricsEnabledKey) ?? false;
+    _desktopLyricsLocked =
+        _readPreference<bool>(prefs, _desktopLyricsLockedKey) ?? false;
+    _desktopLyricsColor =
+        _readPreference<int>(prefs, _desktopLyricsColorKey) ?? 0xFF00A9D6;
+    _desktopLyricsFontSize =
+        _readDoublePreference(prefs, _desktopLyricsFontSizeKey) ?? 22.0;
     if (_enableLoudness && _enableReplayGain) {
       _enableReplayGain = false;
       await prefs.setBool(_enableReplayGainKey, false);
     }
 
     // 加载隐藏页面设置
-    final hiddenPagesList = prefs.getStringList(_hiddenPagesKey);
+    final hiddenPagesList = _readPreference<List<String>>(
+      prefs,
+      _hiddenPagesKey,
+    );
     if (hiddenPagesList != null) {
       _hiddenPages = hiddenPagesList;
     }
 
     // 加载艺术家分隔符设置
-    final separatorsList = prefs.getStringList(_artistSeparatorsKey);
+    final separatorsList = _readPreference<List<String>>(
+      prefs,
+      _artistSeparatorsKey,
+    );
     if (separatorsList != null && separatorsList.isNotEmpty) {
       _artistSeparators = separatorsList;
     }
 
-    final alignmentString = prefs.getString(_lyricAlignmentKey);
+    final alignmentString = _readPreference<String>(prefs, _lyricAlignmentKey);
     _lyricAlignment = alignmentString != null
         ? TextAlign.values.firstWhere(
             (e) => e.toString() == alignmentString,
@@ -367,25 +446,26 @@ class SettingsProvider with ChangeNotifier {
           )
         : TextAlign.center;
 
-    _enableGlobalHotkeys = prefs.getBool(_enableGlobalHotkeysKey) ?? true;
+    _enableGlobalHotkeys =
+        _readPreference<bool>(prefs, _enableGlobalHotkeysKey) ?? true;
     _playPauseHotKey = _parseHotKey(
-      prefs.getString(_playPauseHotKeyKey),
+      _readPreference<String>(prefs, _playPauseHotKeyKey),
       'play_pause',
     );
     _nextTrackHotKey = _parseHotKey(
-      prefs.getString(_nextTrackHotKeyKey),
+      _readPreference<String>(prefs, _nextTrackHotKeyKey),
       'next_track',
     );
     _prevTrackHotKey = _parseHotKey(
-      prefs.getString(_prevTrackHotKeyKey),
+      _readPreference<String>(prefs, _prevTrackHotKeyKey),
       'prev_track',
     );
     _volumeUpHotKey = _parseHotKey(
-      prefs.getString(_volumeUpHotKeyKey),
+      _readPreference<String>(prefs, _volumeUpHotKeyKey),
       'volume_up',
     );
     _volumeDownHotKey = _parseHotKey(
-      prefs.getString(_volumeDownHotKeyKey),
+      _readPreference<String>(prefs, _volumeDownHotKeyKey),
       'volume_down',
     );
 
@@ -738,6 +818,14 @@ class SettingsProvider with ChangeNotifier {
       _playbackLyricGlowRadiusKey,
       _playbackLyricGlowRadius,
     );
+  }
+
+  Future<void> setPlaybackInitialView(PlaybackInitialView value) async {
+    if (_playbackInitialView == value) return;
+    _playbackInitialView = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_playbackInitialViewKey, value.name);
   }
 
   Future<void> setHomeAlbumArtBackgroundDim(double value) async {

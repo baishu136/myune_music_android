@@ -4,6 +4,7 @@ import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
 import android.provider.MediaStore
 import android.provider.Settings
 import io.flutter.embedding.engine.FlutterEngine
@@ -16,6 +17,7 @@ import java.util.concurrent.Executors
 class MainActivity : FlutterActivity() {
     private val channelName = "com.myune.music/desktop_lyrics"
     private val coverEditorChannelName = "com.myune.music/cover_editor"
+    private val faultLogChannelName = "com.myune.music/fault_log"
     private lateinit var channel: MethodChannel
     private val coverEditorExecutor = Executors.newSingleThreadExecutor()
     @Volatile private var destroyed = false
@@ -26,8 +28,31 @@ class MainActivity : FlutterActivity() {
         getSharedPreferences("desktop_lyrics_permission", MODE_PRIVATE)
     }
 
+    override fun onCreate(savedInstanceState: Bundle?) {
+        FaultLogWriter.breadcrumb(this, "BOOT_08 MainActivity.onCreate")
+        super.onCreate(savedInstanceState)
+    }
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            faultLogChannelName,
+        ).setMethodCallHandler { call, result ->
+            when (call.method) {
+                "initialize" -> result.success(
+                    FaultLogWriter.resolveDirectory(applicationContext).absolutePath,
+                )
+                "breadcrumb" -> {
+                    FaultLogWriter.breadcrumb(
+                        applicationContext,
+                        call.argument<String>("marker") ?: "BOOT unknown",
+                    )
+                    result.success(null)
+                }
+                else -> result.notImplemented()
+            }
+        }
         channel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channelName)
         DesktopLyricsService.setEventSink { type, payload ->
             channel.invokeMethod("event", mapOf("type" to type) + payload)

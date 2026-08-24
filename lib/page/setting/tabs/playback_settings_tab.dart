@@ -18,6 +18,33 @@ class PlaybackSettingsTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('playback_settings'),
       children: [
+        const ListTile(
+          leading: Icon(Icons.slideshow_outlined),
+          title: Text('进入播放页时展示'),
+          subtitle: Text('退出播放页后重置；播放页内切歌保持当前封面或歌词页'),
+        ),
+        Padding(
+          padding: const EdgeInsets.fromLTRB(56, 0, 16, 12),
+          child: SegmentedButton<PlaybackInitialView>(
+            expandedInsets: EdgeInsets.zero,
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(
+                value: PlaybackInitialView.cover,
+                label: Text('封面'),
+                icon: Icon(Icons.album_outlined),
+              ),
+              ButtonSegment(
+                value: PlaybackInitialView.lyrics,
+                label: Text('歌词'),
+                icon: Icon(Icons.lyrics_outlined),
+              ),
+            ],
+            selected: {settings.playbackInitialView},
+            onSelectionChanged: (selection) =>
+                settings.setPlaybackInitialView(selection.first),
+          ),
+        ),
         if (Platform.isAndroid)
           SwitchListTile(
             title: const Row(

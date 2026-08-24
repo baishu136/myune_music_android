@@ -28,9 +28,19 @@ import 'layout/navigation_notifier.dart';
 import 'services/notification_service.dart';
 import 'services/desktop_lyrics_controller.dart';
 import 'services/cover_override_service.dart';
+import 'services/fault_log_service.dart';
+import 'services/frame_performance_monitor.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  FaultLogService.instance.installFlutterHandlers();
+  await FaultLogService.instance.initialize();
+  unawaited(
+    FaultLogService.instance.markStartup(
+      'BOOT_05 Flutter configuration initialized',
+    ),
+  );
+  FramePerformanceMonitor.start();
 
   if (Platform.isAndroid) {
     await SystemChrome.setPreferredOrientations(const [
@@ -136,6 +146,11 @@ void main() async {
 
   final themeProvider = ThemeProvider();
   await themeProvider.initialize();
+  unawaited(
+    FaultLogService.instance.markStartup(
+      'BOOT_06 persistent configuration initialized',
+    ),
+  );
 
   final statsManager = StatisticsManager();
   await statsManager.init();
@@ -143,10 +158,16 @@ void main() async {
   final coverOverrideService = CoverOverrideService();
   await coverOverrideService.initializationFuture;
 
+  // The home shell reads these values during its very first build. Restore
+  // them before runApp so a persisted custom background is not replaced by a
+  // blank default surface while SharedPreferences is still loading.
+  final settingsProvider = SettingsProvider();
+  await settingsProvider.initializationFuture;
+
   runApp(
     MultiProvider(
       providers: [
-        ChangeNotifierProvider(create: (_) => SettingsProvider()),
+        ChangeNotifierProvider.value(value: settingsProvider),
         ChangeNotifierProvider(create: (_) => NotificationService()),
         ChangeNotifierProvider.value(value: coverOverrideService),
         ChangeNotifierProvider.value(value: themeProvider),
@@ -183,9 +204,13 @@ void main() async {
     ),
   );
 
-  FlutterError.onError = (FlutterErrorDetails details) {
-    FlutterError.dumpErrorToConsole(details);
-  };
+  WidgetsBinding.instance.addPostFrameCallback((_) {
+    unawaited(
+      FaultLogService.instance.markStartup(
+        'BOOT_09 first frame',
+      ),
+    );
+  });
 
   if (isDesktop) {
     final systemFonts = SystemFonts();
@@ -208,6 +233,7 @@ class _MyAppState extends State<MyApp> with TrayListener {
   StreamSubscription<bool>? _taskbarCompletedSubscription;
   bool _taskbarReady = false;
   bool _listenersBound = false;
+  bool _startupProvidersMarked = false;
 
   @override
   void initState() {
@@ -253,6 +279,14 @@ class _MyAppState extends State<MyApp> with TrayListener {
 
     _settingsProvider?.addListener(_onSettingsChanged);
     _listenersBound = true;
+    if (!_startupProvidersMarked) {
+      _startupProvidersMarked = true;
+      unawaited(
+        FaultLogService.instance.markStartup(
+          'BOOT_07 providers and player initialized',
+        ),
+      );
+    }
   }
 
   void _onSettingsChanged() {

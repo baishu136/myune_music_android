@@ -176,6 +176,27 @@ void main() {
     expect(settings.playbackLyricGlowRadius, 8);
   });
 
+  test('legacy integer sliders do not interrupt background restoration', () async {
+    SharedPreferences.setMockInitialValues({
+      'fontSize': 20,
+      'lyricVerticalSpacing': 6,
+      'homeThemeImagePath': '/persisted/home-background.jpg',
+      'homeThemeImageEnabled': true,
+      'homeThemeImageDim': 1,
+      'homeThemeImageBlur': 18,
+    });
+
+    final settings = SettingsProvider();
+    await settings.initializationFuture;
+
+    expect(settings.fontSize, 20);
+    expect(settings.lyricVerticalSpacing, 6);
+    expect(settings.homeThemeImagePath, '/persisted/home-background.jpg');
+    expect(settings.homeThemeImageEnabled, isTrue);
+    expect(settings.homeThemeImageDim, 0.9);
+    expect(settings.homeThemeImageBlur, 18);
+  });
+
   test(
     'persisted background controls are clamped to supported ranges',
     () async {

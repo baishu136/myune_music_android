@@ -66,6 +66,14 @@ class CustomThemeBackground extends StatelessWidget {
               MediaQuery.platformBrightnessOf(context) == Brightness.dark,
             null => Theme.of(context).brightness == Brightness.dark,
           };
+    final effectiveBlur = backgroundGaussianSigma(
+      showCover ? coverBlurSigma : blurSigma,
+    );
+    final viewportWidth = MediaQuery.sizeOf(context).width;
+    final devicePixelRatio = MediaQuery.devicePixelRatioOf(context);
+    final customImageCacheWidth = effectiveBlur > 0
+        ? 512
+        : (viewportWidth * devicePixelRatio).round().clamp(720, 2048);
     Widget image = showCover
         ? ArtworkImage(
             bytes: coverBytes!,
@@ -79,14 +87,12 @@ class CustomThemeBackground extends StatelessWidget {
             File(path!),
             key: ValueKey('custom-theme-background-$path'),
             fit: BoxFit.cover,
+            cacheWidth: customImageCacheWidth,
             filterQuality: FilterQuality.medium,
             gaplessPlayback: true,
             errorBuilder: (_, __, ___) =>
                 const ColoredBox(color: Colors.transparent),
           );
-    final effectiveBlur = backgroundGaussianSigma(
-      showCover ? coverBlurSigma : blurSigma,
-    );
     if (effectiveBlur > 0) {
       image = ClipRect(
         child: Transform.scale(

@@ -1,10 +1,12 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show ValueListenable;
-import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
+import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
+import 'package:flutter/rendering.dart' show ScrollCacheExtent;
+import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../page/playlist/playlist_models.dart';
+import 'lyric_scroll_motion.dart';
 
 class MobileLyricsListController {
   Object? _owner;
@@ -92,28 +94,51 @@ class MobileLyricsList extends StatefulWidget {
   State<MobileLyricsList> createState() => _MobileLyricsListState();
 }
 
-class _MobileLyricsListState extends State<MobileLyricsList> {
-  final ItemScrollController _scrollController = ItemScrollController();
-  final ItemPositionsListener _itemPositionsListener =
-      ItemPositionsListener.create();
-  double _viewportHeight = 0;
-  int _centerRequestId = 0;
-  int _resizeRequestId = 0;
+class _MobileLyricsListState extends State<MobileLyricsList>
+    with SingleTickerProviderStateMixin {
+  static const _focusAnchor = .42;
+  static const _predictionWindow = Duration(milliseconds: 160);
+
+  ScrollController? _scrollControllerState;
+  final LyricScrollMotion _motion = LyricScrollMotion();
+  final ValueNotifier<_LyricDebugSnapshot> _debugSnapshot = ValueNotifier(
+    const _LyricDebugSnapshot(),
+  );
+  late final Ticker _motionTicker;
+  Duration? _lastTick;
+  Duration _lastDebugUpdate = Duration.zero;
   Timer? _resumeFollowTimer;
   Timer? _browseGuideTimer;
   Timer? _seekTargetTimer;
   bool _isManuallyBrowsing = false;
+  bool _hasInitialPosition = false;
+  bool _layoutInvalid = true;
+  bool _debugOverlayEnabled = false;
+  int _layoutRequestId = 0;
+  int _recompositionCount = 0;
   int? _browseTargetIndex;
   int? _seekTargetIndex;
+  double _viewportHeight = 0;
+  double _layoutWidth = 0;
+  double _topPadding = 0;
+  double _bottomPadding = 0;
+  List<double> _itemHeights = const [];
+  List<double> _itemOffsets = const [];
+  List<LyricLine>? _layoutLines;
+  double _layoutFontSize = -1;
+  String? _layoutFontFamily;
+  TextDirection? _layoutDirection;
+  double _layoutTextScale = -1;
+  ValueListenable<Duration>? _positionSource;
+
+  ScrollController get _scrollController => _scrollControllerState!;
 
   @override
   void initState() {
     super.initState();
+    _motionTicker = createTicker(_onMotionTick);
     widget.controller?._attach(this, _recenterActive, _settleOnTimestamp);
-    _itemPositionsListener.itemPositions.addListener(
-      _updateBrowseTargetFromVisibleItems,
-    );
-    _scrollToActive(jump: true);
+    _attachPositionSource(widget.positionListenable);
   }
 
   @override
@@ -123,58 +148,138 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
       oldWidget.controller?._detach(this);
       widget.controller?._attach(this, _recenterActive, _settleOnTimestamp);
     }
+    if (oldWidget.positionListenable != widget.positionListenable) {
+      _attachPositionSource(widget.positionListenable);
+    }
+
     final linesChanged = oldWidget.lines != widget.lines;
-    final fontSizeChanged =
-        (oldWidget.fontSize - widget.fontSize).abs() >= 0.01;
-    if (linesChanged) {
+    final fontChanged =
+        (oldWidget.fontSize - widget.fontSize).abs() >= .01 ||
+        oldWidget.fontFamily != widget.fontFamily;
+    if (linesChanged || fontChanged) {
+      _layoutInvalid = true;
       _clearSeekTarget();
       _resumeAutomaticFollow(notifyBrowseTarget: false);
+      if (oldWidget.lines.isEmpty) _hasInitialPosition = false;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) widget.onBrowseTargetChanged?.call(null);
       });
-      // When an online fallback source returns the first lyric batch, the
-      // list is created below with its active line already centered. A second
-      // post-frame jump would be visible during the cover -> lyric animation.
-      if (oldWidget.lines.isNotEmpty && widget.lines.isNotEmpty) {
-        _scrollToActive(jump: true, force: true);
-      }
-    } else if (fontSizeChanged) {
-      _scrollToActive(jump: true, force: true);
-      if (fontSizeChanged) _keepActiveCenteredDuringResize();
-    } else if (oldWidget.active != widget.active) {
-      final seekTarget = _seekTargetIndex;
-      if (seekTarget != null) {
-        if (widget.active == seekTarget) _clearSeekTarget();
-        return;
-      }
-      _scrollToActive(jump: false);
+      _scheduleLayoutRetarget(jump: oldWidget.lines.isEmpty);
+      return;
     }
+
+    if (oldWidget.active == widget.active) return;
+    final seekTarget = _seekTargetIndex;
+    if (seekTarget != null) {
+      if (widget.active == seekTarget) _clearSeekTarget();
+      return;
+    }
+    _retargetIndex(widget.active);
   }
 
-  void _scrollToActive({required bool jump, bool force = false}) {
-    _scrollToIndex(widget.active, jump: jump, force: force);
+  void _attachPositionSource(ValueListenable<Duration>? source) {
+    _positionSource?.removeListener(_handlePositionTick);
+    _positionSource = source;
+    source?.addListener(_handlePositionTick);
   }
 
-  void _scrollToIndex(int index, {required bool jump, bool force = false}) {
-    if (_isManuallyBrowsing && !force) return;
-    if (index < 0 || index >= widget.lines.length) return;
-    final requestId = ++_centerRequestId;
+  void _handlePositionTick() {
+    if (_isManuallyBrowsing || _seekTargetIndex != null) return;
+    final active = widget.active;
+    if (active < 0 || active + 1 >= widget.lines.length) return;
+    final source = _positionSource;
+    if (source == null || _itemOffsets.length != widget.lines.length) return;
+
+    final remaining =
+        widget.lines[active + 1].timestamp.inMicroseconds -
+        source.value.inMicroseconds;
+    final window = _predictionWindow.inMicroseconds;
+    if (remaining <= 0 || remaining > window) return;
+    final progress = 1 - remaining / window;
+    final preview = Curves.easeIn.transform(progress.clamp(0.0, 1.0)) * .18;
+    final target = _itemOffsets[active] +
+        (_itemOffsets[active + 1] - _itemOffsets[active]) * preview;
+    _retargetOffset(target);
+  }
+
+  void _onMotionTick(Duration elapsed) {
+    if (!_scrollController.hasClients) {
+      _stopMotion();
+      return;
+    }
+    final previousTick = _lastTick;
+    _lastTick = elapsed;
+    if (previousTick == null) return;
+    final frameSeconds =
+        (elapsed - previousTick).inMicroseconds / Duration.microsecondsPerSecond;
+    final maxOffset = _scrollController.position.maxScrollExtent;
+    _motion.retarget(
+      _motion.target.clamp(0.0, maxOffset),
+      viewportExtent: _viewportHeight,
+    );
+    final nextOffset = _motion.advance(frameSeconds).clamp(0.0, maxOffset);
+    if ((_scrollController.offset - nextOffset).abs() >= .05) {
+      _scrollController.jumpTo(nextOffset);
+    }
+    _updateDebugSnapshot(elapsed, frameSeconds);
+    if (_motion.isSettled) _stopMotion();
+  }
+
+  void _startMotion() {
+    if (_motionTicker.isActive) return;
+    _lastTick = null;
+    _motionTicker.start();
+  }
+
+  void _stopMotion() {
+    if (_motionTicker.isActive) _motionTicker.stop();
+    _lastTick = null;
+  }
+
+  void _retargetIndex(int index, {bool force = false}) {
+    if ((_isManuallyBrowsing && !force) ||
+        index < 0 ||
+        index >= _itemOffsets.length) {
+      return;
+    }
+    _retargetOffset(_itemOffsets[index]);
+  }
+
+  void _retargetOffset(double target) {
+    if (!_scrollController.hasClients) {
+      _scheduleLayoutRetarget();
+      return;
+    }
+    _motion.offset = _scrollController.offset;
+    _motion.retarget(target, viewportExtent: _viewportHeight);
+    _startMotion();
+  }
+
+  void _jumpToIndex(int index) {
+    if (!_scrollController.hasClients ||
+        index < 0 ||
+        index >= _itemOffsets.length) {
+      return;
+    }
+    final target = _itemOffsets[index].clamp(
+      0.0,
+      _scrollController.position.maxScrollExtent,
+    );
+    _stopMotion();
+    _scrollController.jumpTo(target);
+    _motion.sync(target, viewportExtent: _viewportHeight);
+    _hasInitialPosition = true;
+  }
+
+  void _scheduleLayoutRetarget({bool jump = false}) {
+    final requestId = ++_layoutRequestId;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted ||
-          requestId != _centerRequestId ||
-          !_scrollController.isAttached) {
-        return;
-      }
-      final alignment = _alignmentFor(index);
-      if (jump) {
-        _scrollController.jumpTo(index: index, alignment: alignment);
+      if (!mounted || requestId != _layoutRequestId) return;
+      if (!_scrollController.hasClients || _itemOffsets.isEmpty) return;
+      if (jump || !_hasInitialPosition) {
+        _jumpToIndex(widget.active.clamp(0, _itemOffsets.length - 1));
       } else {
-        _scrollController.scrollTo(
-          index: index,
-          alignment: alignment,
-          duration: const Duration(milliseconds: 320),
-          curve: Curves.easeInOutCubic,
-        );
+        _retargetIndex(widget.active, force: true);
       }
     });
   }
@@ -183,23 +288,27 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
     if (!mounted) return;
     _clearSeekTarget();
     _isManuallyBrowsing = true;
-    _centerRequestId++;
+    _stopMotion();
+    _motion.sync(
+      _scrollController.hasClients ? _scrollController.offset : 0,
+      viewportExtent: _viewportHeight,
+    );
     _resumeFollowTimer?.cancel();
     _resumeFollowTimer = null;
     _browseGuideTimer?.cancel();
     _browseGuideTimer = null;
-    _updateBrowseTargetFromVisibleItems(force: true);
+    _updateBrowseTargetFromOffset(force: true);
   }
 
   void _scheduleResumeFollowTimer() {
     if (!mounted || !_isManuallyBrowsing) return;
     _scheduleBrowseGuideHideTimer();
     _resumeFollowTimer?.cancel();
-    _resumeFollowTimer = Timer(const Duration(seconds: 6), () {
+    _resumeFollowTimer = Timer(const Duration(seconds: 4), () {
       if (!mounted) return;
       _resumeFollowTimer = null;
       _resumeAutomaticFollow();
-      _scrollToActive(jump: false, force: true);
+      _retargetIndex(widget.active, force: true);
     });
   }
 
@@ -223,32 +332,37 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
     if (notifyBrowseTarget) widget.onBrowseTargetChanged?.call(null);
   }
 
-  void _updateBrowseTargetFromVisibleItems({bool force = false}) {
-    if (!_isManuallyBrowsing || widget.lines.isEmpty) return;
-    final positions = _itemPositionsListener.itemPositions.value;
-    if (positions.isEmpty) return;
-
-    const viewportCenter = .5;
-    ItemPosition? target;
-    var nearestDistance = double.infinity;
-    for (final position in positions) {
-      if (position.index < 0 || position.index >= widget.lines.length) continue;
-      if (position.itemLeadingEdge <= viewportCenter &&
-          position.itemTrailingEdge >= viewportCenter) {
-        target = position;
-        break;
-      }
-      final itemCenter =
-          (position.itemLeadingEdge + position.itemTrailingEdge) / 2;
-      final distance = (itemCenter - viewportCenter).abs();
-      if (distance < nearestDistance) {
-        nearestDistance = distance;
-        target = position;
+  void _updateBrowseTargetFromOffset({bool force = false}) {
+    if (!_isManuallyBrowsing ||
+        widget.lines.isEmpty ||
+        !_scrollController.hasClients ||
+        _itemOffsets.isEmpty) {
+      return;
+    }
+    final contentCenter = _scrollController.offset + _viewportHeight * .5;
+    var low = 0;
+    var high = _itemOffsets.length - 1;
+    while (low < high) {
+      final mid = (low + high) >> 1;
+      final itemCenter = _itemOffsets[mid] + _viewportHeight * _focusAnchor;
+      if (itemCenter < contentCenter) {
+        low = mid + 1;
+      } else {
+        high = mid;
       }
     }
-
-    final index = target?.index;
-    if (index == null || (!force && index == _browseTargetIndex)) return;
+    var index = low;
+    if (index > 0) {
+      final currentCenter =
+          _itemOffsets[index] + _viewportHeight * _focusAnchor;
+      final previousCenter =
+          _itemOffsets[index - 1] + _viewportHeight * _focusAnchor;
+      if ((contentCenter - previousCenter).abs() <
+          (contentCenter - currentCenter).abs()) {
+        index--;
+      }
+    }
+    if (!force && index == _browseTargetIndex) return;
     _browseTargetIndex = index;
     widget.onBrowseTargetChanged?.call(widget.lines[index].timestamp);
   }
@@ -256,7 +370,7 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
   void _recenterActive() {
     _clearSeekTarget();
     _resumeAutomaticFollow();
-    _scrollToActive(jump: true, force: true);
+    _scheduleLayoutRetarget(jump: true);
   }
 
   void _settleOnTimestamp(Duration timestamp) {
@@ -278,11 +392,11 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
 
     _seekTargetTimer?.cancel();
     _seekTargetIndex = targetIndex;
-    _scrollToIndex(targetIndex, jump: false, force: true);
+    _retargetIndex(targetIndex, force: true);
     _seekTargetTimer = Timer(const Duration(seconds: 2), () {
       if (!mounted || _seekTargetIndex != targetIndex) return;
       _clearSeekTarget();
-      _scrollToActive(jump: false, force: true);
+      _retargetIndex(widget.active, force: true);
     });
   }
 
@@ -296,49 +410,127 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
     if (notification is ScrollStartNotification &&
         notification.dragDetails != null) {
       _startManualInteraction();
+    } else if (notification is ScrollUpdateNotification &&
+        _isManuallyBrowsing) {
+      _motion.sync(
+        notification.metrics.pixels,
+        viewportExtent: _viewportHeight,
+      );
+      _updateBrowseTargetFromOffset();
     } else if (notification is ScrollEndNotification && _isManuallyBrowsing) {
       _scheduleResumeFollowTimer();
     }
     return false;
   }
 
-  void _keepActiveCenteredDuringResize() {
-    final resizeRequestId = ++_resizeRequestId;
-    for (final delay in const [80, 160, 240]) {
-      Future<void>.delayed(Duration(milliseconds: delay), () {
-        if (!mounted || resizeRequestId != _resizeRequestId) return;
-        _scrollToActive(jump: true, force: true);
-      });
-    }
-  }
+  bool _ensureLayoutMetrics(BuildContext context, BoxConstraints constraints) {
+    final width = constraints.maxWidth;
+    final viewport = constraints.maxHeight;
+    final direction = Directionality.of(context);
+    final textScale = MediaQuery.textScalerOf(context).scale(1);
+    final unchanged =
+        !_layoutInvalid &&
+        identical(_layoutLines, widget.lines) &&
+        (_layoutWidth - width).abs() < .5 &&
+        (_viewportHeight - viewport).abs() < .5 &&
+        (_layoutFontSize - widget.fontSize).abs() < .01 &&
+        _layoutFontFamily == widget.fontFamily &&
+        _layoutDirection == direction &&
+        (_layoutTextScale - textScale).abs() < .001;
+    if (unchanged) return false;
 
-  double get _activeAlignment {
-    return _alignmentFor(widget.active);
-  }
+    _layoutInvalid = false;
+    _layoutLines = widget.lines;
+    _layoutWidth = width;
+    _viewportHeight = viewport;
+    _layoutFontSize = widget.fontSize;
+    _layoutFontFamily = widget.fontFamily;
+    _layoutDirection = direction;
+    _layoutTextScale = textScale;
 
-  double _alignmentFor(int index) {
-    if (_viewportHeight <= 0 || index < 0 || index >= widget.lines.length) {
-      return 0.45;
-    }
-    final lineCount = widget.lines[index].texts.fold<int>(
-      0,
-      (count, text) => count + '\n'.allMatches(text).length + 1,
+    final availableWidth = (width - 48).clamp(1.0, double.infinity);
+    final textStyle = DefaultTextStyle.of(context).style.copyWith(
+      fontFamily: widget.fontFamily,
+      fontSize: widget.fontSize,
+      fontWeight: FontWeight.w700,
+      height: 1.2,
     );
-    final estimatedHeight = widget.fontSize * 1.2 * lineCount + 10;
-    return (0.5 - estimatedHeight / (_viewportHeight * 2)).clamp(0.08, 0.48);
+    final scaler = MediaQuery.textScalerOf(context);
+    final heights = List<double>.filled(widget.lines.length, 0);
+    final offsets = List<double>.filled(widget.lines.length, 0);
+    var runningOffset = 0.0;
+    for (var index = 0; index < widget.lines.length; index++) {
+      final painter = TextPainter(
+        text: TextSpan(
+          text: widget.lines[index].texts.join('\n'),
+          style: textStyle,
+        ),
+        textAlign: TextAlign.center,
+        textDirection: direction,
+        textScaler: scaler,
+      )..layout(maxWidth: availableWidth);
+      final height = (painter.height + 10).clamp(
+        widget.fontSize * 1.2 + 10,
+        double.infinity,
+      );
+      heights[index] = height;
+      offsets[index] = runningOffset;
+      runningOffset += height;
+    }
+    _itemHeights = heights;
+    _topPadding = widget.lines.isEmpty
+        ? 0
+        : (viewport * _focusAnchor - heights.first / 2).clamp(
+            0.0,
+            double.infinity,
+          );
+    _bottomPadding = widget.lines.isEmpty
+        ? 0
+        : (viewport * (1 - _focusAnchor) - heights.last / 2).clamp(
+            0.0,
+            double.infinity,
+          );
+    _itemOffsets = List<double>.generate(
+      offsets.length,
+      (index) =>
+          _topPadding +
+          offsets[index] +
+          heights[index] / 2 -
+          viewport * _focusAnchor,
+      growable: false,
+    );
+    _scheduleLayoutRetarget(jump: !_hasInitialPosition);
+    return true;
+  }
+
+  void _updateDebugSnapshot(Duration elapsed, double frameSeconds) {
+    if (!_debugOverlayEnabled || elapsed - _lastDebugUpdate < const Duration(milliseconds: 160)) {
+      return;
+    }
+    _lastDebugUpdate = elapsed;
+    _debugSnapshot.value = _LyricDebugSnapshot(
+      currentIndex: widget.active,
+      targetOffset: _motion.target,
+      currentOffset: _motion.offset,
+      velocity: _motion.velocity,
+      userScrolling: _isManuallyBrowsing,
+      fps: frameSeconds <= 0 ? 0 : 1 / frameSeconds,
+      frameTimeMs: frameSeconds * 1000,
+      recompositionCount: _recompositionCount,
+    );
   }
 
   @override
   void dispose() {
     widget.controller?._detach(this);
-    _itemPositionsListener.itemPositions.removeListener(
-      _updateBrowseTargetFromVisibleItems,
-    );
+    _positionSource?.removeListener(_handlePositionTick);
+    _motionTicker.dispose();
+    _scrollControllerState?.dispose();
+    _debugSnapshot.dispose();
     _resumeFollowTimer?.cancel();
     _browseGuideTimer?.cancel();
     _seekTargetTimer?.cancel();
-    _centerRequestId++;
-    _resizeRequestId++;
+    _layoutRequestId++;
     super.dispose();
   }
 
@@ -347,86 +539,49 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
       ? const Center(child: Text('暂无歌词'))
       : LayoutBuilder(
           builder: (context, constraints) {
-            final hadViewport = _viewportHeight > 0;
-            final viewportChanged =
-                (_viewportHeight - constraints.maxHeight).abs() >= 0.5;
-            _viewportHeight = constraints.maxHeight;
-            if (hadViewport && viewportChanged) {
-              _scrollToActive(jump: true);
+            _ensureLayoutMetrics(context, constraints);
+            if (_scrollControllerState == null) {
+              final initialIndex = widget.active.clamp(
+                0,
+                _itemOffsets.length - 1,
+              );
+              final initialOffset = _itemOffsets[initialIndex];
+              _scrollControllerState = ScrollController(
+                initialScrollOffset: initialOffset,
+              );
+              _motion.sync(initialOffset, viewportExtent: _viewportHeight);
+              _hasInitialPosition = true;
             }
-            final edgePadding = (_viewportHeight / 2 - widget.fontSize).clamp(
-              0.0,
-              double.infinity,
-            );
-            final hasActiveLine =
-                widget.active >= 0 && widget.active < widget.lines.length;
             Widget lyrics = NotificationListener<ScrollNotification>(
               onNotification: _onScrollNotification,
-              child: ScrollablePositionedList.builder(
-                itemScrollController: _scrollController,
-                itemPositionsListener: _itemPositionsListener,
-                initialScrollIndex: hasActiveLine ? widget.active : 0,
-                // Index zero is already centered by the symmetric edge
-                // padding. Applying an additional alignment there can keep
-                // the following line outside the lazily built viewport.
-                initialAlignment: hasActiveLine && widget.active > 0
-                    ? _activeAlignment
-                    : 0,
-                padding: EdgeInsets.symmetric(vertical: edgePadding),
+              child: ListView.builder(
+                key: const ValueKey('mobile_lyrics_scroll_view'),
+                controller: _scrollController,
+                padding: EdgeInsets.only(
+                  top: _topPadding,
+                  bottom: _bottomPadding,
+                ),
+                scrollCacheExtent: const ScrollCacheExtent.viewport(1),
                 itemCount: widget.lines.length,
+                itemExtentBuilder: (index, dimensions) => _itemHeights[index],
                 itemBuilder: (itemContext, index) {
-                  final isActive = index == widget.active;
-                  final style = DefaultTextStyle.of(itemContext).style.copyWith(
-                    fontFamily: widget.fontFamily,
-                    fontSize: isActive
-                        ? widget.fontSize
-                        : (widget.fontSize * 0.84).clamp(12.0, 32.0),
-                    fontWeight: isActive ? FontWeight.w700 : FontWeight.w400,
-                    color: isActive
-                        ? Theme.of(itemContext).colorScheme.primary
-                        : _unplayedColor(itemContext),
-                    shadows: widget.glowEnabled
-                        ? [
-                            Shadow(
-                              color: _glowColor(itemContext),
-                              blurRadius: widget.glowRadius,
-                            ),
-                          ]
-                        : null,
-                  );
-                  final unplayedColor = _unplayedColor(itemContext);
-                  final lyric = isActive
-                      ? widget.positionListenable == null
-                            ? _KaraokeLyricText(
-                                line: widget.lines[index],
-                                position: widget.position,
-                                playedColor: style.color!,
-                                unplayedColor: unplayedColor,
-                              )
-                            : ValueListenableBuilder<Duration>(
-                                valueListenable: widget.positionListenable!,
-                                builder: (context, position, _) =>
-                                    _KaraokeLyricText(
-                                      line: widget.lines[index],
-                                      position: position,
-                                      playedColor: style.color!,
-                                      unplayedColor: unplayedColor,
-                                    ),
-                              )
-                      : Text(widget.lines[index].texts.join('\n'));
-                  return Padding(
+                  _recompositionCount++;
+                  final distance = (index - widget.active).abs();
+                  return _LyricLineItem(
                     key: ValueKey('mobile_lyric_$index'),
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 24,
-                      vertical: 5,
-                    ),
-                    child: AnimatedDefaultTextStyle(
-                      duration: const Duration(milliseconds: 160),
-                      curve: Curves.easeOutCubic,
-                      style: style,
-                      textAlign: TextAlign.center,
-                      child: lyric,
-                    ),
+                    line: widget.lines[index],
+                    active: index == widget.active,
+                    distance: distance,
+                    height: _itemHeights[index],
+                    fontSize: widget.fontSize,
+                    fontFamily: widget.fontFamily,
+                    glowEnabled: widget.glowEnabled,
+                    glowRadius: widget.glowRadius,
+                    brightForeground: widget.brightForeground,
+                    position: widget.position,
+                    positionListenable: index == widget.active
+                        ? widget.positionListenable
+                        : null,
                   );
                 },
               ),
@@ -449,22 +604,210 @@ class _MobileLyricsListState extends State<MobileLyricsList> {
                 child: lyrics,
               );
             }
-            return lyrics;
+            return Stack(
+              fit: StackFit.expand,
+              children: [
+                lyrics,
+                if (kDebugMode)
+                  Positioned(
+                    top: 4,
+                    right: 4,
+                    child: IconButton.filledTonal(
+                      visualDensity: VisualDensity.compact,
+                      tooltip: '歌词滚动调试信息',
+                      icon: Icon(
+                        _debugOverlayEnabled
+                            ? Icons.bug_report
+                            : Icons.bug_report_outlined,
+                        size: 18,
+                      ),
+                      onPressed: () => setState(() {
+                        _debugOverlayEnabled = !_debugOverlayEnabled;
+                      }),
+                    ),
+                  ),
+                if (kDebugMode && _debugOverlayEnabled)
+                  Positioned(
+                    left: 8,
+                    top: 8,
+                    child: IgnorePointer(
+                      child: ValueListenableBuilder<_LyricDebugSnapshot>(
+                        valueListenable: _debugSnapshot,
+                        builder: (context, snapshot, _) => _LyricDebugPanel(
+                          snapshot: snapshot,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            );
           },
         );
 
-  Color _unplayedColor(BuildContext context) =>
-      widget.brightForeground || Theme.of(context).brightness == Brightness.dark
-      ? Colors.white.withValues(alpha: .50)
-      : const Color(0xFF757575).withValues(alpha: .80);
-
-  Color _glowColor(BuildContext context) =>
-      widget.brightForeground || Theme.of(context).brightness == Brightness.dark
-      ? Colors.white.withValues(alpha: .30)
-      : const Color(0xFFBDBDBD).withValues(alpha: .30);
 }
 
-class _KaraokeLyricText extends StatelessWidget {
+class _LyricLineItem extends StatelessWidget {
+  const _LyricLineItem({
+    super.key,
+    required this.line,
+    required this.active,
+    required this.distance,
+    required this.height,
+    required this.fontSize,
+    required this.fontFamily,
+    required this.glowEnabled,
+    required this.glowRadius,
+    required this.brightForeground,
+    required this.position,
+    required this.positionListenable,
+  });
+
+  final LyricLine line;
+  final bool active;
+  final int distance;
+  final double height;
+  final double fontSize;
+  final String? fontFamily;
+  final bool glowEnabled;
+  final double glowRadius;
+  final bool brightForeground;
+  final Duration position;
+  final ValueListenable<Duration>? positionListenable;
+
+  double get _opacity => switch (distance) {
+    0 => 1,
+    1 => .72,
+    2 => .58,
+    3 => .46,
+    _ => .36,
+  };
+
+  double get _scale => switch (distance) {
+    0 => 1,
+    1 => .975,
+    _ => .95,
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final darkForeground =
+        brightForeground || Theme.of(context).brightness == Brightness.dark;
+    final inactiveBase = darkForeground ? Colors.white : const Color(0xFF757575);
+    final inactiveColor = inactiveBase.withValues(alpha: _opacity);
+    final karaokeUnplayedColor = darkForeground
+        ? Colors.white.withValues(alpha: .50)
+        : const Color(0xFF757575).withValues(alpha: .80);
+    final glowColor = darkForeground
+        ? Colors.white.withValues(alpha: .30)
+        : const Color(0xFFBDBDBD).withValues(alpha: .30);
+    final style = DefaultTextStyle.of(context).style.copyWith(
+      fontFamily: fontFamily,
+      fontSize: fontSize,
+      height: 1.2,
+      fontWeight: active ? FontWeight.w700 : FontWeight.w400,
+      color: active ? Theme.of(context).colorScheme.primary : inactiveColor,
+      shadows: glowEnabled
+          ? [Shadow(color: glowColor, blurRadius: glowRadius)]
+          : null,
+    );
+    final lyric = active
+        ? positionListenable == null
+              ? _KaraokeLyricText(
+                  line: line,
+                  position: position,
+                  playedColor: style.color!,
+                  unplayedColor: karaokeUnplayedColor,
+                )
+              : ValueListenableBuilder<Duration>(
+                  valueListenable: positionListenable!,
+                  builder: (context, position, _) => _KaraokeLyricText(
+                    line: line,
+                    position: position,
+                    playedColor: style.color!,
+                    unplayedColor: karaokeUnplayedColor,
+                  ),
+                )
+        : Text(line.texts.join('\n'));
+    return RepaintBoundary(
+      child: SizedBox(
+        height: height,
+        child: AnimatedScale(
+          scale: _scale,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 5),
+            child: AnimatedDefaultTextStyle(
+              duration: const Duration(milliseconds: 220),
+              curve: Curves.easeOutCubic,
+              style: style,
+              textAlign: TextAlign.center,
+              child: Center(child: lyric),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LyricDebugSnapshot {
+  const _LyricDebugSnapshot({
+    this.currentIndex = -1,
+    this.targetOffset = 0,
+    this.currentOffset = 0,
+    this.velocity = 0,
+    this.userScrolling = false,
+    this.fps = 0,
+    this.frameTimeMs = 0,
+    this.recompositionCount = 0,
+  });
+
+  final int currentIndex;
+  final double targetOffset;
+  final double currentOffset;
+  final double velocity;
+  final bool userScrolling;
+  final double fps;
+  final double frameTimeMs;
+  final int recompositionCount;
+}
+
+class _LyricDebugPanel extends StatelessWidget {
+  const _LyricDebugPanel({required this.snapshot});
+
+  final _LyricDebugSnapshot snapshot;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: Colors.black.withValues(alpha: .78),
+      borderRadius: BorderRadius.circular(8),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.all(8),
+      child: DefaultTextStyle(
+        style: const TextStyle(
+          color: Colors.white,
+          fontSize: 10,
+          fontFeatures: [FontFeature.tabularFigures()],
+        ),
+        child: Text(
+          'Index ${snapshot.currentIndex}\n'
+          'Target ${snapshot.targetOffset.toStringAsFixed(1)}\n'
+          'Offset ${snapshot.currentOffset.toStringAsFixed(1)}\n'
+          'Velocity ${snapshot.velocity.toStringAsFixed(1)} px/s\n'
+          'User ${snapshot.userScrolling}\n'
+          'FPS ${snapshot.fps.toStringAsFixed(1)}\n'
+          'Frame ${snapshot.frameTimeMs.toStringAsFixed(2)} ms\n'
+          'Builds ${snapshot.recompositionCount}',
+        ),
+      ),
+    ),
+  );
+}
+
+class _KaraokeLyricText extends StatefulWidget {
   const _KaraokeLyricText({
     required this.line,
     required this.position,
@@ -478,20 +821,68 @@ class _KaraokeLyricText extends StatelessWidget {
   final Color unplayedColor;
 
   @override
+  State<_KaraokeLyricText> createState() => _KaraokeLyricTextState();
+}
+
+class _KaraokeLyricTextState extends State<_KaraokeLyricText> {
+  final Map<LyricToken, List<int>> _tokenRunes = Map.identity();
+  final Map<LyricToken, TextSpan> _playedTokens = Map.identity();
+  final Map<LyricToken, TextSpan> _unplayedTokens = Map.identity();
+  late TextStyle _playedStyle;
+  late TextStyle _unplayedStyle;
+
+  @override
+  void initState() {
+    super.initState();
+    _rebuildCache();
+  }
+
+  @override
+  void didUpdateWidget(covariant _KaraokeLyricText oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.line, widget.line) ||
+        oldWidget.playedColor != widget.playedColor ||
+        oldWidget.unplayedColor != widget.unplayedColor) {
+      _rebuildCache();
+    }
+  }
+
+  void _rebuildCache() {
+    _tokenRunes.clear();
+    _playedTokens.clear();
+    _unplayedTokens.clear();
+    _playedStyle = TextStyle(color: widget.playedColor);
+    _unplayedStyle = TextStyle(color: widget.unplayedColor);
+    for (final row in widget.line.tokens ?? const <List<LyricToken>>[]) {
+      for (final token in row) {
+        _tokenRunes[token] = token.text.runes.toList(growable: false);
+        _playedTokens[token] = TextSpan(
+          text: token.text,
+          style: _playedStyle,
+        );
+        _unplayedTokens[token] = TextSpan(
+          text: token.text,
+          style: _unplayedStyle,
+        );
+      }
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
-    final tokenRows = line.tokens;
+    final tokenRows = widget.line.tokens;
     if (tokenRows == null || tokenRows.isEmpty) {
-      return Text(line.texts.join('\n'));
+      return Text(widget.line.texts.join('\n'));
     }
     final spans = <InlineSpan>[];
-    for (var row = 0; row < line.texts.length; row++) {
+    for (var row = 0; row < widget.line.texts.length; row++) {
       if (row > 0) spans.add(const TextSpan(text: '\n'));
       final tokens = row < tokenRows.length ? tokenRows[row] : null;
       if (tokens == null || tokens.isEmpty) {
         spans.add(
           TextSpan(
-            text: line.texts[row],
-            style: TextStyle(color: unplayedColor),
+            text: widget.line.texts[row],
+            style: _unplayedStyle,
           ),
         );
         continue;
@@ -505,26 +896,17 @@ class _KaraokeLyricText extends StatelessWidget {
 
   void _appendTokenSpans(List<InlineSpan> spans, LyricToken token) {
     final durationMs = token.end.inMilliseconds - token.start.inMilliseconds;
-    final elapsedMs = position.inMilliseconds - token.start.inMilliseconds;
+    final elapsedMs =
+        widget.position.inMilliseconds - token.start.inMilliseconds;
     if (elapsedMs <= 0) {
-      spans.add(
-        TextSpan(
-          text: token.text,
-          style: TextStyle(color: unplayedColor),
-        ),
-      );
+      spans.add(_unplayedTokens[token]!);
       return;
     }
     if (durationMs <= 0 || elapsedMs >= durationMs) {
-      spans.add(
-        TextSpan(
-          text: token.text,
-          style: TextStyle(color: playedColor),
-        ),
-      );
+      spans.add(_playedTokens[token]!);
       return;
     }
-    final runes = token.text.runes.toList(growable: false);
+    final runes = _tokenRunes[token]!;
     if (runes.isEmpty) return;
     final completed = (runes.length * elapsedMs / durationMs).floor().clamp(
       0,
@@ -533,16 +915,16 @@ class _KaraokeLyricText extends StatelessWidget {
     if (completed > 0) {
       spans.add(
         TextSpan(
-          text: String.fromCharCodes(runes.take(completed)),
-          style: TextStyle(color: playedColor),
+          text: String.fromCharCodes(runes, 0, completed),
+          style: _playedStyle,
         ),
       );
     }
     if (completed < runes.length) {
       spans.add(
         TextSpan(
-          text: String.fromCharCodes(runes.skip(completed)),
-          style: TextStyle(color: unplayedColor),
+          text: String.fromCharCodes(runes, completed),
+          style: _unplayedStyle,
         ),
       );
     }

@@ -23,6 +23,7 @@ class _StatisticsState extends State<Statistics> {
   bool _showAllArtists = false;
   bool _showAllAlbums = false;
   final Set<String> _trackedCoverPaths = <String>{};
+  final Map<String, Listenable> _trackedCoverSignals = <String, Listenable>{};
 
   late final ScrollController scrollController;
   PlaylistContentNotifier? _playlistNotifier;
@@ -44,6 +45,10 @@ class _StatisticsState extends State<Statistics> {
   void dispose() {
     final pathsToRelease = List<String>.from(_trackedCoverPaths);
     _trackedCoverPaths.clear();
+    for (final signal in _trackedCoverSignals.values) {
+      signal.removeListener(_handleTrackedCoverChanged);
+    }
+    _trackedCoverSignals.clear();
 
     if (_playlistNotifier != null && pathsToRelease.isNotEmpty) {
       Future.microtask(() {
@@ -55,6 +60,10 @@ class _StatisticsState extends State<Statistics> {
 
     scrollController.dispose();
     super.dispose();
+  }
+
+  void _handleTrackedCoverChanged() {
+    if (mounted) setState(() {});
   }
 
   @override
@@ -366,12 +375,15 @@ class _StatisticsState extends State<Statistics> {
               ),
             );
 
+            final cover = context
+                .read<PlaylistContentNotifier>()
+                .displayThumbnailForSong(songWithArt);
             return ListTile(
               leading: ClipRRect(
                 borderRadius: BorderRadius.circular(4),
-                child: songWithArt.albumArt != null
+                child: cover != null
                     ? ArtworkImage(
-                        bytes: songWithArt.albumArt!,
+                        bytes: cover,
                         size: ArtworkSize.thumbnail,
                         width: 40,
                         height: 40,
@@ -453,7 +465,9 @@ class _StatisticsState extends State<Statistics> {
           itemBuilder: (context, index) {
             final artist = topArtists[index];
             final coverSong = artistCoverMap[artist.key];
-            final cover = coverSong?.albumArt;
+            final cover = coverSong == null
+                ? null
+                : playlistNotifier.displayThumbnailForSong(coverSong);
             return ListTile(
               leading: Container(
                 width: 40,
@@ -532,7 +546,9 @@ class _StatisticsState extends State<Statistics> {
           itemBuilder: (context, index) {
             final album = topAlbums[index];
             final coverSong = albumCoverMap[album.key];
-            final cover = coverSong?.albumArt;
+            final cover = coverSong == null
+                ? null
+                : playlistNotifier.displayThumbnailForSong(coverSong);
             return ListTile(
               leading: Container(
                 width: 40,
@@ -665,8 +681,14 @@ class _StatisticsState extends State<Statistics> {
 
     for (final path in toAdd) {
       notifier.requestSongCover(path);
+      final signal = notifier.coverListenableForSongPath(path);
+      signal.addListener(_handleTrackedCoverChanged);
+      _trackedCoverSignals[path] = signal;
     }
     for (final path in toRemove) {
+      _trackedCoverSignals
+          .remove(path)
+          ?.removeListener(_handleTrackedCoverChanged);
       notifier.releaseSongCover(path);
     }
 

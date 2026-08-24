@@ -4,17 +4,15 @@ import 'dart:typed_data';
 
 import 'package:path_provider/path_provider.dart';
 
-/// A bounded temporary cache for encoded embedded artwork.
-///
-/// Keys include the audio file modification time, so replacing or retagging a
-/// song never reuses stale artwork. The operating system may clear this cache
-/// at any time; callers must always retain their metadata extraction fallback.
+/// Persistent, content-addressed storage for encoded 256x256 thumbnails.
+/// Identical covers embedded in many tracks occupy only one file.
 class CoverDiskCache {
   CoverDiskCache({
     Directory? rootDirectory,
-    this.maximumBytes = 64 * 1024 * 1024,
-    this.maximumEntries = 160,
-    this.cleanupInterval = 12,
+    this.maximumBytes = 192 * 1024 * 1024,
+    this.maximumEntries = 4000,
+    this.cleanupInterval = 32,
+    this.beforeMaintenance,
   }) : assert(maximumBytes > 0),
        assert(maximumEntries > 0),
        assert(cleanupInterval > 0),
@@ -24,13 +22,18 @@ class CoverDiskCache {
   final int maximumBytes;
   final int maximumEntries;
   final int cleanupInterval;
+  final Future<void> Function()? beforeMaintenance;
   Future<Directory>? _resolvedDirectory;
-  bool _cleanupRunning = false;
+  Future<Map<String, String>>? _indexFuture;
+  Future<void> _writeChain = Future<void>.value();
   int _writesSinceCleanup = 0;
 
   Future<Uint8List?> read(String filePath, int modifiedMs) async {
     try {
-      final file = await _file(filePath, modifiedMs);
+      final index = await _index();
+      final contentKey = index[_sourceKey(filePath, modifiedMs)];
+      if (contentKey == null) return null;
+      final file = await _contentFile(contentKey);
       if (!await file.exists()) return null;
       final bytes = await file.readAsBytes();
       if (bytes.isEmpty) {
@@ -44,84 +47,123 @@ class CoverDiskCache {
     }
   }
 
-  Future<void> write(String filePath, int modifiedMs, Uint8List bytes) async {
-    if (bytes.isEmpty || bytes.length > maximumBytes) return;
-    try {
-      final file = await _file(filePath, modifiedMs);
-      if (!await file.exists()) {
-        final temporary = File('${file.path}.tmp');
-        await temporary.writeAsBytes(bytes, flush: true);
-        if (await file.exists()) {
-          await temporary.delete();
+  Future<void> write(String filePath, int modifiedMs, Uint8List bytes) {
+    if (bytes.isEmpty || bytes.length > maximumBytes) return Future.value();
+    final operation = _writeChain.then((_) async {
+      try {
+        final index = await _index();
+        final contentKey = _stableHashBytes(bytes);
+        final file = await _contentFile(contentKey);
+        if (!await file.exists()) {
+          final temporary = File('${file.path}.tmp');
+          await temporary.writeAsBytes(bytes, flush: true);
+          if (await file.exists()) {
+            await temporary.delete();
+          } else {
+            await temporary.rename(file.path);
+          }
         } else {
-          await temporary.rename(file.path);
+          await file.setLastModified(DateTime.now());
         }
-      } else {
-        await file.setLastModified(DateTime.now());
+        index[_sourceKey(filePath, modifiedMs)] = contentKey;
+        await _saveIndex(index);
+        _writesSinceCleanup++;
+        if (_writesSinceCleanup >= cleanupInterval) {
+          _writesSinceCleanup = 0;
+          await beforeMaintenance?.call();
+          await _cleanup(index, protectedKey: contentKey);
+        }
+      } catch (_) {
+        // Cache failures must never block extraction from the audio file.
       }
-      _writesSinceCleanup++;
-      if (_writesSinceCleanup >= cleanupInterval) {
-        _writesSinceCleanup = 0;
-        await _cleanup(protectedFile: file);
-      }
-    } catch (_) {
-      // A cache failure must never block artwork loaded from the source file.
-    }
+    });
+    _writeChain = operation.catchError((_) {});
+    return operation;
   }
 
-  Future<File> _file(String filePath, int modifiedMs) async {
+  Future<Map<String, String>> _index() => _indexFuture ??= () async {
     final directory = await _directory();
-    final hash = _stableHash(filePath);
-    return File(
-      '${directory.path}${Platform.pathSeparator}${hash}_$modifiedMs.cover',
-    );
+    final file = File('${directory.path}${Platform.pathSeparator}index.json');
+    if (!await file.exists()) return <String, String>{};
+    try {
+      final value = jsonDecode(await file.readAsString());
+      if (value is! Map) return <String, String>{};
+      return value.map(
+        (key, value) => MapEntry(key.toString(), value.toString()),
+      );
+    } catch (_) {
+      return <String, String>{};
+    }
+  }();
+
+  Future<void> _saveIndex(Map<String, String> index) async {
+    final directory = await _directory();
+    final file = File('${directory.path}${Platform.pathSeparator}index.json');
+    final temporary = File('${file.path}.tmp');
+    await temporary.writeAsString(jsonEncode(index), flush: true);
+    if (await file.exists()) await file.delete();
+    await temporary.rename(file.path);
+  }
+
+  Future<File> _contentFile(String key) async {
+    final directory = await _directory();
+    return File('${directory.path}${Platform.pathSeparator}$key.thumb');
   }
 
   Future<Directory> _directory() => _resolvedDirectory ??= () async {
-    final base = _rootDirectory ?? await getTemporaryDirectory();
+    final base = _rootDirectory ?? await getApplicationSupportDirectory();
     final directory = Directory(
-      '${base.path}${Platform.pathSeparator}artwork_cache_v1',
+      '${base.path}${Platform.pathSeparator}artwork_thumbnails_v3',
     );
     await directory.create(recursive: true);
     return directory;
   }();
 
-  Future<void> _cleanup({required File protectedFile}) async {
-    if (_cleanupRunning) return;
-    _cleanupRunning = true;
-    try {
-      final directory = await _directory();
-      final records = <({File file, int length, DateTime modified})>[];
-      await for (final entity in directory.list()) {
-        if (entity is! File || entity.path.endsWith('.tmp')) continue;
-        final stat = await entity.stat();
-        records.add((file: entity, length: stat.size, modified: stat.modified));
-      }
-      var totalBytes = records.fold<int>(0, (sum, item) => sum + item.length);
-      if (records.length <= maximumEntries && totalBytes <= maximumBytes) {
-        return;
-      }
-      records.sort((a, b) => a.modified.compareTo(b.modified));
-      var remainingEntries = records.length;
-      for (final record in records) {
-        if (remainingEntries <= maximumEntries && totalBytes <= maximumBytes) {
-          break;
-        }
-        if (record.file.path == protectedFile.path) continue;
-        await record.file.delete();
-        remainingEntries--;
-        totalBytes -= record.length;
-      }
-    } catch (_) {
-      // Best-effort cleanup; the OS can also evict the temporary directory.
-    } finally {
-      _cleanupRunning = false;
+  Future<void> _cleanup(
+    Map<String, String> index, {
+    required String protectedKey,
+  }) async {
+    final directory = await _directory();
+    final records =
+        <({File file, String key, int length, DateTime modified})>[];
+    await for (final entity in directory.list()) {
+      if (entity is! File || !entity.path.endsWith('.thumb')) continue;
+      final stat = await entity.stat();
+      final name = entity.uri.pathSegments.last;
+      records.add((
+        file: entity,
+        key: name.substring(0, name.length - '.thumb'.length),
+        length: stat.size,
+        modified: stat.modified,
+      ));
+    }
+    var totalBytes = records.fold<int>(0, (sum, item) => sum + item.length);
+    records.sort((a, b) => a.modified.compareTo(b.modified));
+    final removed = <String>{};
+    var remaining = records.length;
+    for (final record in records) {
+      if (remaining <= maximumEntries && totalBytes <= maximumBytes) break;
+      if (record.key == protectedKey) continue;
+      await record.file.delete();
+      removed.add(record.key);
+      remaining--;
+      totalBytes -= record.length;
+    }
+    if (removed.isNotEmpty) {
+      index.removeWhere((_, value) => removed.contains(value));
+      await _saveIndex(index);
     }
   }
 
-  String _stableHash(String value) {
+  String _sourceKey(String path, int modifiedMs) =>
+      '${_stableHashString(path.toLowerCase())}:$modifiedMs';
+
+  String _stableHashString(String value) =>
+      _stableHashBytes(Uint8List.fromList(utf8.encode(value)));
+
+  String _stableHashBytes(Uint8List bytes) {
     var hash = 0xcbf29ce484222325;
-    for (final byte in utf8.encode(value)) {
+    for (final byte in bytes) {
       hash ^= byte;
       hash = (hash * 0x100000001b3) & 0xffffffffffffffff;
     }

@@ -17,6 +17,25 @@ void main() {
     expect(await cache.read('/music/song.flac', 101), isNull);
   });
 
+  test('identical thumbnails are stored once for different tracks', () async {
+    final root = await Directory.systemTemp.createTemp('myune_cover_cache_');
+    addTearDown(() => root.delete(recursive: true));
+    final cache = CoverDiskCache(rootDirectory: root);
+    final bytes = Uint8List.fromList([9, 8, 7, 6]);
+
+    await cache.write('/music/one.flac', 1, bytes);
+    await cache.write('/music/two.flac', 2, bytes);
+
+    final directory = Directory('${root.path}/artwork_thumbnails_v3');
+    final thumbnails = await directory
+        .list()
+        .where((entity) => entity.path.endsWith('.thumb'))
+        .toList();
+    expect(thumbnails, hasLength(1));
+    expect(await cache.read('/music/one.flac', 1), bytes);
+    expect(await cache.read('/music/two.flac', 2), bytes);
+  });
+
   test(
     'cover cache evicts old entries when its entry limit is exceeded',
     () async {

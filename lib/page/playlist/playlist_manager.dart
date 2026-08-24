@@ -194,12 +194,12 @@ class PlaylistManager {
       }
       return loadedPlaylists;
     } catch (e) {
-      // 如果主加载过程出现任何错误，则回退到默认歌单并重新保存以确保数据一致性
-      final List<Playlist> defaultPlaylists = [
+      // 元数据格式异常时只在内存中降级。这里不能立即保存默认歌单，
+      // savePlaylists 会清理未被默认歌单引用的歌曲路径文件，使一次读取
+      // 失败变成不可恢复的数据丢失。全部歌曲页仍可从顺序文件恢复路径。
+      return [
         Playlist(name: '默认歌单', isDefault: true),
       ];
-      await savePlaylists(defaultPlaylists);
-      return defaultPlaylists;
     }
   }
 

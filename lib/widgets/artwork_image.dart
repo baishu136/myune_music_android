@@ -8,8 +8,9 @@ import 'package:flutter/material.dart';
 /// decoding and Flutter's image cache; the bytes in the music file are never
 /// changed.
 enum ArtworkSize {
-  thumbnail(128),
-  medium(320),
+  thumbnail(192),
+  medium(256),
+  groupLarge(720),
   large(768),
   original(null);
 
@@ -123,9 +124,9 @@ class CoverMemoryImage extends ImageProvider<CoverMemoryImage> {
 
 /// An artwork image with a size-specific decode/cache key.
 ///
-/// For large foreground artwork, [progressive] first reuses the 128px provider
+/// For large foreground artwork, [progressive] first reuses the 192px provider
 /// (normally already warm after navigating from a song list) and fades in the
-/// 768-1024px decode when it is ready.
+/// high-resolution decode when it is ready.
 class ArtworkImage extends StatelessWidget {
   const ArtworkImage({
     super.key,
@@ -181,7 +182,8 @@ class ArtworkImage extends StatelessWidget {
       size: size,
       logicalSize: logicalSize,
     );
-    if (!progressive || size != ArtworkSize.large) {
+    if (!progressive ||
+        (size != ArtworkSize.large && size != ArtworkSize.groupLarge)) {
       return _image(context, fullProvider);
     }
 

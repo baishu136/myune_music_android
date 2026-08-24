@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../services/interaction_performance_controller.dart';
 import 'tabs/general_tab.dart';
 import 'tabs/personalization_tab.dart';
 import 'tabs/playback_page_tab.dart';
@@ -127,6 +128,12 @@ class _SettingPageState extends State<SettingPage> {
   );
 
   bool _handleAndroidPagerScroll(ScrollNotification notification) {
+    if (notification.metrics.axis == Axis.horizontal) {
+      InteractionPerformanceController.instance.pulse(
+        InteractionPhase.transition,
+        settleAfter: const Duration(milliseconds: 140),
+      );
+    }
     if (notification.metrics.axis != Axis.horizontal ||
         widget.onSwipeBackFromFirstSection == null) {
       return false;

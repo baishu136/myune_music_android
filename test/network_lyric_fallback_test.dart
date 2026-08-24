@@ -73,4 +73,35 @@ void main() {
     await restored.initializationFuture;
     expect(restored.enableLyricSourceFallback, isTrue);
   });
+
+  test('lyric prefetch follows next, previous, then next two priority', () {
+    expect(playbackLyricNeighborIndices(songCount: 5, currentIndex: 2), [
+      3,
+      1,
+      4,
+    ]);
+    expect(
+      playbackLyricNeighborIndices(
+        songCount: 5,
+        currentIndex: 4,
+        playOrder: const [2, 4, 1, 3, 0],
+      ),
+      [1, 2, 3],
+    );
+  });
+
+  test(
+    'playback page initial view defaults to cover and is persisted',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final settings = SettingsProvider();
+      await settings.initializationFuture;
+      expect(settings.playbackInitialView, PlaybackInitialView.cover);
+
+      await settings.setPlaybackInitialView(PlaybackInitialView.lyrics);
+      final restored = SettingsProvider();
+      await restored.initializationFuture;
+      expect(restored.playbackInitialView, PlaybackInitialView.lyrics);
+    },
+  );
 }

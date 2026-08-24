@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
-import 'package:scrollable_positioned_list/scrollable_positioned_list.dart';
 
 void main() {
   testWidgets('active lyric automatically scrolls into the visible area', (
@@ -26,14 +25,14 @@ void main() {
 
     final active = find.byKey(const ValueKey('mobile_lyric_35'));
     expect(active, findsOneWidget);
-    expect(tester.getCenter(active).dy, closeTo(110, 24));
+    expect(tester.getCenter(active).dy, closeTo(92.4, 12));
 
     hostKey.currentState!.setActive(49);
     await tester.pumpAndSettle();
 
     final finalLine = find.byKey(const ValueKey('mobile_lyric_49'));
     expect(finalLine, findsOneWidget);
-    expect(tester.getCenter(finalLine).dy, closeTo(110, 24));
+    expect(tester.getCenter(finalLine).dy, closeTo(92.4, 12));
   });
 
   testWidgets('first async lyric batch starts with the active line centered', (
@@ -56,7 +55,7 @@ void main() {
 
     final active = find.byKey(const ValueKey('mobile_lyric_25'));
     expect(active, findsOneWidget);
-    expect(tester.getCenter(active).dy, closeTo(110, 24));
+    expect(tester.getCenter(active).dy, closeTo(92.4, 12));
   });
 
   testWidgets('uses the configured lyric font size', (tester) async {
@@ -90,7 +89,7 @@ void main() {
           .first,
     );
     expect(activeStyle.style.fontSize, 26);
-    expect(inactiveStyle.style.fontSize, closeTo(21.84, 0.001));
+    expect(inactiveStyle.style.fontSize, 26);
   });
 
   testWidgets('keeps the active lyric centered while font size changes', (
@@ -111,12 +110,39 @@ void main() {
     hostKey.currentState!.setFontSize(32);
     await tester.pumpAndSettle();
     final enlarged = find.byKey(const ValueKey('mobile_lyric_25'));
-    expect(tester.getCenter(enlarged).dy, closeTo(110, 18));
+    expect(tester.getCenter(enlarged).dy, closeTo(92.4, 12));
 
     hostKey.currentState!.setFontSize(12);
     await tester.pumpAndSettle();
     final reduced = find.byKey(const ValueKey('mobile_lyric_25'));
-    expect(tester.getCenter(reduced).dy, closeTo(110, 18));
+    expect(tester.getCenter(reduced).dy, closeTo(92.4, 12));
+  });
+
+  testWidgets('multiline lyrics retain the 42 percent visual anchor', (
+    tester,
+  ) async {
+    final hostKey = GlobalKey<_LyricsHostState>();
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          body: SizedBox(
+            height: 300,
+            width: 260,
+            child: _LyricsHost(key: hostKey),
+          ),
+        ),
+      ),
+    );
+    hostKey.currentState!.setLineText(
+      24,
+      '这是一句会自动换行的很长歌词，用于验证真实文本高度不会造成累计定位漂移',
+    );
+    hostKey.currentState!.setActive(24);
+    await tester.pumpAndSettle();
+
+    final active = find.byKey(const ValueKey('mobile_lyric_24'));
+    expect(active, findsOneWidget);
+    expect(tester.getCenter(active).dy, closeTo(126, 12));
   });
 
   testWidgets('applies the selected font family to lyrics', (tester) async {
@@ -147,7 +173,7 @@ void main() {
     expect(style.style.fontFamily, 'TestLyricsFont');
   });
 
-  testWidgets('manual lyric browsing resumes follow after six idle seconds', (
+  testWidgets('manual lyric browsing resumes follow after four idle seconds', (
     tester,
   ) async {
     final hostKey = GlobalKey<_LyricsHostState>();
@@ -163,7 +189,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.drag(
-      find.byType(ScrollablePositionedList),
+      find.byKey(const ValueKey('mobile_lyrics_scroll_view')),
       const Offset(0, -140),
     );
     for (var frame = 0; frame < 10; frame++) {
@@ -175,13 +201,13 @@ void main() {
     final active = find.byKey(const ValueKey('mobile_lyric_40'));
     expect(active, findsNothing);
 
-    await tester.pump(const Duration(seconds: 5));
+    await tester.pump(const Duration(seconds: 3));
     expect(active, findsNothing);
 
     await tester.pump(const Duration(seconds: 1));
     await tester.pumpAndSettle();
     expect(active, findsOneWidget);
-    expect(tester.getCenter(active).dy, closeTo(110, 24));
+    expect(tester.getCenter(active).dy, closeTo(92.4, 12));
   });
 
   testWidgets('controller recenters the active lyric immediately', (
@@ -200,7 +226,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.drag(
-      find.byType(ScrollablePositionedList),
+      find.byKey(const ValueKey('mobile_lyrics_scroll_view')),
       const Offset(0, -160),
     );
     await tester.pump(const Duration(milliseconds: 300));
@@ -210,7 +236,7 @@ void main() {
 
     final active = find.byKey(const ValueKey('mobile_lyric_25'));
     expect(active, findsOneWidget);
-    expect(tester.getCenter(active).dy, closeTo(110, 24));
+    expect(tester.getCenter(active).dy, closeTo(92.4, 12));
   });
 
   testWidgets('controller settles smoothly on a selected lyric timestamp', (
@@ -232,7 +258,7 @@ void main() {
     hostKey.currentState!.setActive(35);
     await tester.pumpAndSettle();
     final selected = find.byKey(const ValueKey('mobile_lyric_35'));
-    expect(tester.getCenter(selected).dy, closeTo(110, 24));
+    expect(tester.getCenter(selected).dy, closeTo(92.4, 12));
   });
 
   testWidgets('manual browsing reports the lyric nearest the viewport center', (
@@ -264,7 +290,7 @@ void main() {
     await tester.pumpAndSettle();
 
     await tester.drag(
-      find.byType(ScrollablePositionedList),
+      find.byKey(const ValueKey('mobile_lyrics_scroll_view')),
       const Offset(0, -150),
     );
     await tester.pump(const Duration(milliseconds: 300));
@@ -448,7 +474,7 @@ void main() {
           ),
         )
         .style;
-    expect(inactiveStyle.color, const Color(0xFF757575).withValues(alpha: .80));
+    expect(inactiveStyle.color, const Color(0xFF757575).withValues(alpha: .72));
     expect(inactiveStyle.shadows, hasLength(1));
     expect(
       inactiveStyle.shadows!.single.color,
@@ -502,7 +528,7 @@ void main() {
           ),
         )
         .style;
-    expect(style.color, Colors.white.withValues(alpha: .50));
+    expect(style.color, Colors.white.withValues(alpha: .72));
     expect(style.shadows, hasLength(1));
     expect(style.shadows!.single.color, Colors.white.withValues(alpha: .30));
   });
@@ -567,6 +593,14 @@ class _LyricsHostState extends State<_LyricsHost> {
   void setActive(int value) => setState(() => active = value);
 
   void setFontSize(double value) => setState(() => fontSize = value);
+
+  void setLineText(int index, String text) => setState(() {
+    lines = List<LyricLine>.of(lines);
+    lines[index] = LyricLine(
+      timestamp: lines[index].timestamp,
+      texts: [text],
+    );
+  });
 
   void loadLinesAt(int value) => setState(() {
     active = value;
