@@ -12,6 +12,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:mpv_audio_kit/mpv_audio_kit.dart' hide Playlist;
 import '../../services/audio/audio_service.dart';
+import '../../services/audio/audio_interruption_policy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:colorgram/colorgram.dart';
@@ -1150,14 +1151,20 @@ class PlaylistContentNotifier extends ChangeNotifier
       desktopLyricsState: !_settingsProvider.desktopLyricsEnabled
           ? 'off'
           : (_settingsProvider.desktopLyricsLocked ? 'locked' : 'on'),
-      // Regaining Android audio focus must not start music by itself. The
-      // player resumes only after an explicit user play command.
-      interruptionPolicy: InterruptionPolicy.pauseOnly,
+      // The default pauses without auto-resuming. Users may explicitly opt
+      // into uninterrupted playback when another app takes audio focus.
+      interruptionPolicy: audioInterruptionPolicy(
+        autoPause: _settingsProvider.pauseOnAudioInterruption,
+      ),
       autoApplyPlaylistNavigation: false,
     );
   }
 
   Future<void> refreshDesktopLyricsMediaSession() async {
+    await refreshMediaSessionSettings();
+  }
+
+  Future<void> refreshMediaSessionSettings() async {
     final song = _currentSong;
     if (song == null) return;
     await _audioService.player.setMediaSession(_buildMediaSession(song));
@@ -1204,6 +1211,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     if (isForeground) {
       _setCurrentPosition(_audioService.player.state.position);
       updateLyricLine(_currentPosition);
+      _recoverRequestedArtwork();
       _listenToPositionUpdates();
       notifyListeners();
       return;
@@ -1233,8 +1241,14 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
       _coverQueues[priority]!.clear();
     }
-    _coverCache.clear();
     final currentKey = _currentSong?.normalizedPath;
+    final retainedThumbnailKeys = <String>{
+      ..._coverRequestCounts.entries
+          .where((entry) => entry.value > 0)
+          .map((entry) => entry.key),
+      if (currentKey != null) currentKey,
+    };
+    _coverCache.retainKeys(retainedThumbnailKeys);
     final currentCover = currentKey == null ? null : _takeFullCover(currentKey);
     _fullCoverCache.clear();
     _fullCoverUnavailable.clear();
@@ -1242,7 +1256,6 @@ class PlaylistContentNotifier extends ChangeNotifier
       _fullCoverCache[currentKey] = currentCover;
     }
     PaintingBinding.instance.imageCache.clear();
-    PaintingBinding.instance.imageCache.clearLiveImages();
   }
 
   void _setupMediaPlayerListeners() {
@@ -1966,6 +1979,32 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
 
     _enqueueCover(cacheKey, priority);
+    _processCoverQueue();
+  }
+
+  /// Requeues artwork reclaimed while its widget stayed mounted behind a
+  /// route. This does not change the widget reference count.
+  void recoverSongCover(String filePath, {bool fullResolution = false}) {
+    final cacheKey = _normalizePath(filePath);
+    if (!_isCoverRequested(cacheKey)) return;
+    final thumbnailResolved = _coverCache.containsKey(cacheKey);
+    final fullResolved = !fullResolution || _isFullCoverResolved(cacheKey);
+    if (thumbnailResolved && fullResolved) return;
+    _enqueueCover(cacheKey, ArtworkRequestPriority.visible);
+    _processCoverQueue();
+  }
+
+  void _recoverRequestedArtwork() {
+    for (final entry in _coverRequestCounts.entries) {
+      if (entry.value <= 0) continue;
+      final cacheKey = entry.key;
+      final needsThumbnail = !_coverCache.containsKey(cacheKey);
+      final needsFull =
+          (_fullCoverRequestCounts[cacheKey] ?? 0) > 0 &&
+          !_isFullCoverResolved(cacheKey);
+      if (!needsThumbnail && !needsFull) continue;
+      _enqueueCover(cacheKey, ArtworkRequestPriority.visible);
+    }
     _processCoverQueue();
   }
 

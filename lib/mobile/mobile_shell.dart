@@ -5226,6 +5226,7 @@ class _RequestedGroupArtworkState extends State<_RequestedGroupArtwork> {
   String? _requestedPath;
   bool _requestedFullResolution = false;
   Listenable? _coverListenable;
+  bool _recoveryScheduled = false;
 
   @override
   void didChangeDependencies() {
@@ -5286,7 +5287,24 @@ class _RequestedGroupArtworkState extends State<_RequestedGroupArtwork> {
   }
 
   void _handleCoverChanged() {
+    _recoveryScheduled = false;
     if (mounted) setState(() {});
+  }
+
+  void _scheduleRecovery() {
+    if (_recoveryScheduled || _requestedPath == null) return;
+    _recoveryScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _recoveryScheduled = false;
+      final path = _requestedPath;
+      if (path != null) {
+        _notifier?.recoverSongCover(
+          path,
+          fullResolution: _requestedFullResolution,
+        );
+      }
+    });
   }
 
   @override
@@ -5307,6 +5325,7 @@ class _RequestedGroupArtworkState extends State<_RequestedGroupArtwork> {
         ? _notifier?.displayCoverForSong(song)
         : _notifier?.displayThumbnailForSong(song);
     if (artwork == null || artwork.isEmpty) {
+      _scheduleRecovery();
       final scheme = Theme.of(context).colorScheme;
       return ColoredBox(
         color: scheme.surfaceContainerHigh,
@@ -5361,6 +5380,7 @@ class _CoverState extends State<_Cover> {
   String? _requestedPath;
   bool _requestedFullResolution = false;
   Listenable? _coverListenable;
+  bool _recoveryScheduled = false;
 
   @override
   void didChangeDependencies() {
@@ -5414,7 +5434,24 @@ class _CoverState extends State<_Cover> {
   }
 
   void _handleCoverChanged() {
+    _recoveryScheduled = false;
     if (mounted) setState(() {});
+  }
+
+  void _scheduleRecovery() {
+    if (_recoveryScheduled || _requestedPath == null) return;
+    _recoveryScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _recoveryScheduled = false;
+      final path = _requestedPath;
+      if (path != null) {
+        _notifier?.recoverSongCover(
+          path,
+          fullResolution: _requestedFullResolution,
+        );
+      }
+    });
   }
 
   @override
@@ -5428,6 +5465,7 @@ class _CoverState extends State<_Cover> {
     final art = widget.artworkSize == ArtworkSize.thumbnail
         ? _notifier?.displayThumbnailForSong(widget.song)
         : _notifier?.displayCoverForSong(widget.song);
+    if (art == null || art.isEmpty) _scheduleRecovery();
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: SizedBox(

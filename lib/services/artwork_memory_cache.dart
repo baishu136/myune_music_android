@@ -60,6 +60,14 @@ class ArtworkMemoryCache {
     _bytes = 0;
   }
 
+  /// Releases unreferenced entries while retaining artwork that mounted UI
+  /// still needs after Android reports memory pressure.
+  void retainKeys(Set<String> retainedKeys) {
+    for (final key in _entries.keys.toList(growable: false)) {
+      if (!retainedKeys.contains(key)) _removeEntry(key);
+    }
+  }
+
   void _trim() {
     while (_entries.length > maximumEntries || _bytes > maximumBytes) {
       final oldest = _entries.keys.first;

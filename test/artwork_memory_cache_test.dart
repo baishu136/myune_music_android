@@ -31,4 +31,17 @@ void main() {
     expect(identical(cache['a'], cache['b']), isTrue);
     expect(cache.bytes, 3);
   });
+
+  test('retainKeys keeps live artwork and releases the rest', () {
+    final cache = ArtworkMemoryCache(maximumEntries: 10, maximumBytes: 20);
+    cache['visible'] = Uint8List.fromList([1, 2, 3]);
+    cache['hidden'] = Uint8List.fromList([4, 5, 6, 7]);
+
+    cache.retainKeys({'visible'});
+
+    expect(cache.containsKey('visible'), isTrue);
+    expect(cache['visible'], [1, 2, 3]);
+    expect(cache.containsKey('hidden'), isFalse);
+    expect(cache.bytes, 3);
+  });
 }

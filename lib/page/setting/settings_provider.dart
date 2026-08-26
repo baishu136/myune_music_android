@@ -51,6 +51,7 @@ class SettingsProvider with ChangeNotifier {
   static const _audioDeviceDescKey = 'audio_device_desc';
   static const _audioDeviceIsAutoKey = 'audio_device_is_auto';
   static const _ignorePlaybackErrorsKey = 'ignorePlaybackErrors';
+  static const _pauseOnAudioInterruptionKey = 'pauseOnAudioInterruption';
   static const _preferExternalLyricsKey = 'preferExternalLyrics';
   static const _autoAdjustLyricLayoutKey =
       'autoAdjustLyricLayout'; // 自动调节歌词字体与间距设置的 key
@@ -105,6 +106,7 @@ class SettingsProvider with ChangeNotifier {
   String? _audioDeviceName; // 音频设备名称
   String? _audioDeviceDesc; // 音频设备描述
   bool _ignorePlaybackErrors = false; // 默认不忽略播放错误
+  bool _pauseOnAudioInterruption = true; // 默认在其他应用占用音频焦点时暂停
   bool _preferExternalLyrics = false; // 默认不优先读取外置LRC歌词
   bool _autoAdjustLyricLayout = false; // 默认不自动调节歌词布局
   bool _enableLoudness = false;
@@ -188,6 +190,7 @@ class SettingsProvider with ChangeNotifier {
   String? get audioDeviceName => _audioDeviceName;
   String? get audioDeviceDesc => _audioDeviceDesc;
   bool get ignorePlaybackErrors => _ignorePlaybackErrors;
+  bool get pauseOnAudioInterruption => _pauseOnAudioInterruption;
 
   bool get preferExternalLyrics => _preferExternalLyrics; // 获取优先读取外置LRC歌词设置
   bool get autoAdjustLyricLayout => _autoAdjustLyricLayout; // 获取是否自动调节歌词布局
@@ -312,6 +315,8 @@ class SettingsProvider with ChangeNotifier {
     _audioDeviceDesc = _readPreference<String>(prefs, _audioDeviceDescKey);
     _ignorePlaybackErrors =
         _readPreference<bool>(prefs, _ignorePlaybackErrorsKey) ?? false;
+    _pauseOnAudioInterruption =
+        _readPreference<bool>(prefs, _pauseOnAudioInterruptionKey) ?? true;
     _preferExternalLyrics =
         _readPreference<bool>(prefs, _preferExternalLyricsKey) ?? false;
     _autoAdjustLyricLayout = false;
@@ -680,6 +685,14 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_ignorePlaybackErrorsKey, value);
+  }
+
+  Future<void> setPauseOnAudioInterruption(bool value) async {
+    if (_pauseOnAudioInterruption == value) return;
+    _pauseOnAudioInterruption = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_pauseOnAudioInterruptionKey, value);
   }
 
   void setPreferExternalLyrics(bool value) async {

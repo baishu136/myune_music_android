@@ -47,6 +47,20 @@ class PlaybackSettingsTab extends StatelessWidget {
         ),
         if (Platform.isAndroid)
           SwitchListTile(
+            secondary: const Icon(Icons.multitrack_audio_outlined),
+            title: const Text('播放被占用时自动暂停'),
+            subtitle: const Text('关闭后，其他应用占用音频焦点时继续播放；耳机断开仍会安全暂停'),
+            value: settings.pauseOnAudioInterruption,
+            onChanged: (value) async {
+              await settings.setPauseOnAudioInterruption(value);
+              if (!context.mounted) return;
+              await context
+                  .read<PlaylistContentNotifier>()
+                  .refreshMediaSessionSettings();
+            },
+          ),
+        if (Platform.isAndroid)
+          SwitchListTile(
             title: const Row(
               children: [
                 Text('优先读取外置LRC歌词'),
