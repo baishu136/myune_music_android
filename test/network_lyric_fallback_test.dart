@@ -26,6 +26,33 @@ void main() {
   });
 
   test(
+    'external LRC follows the complete network chain when not preferred',
+    () {
+      expect(
+        lyricResolutionPriority(
+          preferExternalLyrics: false,
+          enableOnlineLyrics: true,
+        ),
+        ['online', 'external', 'embedded'],
+      );
+      expect(
+        lyricResolutionPriority(
+          preferExternalLyrics: true,
+          enableOnlineLyrics: true,
+        ),
+        ['external', 'online', 'embedded'],
+      );
+      expect(
+        lyricResolutionPriority(
+          preferExternalLyrics: false,
+          enableOnlineLyrics: false,
+        ),
+        ['external', 'embedded'],
+      );
+    },
+  );
+
+  test(
     'network lyric translation can be excluded without changing original',
     () {
       const original = ['[00:01.00]Original'];
@@ -87,6 +114,36 @@ void main() {
         playOrder: const [2, 4, 1, 3, 0],
       ),
       [1, 2, 3],
+    );
+  });
+
+  test('artwork prewarm is bounded to next and previous songs', () {
+    expect(playbackArtworkPrewarmIndices(songCount: 5, currentIndex: 2), [
+      3,
+      1,
+    ]);
+    expect(
+      playbackArtworkPrewarmIndices(
+        songCount: 5,
+        currentIndex: 2,
+        playOrder: [4, 2, 0, 3, 1],
+      ),
+      [0, 4],
+    );
+  });
+
+  test('artwork workers keep visible concurrency bounded', () {
+    expect(artworkWorkerLimit(hasUrgentWork: false), 1);
+    expect(artworkWorkerLimit(hasUrgentWork: true), 2);
+  });
+
+  test('library artwork warmup keeps the shared queue bounded', () {
+    expect(canAdmitLibraryArtworkWarmRequest(scheduledCount: 0), isTrue);
+    expect(canAdmitLibraryArtworkWarmRequest(scheduledCount: 3), isTrue);
+    expect(canAdmitLibraryArtworkWarmRequest(scheduledCount: 4), isFalse);
+    expect(
+      canAdmitLibraryArtworkWarmRequest(scheduledCount: 2, maximumQueued: 2),
+      isFalse,
     );
   });
 

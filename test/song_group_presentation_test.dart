@@ -39,5 +39,44 @@ void main() {
       SongGroupPresentation.representativeSong(sorted, counts),
       same(second),
     );
+    expect(
+      SongGroupPresentation.representativeSong([
+        neverPlayed,
+        first,
+        second,
+      ], counts),
+      same(second),
+    );
+  });
+
+  test('group names use pinyin initials and keep symbols in hash section', () {
+    final grouped = SongGroupPresentation.groupByInitial<String>([
+      '周杰伦',
+      'Aimer',
+      '9m88',
+      '@Live',
+      '草东没有派对',
+      '坂本龍一',
+    ], (value) => value);
+
+    expect(grouped.keys, ['#', 'A', 'B', 'C', 'Z']);
+    expect(grouped['#'], ['9m88', '@Live']);
+    expect(grouped['A'], ['Aimer']);
+    expect(grouped['B'], ['坂本龍一']);
+    expect(grouped['C'], ['草东没有派对']);
+    expect(grouped['Z'], ['周杰伦']);
+  });
+
+  test('pinned entries are removed from the regular collection', () {
+    final separated = SongGroupPresentation.separatePinned([
+      'A',
+      'B',
+      'C',
+      'D',
+    ], (value) => value == 'B' || value == 'D');
+
+    expect(separated.pinned, ['B', 'D']);
+    expect(separated.regular, ['A', 'C']);
+    expect({...separated.pinned, ...separated.regular}.length, 4);
   });
 }

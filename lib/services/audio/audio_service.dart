@@ -1,6 +1,30 @@
 import 'dart:async';
 import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:mpv_audio_kit/mpv_audio_kit.dart';
+
+class _PlaybackConfiguration {
+  const _PlaybackConfiguration({
+    required this.pitch,
+    required this.rate,
+    required this.eqGains,
+    required this.eqFrequencies,
+    required this.exclusiveMode,
+  });
+
+  final double pitch;
+  final double rate;
+  final List<double> eqGains;
+  final List<int> eqFrequencies;
+  final bool exclusiveMode;
+
+  bool matches(_PlaybackConfiguration other) =>
+      pitch == other.pitch &&
+      rate == other.rate &&
+      exclusiveMode == other.exclusiveMode &&
+      listEquals(eqGains, other.eqGains) &&
+      listEquals(eqFrequencies, other.eqFrequencies);
+}
 
 // class FakePlayerStream implements PlayerStream {
 //   @override
@@ -58,6 +82,10 @@ class AudioService {
   final Player _player;
   late final Future<void> _initialization;
   bool _disposed = false;
+  int _trackLoadRevision = 0;
+  _PlaybackConfiguration? _desiredConfiguration;
+  _PlaybackConfiguration? _appliedConfiguration;
+  Future<void>? _configurationDrain;
 
   Player get player => _player;
 
@@ -123,17 +151,18 @@ class AudioService {
     bool exclusiveMode = false,
     bool play = true,
   }) async {
+    final revision = ++_trackLoadRevision;
     await _ensureReady();
-    try {
-      await _player.setAudioExclusive(exclusiveMode);
-    } catch (e) {
-      //
-    }
-
-    await setPitch(pitch);
-    await setRate(rate);
-    await applyEqualizer(gains: eqGains, frequencies: eqFrequencies);
-
+    await _ensurePlaybackConfiguration(
+      _PlaybackConfiguration(
+        pitch: pitch,
+        rate: rate,
+        eqGains: List<double>.unmodifiable(eqGains),
+        eqFrequencies: List<int>.unmodifiable(eqFrequencies),
+        exclusiveMode: exclusiveMode,
+      ),
+    );
+    if (revision != _trackLoadRevision) return;
     await _player.open(Media(filePath), play: play);
   }
 
@@ -170,22 +199,78 @@ class AudioService {
     bool exclusiveMode = false,
     bool play = true,
   }) async {
+    final revision = ++_trackLoadRevision;
     await _ensureReady();
-    try {
-      await _player.setAudioExclusive(exclusiveMode);
-    } catch (e) {
-      //
-    }
-
-    await setPitch(pitch);
-    await setRate(rate);
-    await applyEqualizer(gains: eqGains, frequencies: eqFrequencies);
+    await _ensurePlaybackConfiguration(
+      _PlaybackConfiguration(
+        pitch: pitch,
+        rate: rate,
+        eqGains: List<double>.unmodifiable(eqGains),
+        eqFrequencies: List<int>.unmodifiable(eqFrequencies),
+        exclusiveMode: exclusiveMode,
+      ),
+    );
+    if (revision != _trackLoadRevision) return;
 
     final tracks = [Media(currentPath)];
     if (nextPath != null) {
       tracks.add(Media(nextPath));
     }
     await _player.openAll(tracks, play: play);
+  }
+
+  Future<void> _ensurePlaybackConfiguration(
+    _PlaybackConfiguration configuration,
+  ) async {
+    _desiredConfiguration = configuration;
+    final existingDrain = _configurationDrain;
+    if (existingDrain != null) {
+      await existingDrain;
+      return;
+    }
+
+    final drain = _drainPlaybackConfiguration();
+    _configurationDrain = drain;
+    try {
+      await drain;
+    } finally {
+      if (identical(_configurationDrain, drain)) {
+        _configurationDrain = null;
+      }
+    }
+  }
+
+  Future<void> _drainPlaybackConfiguration() async {
+    while (!_disposed) {
+      final target = _desiredConfiguration;
+      if (target == null) return;
+      final applied = _appliedConfiguration;
+      if (applied != null && applied.matches(target)) return;
+
+      if (applied == null || applied.exclusiveMode != target.exclusiveMode) {
+        try {
+          await _player.setAudioExclusive(target.exclusiveMode);
+        } catch (_) {
+          // Optional on platforms/backends that do not expose exclusivity.
+        }
+      }
+      if (applied == null || applied.pitch != target.pitch) {
+        await _player.setPitch(target.pitch);
+      }
+      if (applied == null || applied.rate != target.rate) {
+        await _player.setRate(target.rate);
+      }
+      if (applied == null ||
+          !listEquals(applied.eqGains, target.eqGains) ||
+          !listEquals(applied.eqFrequencies, target.eqFrequencies)) {
+        await _applyEqualizerToPlayer(
+          gains: target.eqGains,
+          frequencies: target.eqFrequencies,
+        );
+      }
+      _appliedConfiguration = target;
+      if (identical(target, _desiredConfiguration)) return;
+    }
   }
 
   // 替换 mpv playlist 中的预备项（index 1）
@@ -244,11 +329,13 @@ class AudioService {
   Future<void> setPitch(double pitch) async {
     await _ensureReady();
     await _player.setPitch(pitch);
+    _appliedConfiguration = null;
   }
 
   Future<void> setRate(double rate) async {
     await _ensureReady();
     await _player.setRate(rate);
+    _appliedConfiguration = null;
   }
 
   bool _isEqualizerFlat(List<double> gains) {
@@ -260,6 +347,14 @@ class AudioService {
     required List<int> frequencies,
   }) async {
     await _ensureReady();
+    await _applyEqualizerToPlayer(gains: gains, frequencies: frequencies);
+    _appliedConfiguration = null;
+  }
+
+  Future<void> _applyEqualizerToPlayer({
+    required List<double> gains,
+    required List<int> frequencies,
+  }) async {
     if (_isEqualizerFlat(gains)) {
       // 只清除均衡器自定义滤镜，保留用户启用的其它音效。
       await _player.updateAudioEffects(

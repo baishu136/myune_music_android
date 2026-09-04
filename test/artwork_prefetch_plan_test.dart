@@ -32,4 +32,16 @@ void main() {
     expect(plan.start, lessThan(50));
     expect(plan.end, lessThan(140));
   });
+
+  test('fast fling keeps the prefetch window bounded around its target', () {
+    final plan = planArtworkPrefetch(
+      itemCount: 10000,
+      pixels: 35000,
+      viewportPixels: 700,
+      itemExtent: 70,
+      velocityPixelsPerSecond: 6000,
+    );
+    expect(plan.end - plan.start, lessThanOrEqualTo(100));
+    expect(plan.predictedIndex, inInclusiveRange(plan.start, plan.end - 1));
+  });
 }

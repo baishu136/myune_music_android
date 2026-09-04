@@ -213,6 +213,10 @@ class _ArtistListState extends State<ArtistList> {
 
                           // 拼音排序
                           sortArtists(artistNames);
+                          artistNames = notifier.pinnedNamesFirst(
+                            PlaylistContentNotifier.artistsPinScope,
+                            artistNames,
+                          );
 
                           if (artistNames.isEmpty) {
                             return Center(
@@ -232,6 +236,10 @@ class _ArtistListState extends State<ArtistList> {
                                   itemCount: artistNames.length,
                                   itemBuilder: (context, index) {
                                     final artistName = artistNames[index];
+                                    final isPinned = notifier.isPinned(
+                                      PlaylistContentNotifier.artistsPinScope,
+                                      artistName,
+                                    );
                                     final songs = artists[artistName]!;
                                     final representativeSong = songs.firstWhere(
                                       (s) => s.albumArt != null,
@@ -247,6 +255,19 @@ class _ArtistListState extends State<ArtistList> {
                                       ),
                                       title: Text(artistName),
                                       subtitle: Text('共 ${songs.length} 首歌曲'),
+                                      trailing: isPinned
+                                          ? Padding(
+                                              padding: const EdgeInsets.only(
+                                                right: 8,
+                                              ),
+                                              child: Icon(
+                                                Icons.push_pin,
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.primary,
+                                              ),
+                                            )
+                                          : null,
                                       onTap: () {
                                         if (_scrollController.hasClients) {
                                           _savedScrollOffset =
@@ -256,6 +277,11 @@ class _ArtistListState extends State<ArtistList> {
                                           artistName,
                                         );
                                       },
+                                      onLongPress: () => _toggleArtistPin(
+                                        context,
+                                        notifier,
+                                        artistName,
+                                      ),
                                       shape: RoundedRectangleBorder(
                                         borderRadius: BorderRadius.circular(
                                           12.0,
@@ -273,6 +299,34 @@ class _ArtistListState extends State<ArtistList> {
               ],
             ),
     );
+  }
+
+  Future<void> _toggleArtistPin(
+    BuildContext context,
+    PlaylistContentNotifier notifier,
+    String artist,
+  ) async {
+    final pinned = notifier.isPinned(
+      PlaylistContentNotifier.artistsPinScope,
+      artist,
+    );
+    final action = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListTile(
+          leading: Icon(pinned ? Icons.push_pin_outlined : Icons.push_pin),
+          title: Text(pinned ? '取消置顶' : '置顶歌手'),
+          onTap: () => Navigator.pop(sheetContext, true),
+        ),
+      ),
+    );
+    if (action == true) {
+      await notifier.togglePinned(
+        PlaylistContentNotifier.artistsPinScope,
+        artist,
+      );
+    }
   }
 }
 

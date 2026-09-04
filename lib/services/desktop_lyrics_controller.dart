@@ -8,6 +8,7 @@ import 'package:mpv_audio_kit/mpv_audio_kit.dart';
 import '../page/playlist/playlist_content_notifier.dart';
 import '../page/playlist/playlist_models.dart';
 import '../page/setting/settings_provider.dart';
+import 'font_service.dart';
 import '../theme/theme_provider.dart';
 
 class DesktopLyricsController extends ChangeNotifier {
@@ -16,8 +17,10 @@ class DesktopLyricsController extends ChangeNotifier {
   );
 
   SettingsProvider? _settings;
+  ThemeProvider? _theme;
   PlaylistContentNotifier? _playlist;
   StreamSubscription<Duration>? _positionSubscription;
+  Timer? _songSwitchSyncTimer;
   StreamSubscription<dynamic>? _mediaCommandSubscription;
   Duration _position = Duration.zero;
   bool _initialized = false;
@@ -32,12 +35,21 @@ class DesktopLyricsController extends ChangeNotifier {
   bool _syncRunning = false;
   bool _syncRequested = false;
   bool _forceSyncRequested = false;
+  String? _pendingSongSwitchPath;
+  String? _observedFontFamily;
+  String? _resolvedFontFamily;
+  String? _resolvedFontPath;
+  int _resolvedFontCollectionIndex = 0;
 
   bool get isSupported => Platform.isAndroid;
   bool get enabled => _settings?.desktopLyricsEnabled ?? false;
   bool get locked => _settings?.desktopLyricsLocked ?? false;
   double get fontSize => _settings?.desktopLyricsFontSize ?? 22.0;
   int get color => _settings?.desktopLyricsColor ?? 0xFF00A9D6;
+  bool get outlineEnabled => _settings?.desktopLyricsOutlineEnabled ?? false;
+  double get outlineWidth => _settings?.desktopLyricsOutlineWidth ?? 1.15;
+  int get outlineColor => _settings?.desktopLyricsOutlineColor ?? 0xFFFFFFFF;
+  double get outlineOpacity => _settings?.desktopLyricsOutlineOpacity ?? 1.0;
 
   Future<bool> hasOverlayPermission() async {
     if (!isSupported) return false;
@@ -56,14 +68,20 @@ class DesktopLyricsController extends ChangeNotifier {
     ThemeProvider theme,
     PlaylistContentNotifier playlist,
   ) {
-    if (identical(_settings, settings) && identical(_playlist, playlist)) {
+    if (identical(_settings, settings) &&
+        identical(_theme, theme) &&
+        identical(_playlist, playlist)) {
       return;
     }
     _settings?.removeListener(_onSettingsChanged);
+    _theme?.removeListener(_onThemeChanged);
     _playlist?.removeListener(_onPlaylistChanged);
     _settings = settings;
+    _theme = theme;
+    _observedFontFamily = theme.currentFontFamily;
     _playlist = playlist;
     settings.addListener(_onSettingsChanged);
+    theme.addListener(_onThemeChanged);
     playlist.addListener(_onPlaylistChanged);
     if (!_initialized) {
       _initialized = true;
@@ -104,6 +122,9 @@ class DesktopLyricsController extends ChangeNotifier {
     if (!isSupported) return false;
     if (!value) {
       _pendingEnable = false;
+      _songSwitchSyncTimer?.cancel();
+      _songSwitchSyncTimer = null;
+      _pendingSongSwitchPath = null;
       _positionSubscription?.cancel();
       _positionSubscription = null;
       _overlayShown = false;
@@ -153,6 +174,26 @@ class DesktopLyricsController extends ChangeNotifier {
 
   Future<void> setFontSize(double value) async {
     await _settings?.setDesktopLyricsFontSize(value);
+    await _sync(force: true);
+  }
+
+  Future<void> setOutlineEnabled(bool value) async {
+    await _settings?.setDesktopLyricsOutlineEnabled(value);
+    await _sync(force: true);
+  }
+
+  Future<void> setOutlineWidth(double value) async {
+    await _settings?.setDesktopLyricsOutlineWidth(value);
+    await _sync(force: true);
+  }
+
+  Future<void> setOutlineColor(int value) async {
+    await _settings?.setDesktopLyricsOutlineColor(value);
+    await _sync(force: true);
+  }
+
+  Future<void> setOutlineOpacity(double value) async {
+    await _settings?.setDesktopLyricsOutlineOpacity(value);
     await _sync(force: true);
   }
 
@@ -241,6 +282,7 @@ class DesktopLyricsController extends ChangeNotifier {
       final index = _currentLyricIndex(lyrics, position);
       if (index != _lastLyricIndex) {
         _lastLyricIndex = index;
+        if (_pendingSongSwitchPath != null) return;
         unawaited(_sync());
       }
     });
@@ -254,6 +296,14 @@ class DesktopLyricsController extends ChangeNotifier {
     notifyListeners();
   }
 
+  void _onThemeChanged() {
+    final fontFamily = _theme?.currentFontFamily;
+    if (fontFamily == _observedFontFamily) return;
+    _observedFontFamily = fontFamily;
+    if (enabled) unawaited(_sync(force: true));
+    notifyListeners();
+  }
+
   void _onPlaylistChanged() {
     if (!enabled) return;
     _startPositionUpdates();
@@ -262,6 +312,7 @@ class DesktopLyricsController extends ChangeNotifier {
     final songPath = playlist.currentSong?.filePath;
     final lyrics = playlist.currentLyrics;
     final playing = playlist.isPlaying;
+    final songChanged = songPath != _observedSongPath;
     final materiallyChanged =
         songPath != _observedSongPath ||
         !identical(lyrics, _observedLyrics) ||
@@ -274,6 +325,22 @@ class DesktopLyricsController extends ChangeNotifier {
     _observedPlaying = playing;
     _position = playlist.mediaPlayer.state.position;
     _lastLyricIndex = _currentLyricIndex(lyrics, _position);
+    if (songChanged) {
+      _pendingSongSwitchPath = songPath;
+      _songSwitchSyncTimer?.cancel();
+      _songSwitchSyncTimer = Timer(const Duration(milliseconds: 280), () {
+        if (!enabled || _playlist?.currentSong?.filePath != songPath) return;
+        _pendingSongSwitchPath = null;
+        unawaited(_sync(force: true));
+      });
+      return;
+    }
+    if (_pendingSongSwitchPath == songPath) {
+      if (lyrics.isEmpty) return;
+      _songSwitchSyncTimer?.cancel();
+      _songSwitchSyncTimer = null;
+      _pendingSongSwitchPath = null;
+    }
     unawaited(_sync());
   }
 
@@ -298,12 +365,14 @@ class DesktopLyricsController extends ChangeNotifier {
     if (!isSupported || !enabled) return;
     final playlist = _playlist;
     final settings = _settings;
-    if (playlist == null || settings == null) return;
+    final theme = _theme;
+    if (playlist == null || settings == null || theme == null) return;
     final song = playlist.currentSong;
     final lyrics = playlist.currentLyrics;
     final lyricIndex = _currentLyricIndex(lyrics, _position);
     _lastLyricIndex = lyricIndex;
     final lyric = _lyricAt(lyrics, lyricIndex);
+    final fontPath = await _resolveFontPath(theme.currentFontFamily);
     final payload = <String, Object?>{
       'title': song?.title ?? 'Myune music for Android',
       'artist': song?.artist ?? '',
@@ -312,6 +381,13 @@ class DesktopLyricsController extends ChangeNotifier {
       'isLocked': settings.desktopLyricsLocked,
       'color': settings.desktopLyricsColor,
       'fontSize': settings.desktopLyricsFontSize,
+      'fontFamily': theme.currentFontFamily,
+      'fontPath': fontPath ?? '',
+      'fontCollectionIndex': _resolvedFontCollectionIndex,
+      'outlineEnabled': settings.desktopLyricsOutlineEnabled,
+      'outlineWidth': settings.desktopLyricsOutlineWidth,
+      'outlineColor': settings.desktopLyricsOutlineColor,
+      'outlineOpacity': settings.desktopLyricsOutlineOpacity,
       // Desktop lyrics deliberately use their own color. App dynamic theme
       // changes must never overwrite a color explicitly chosen by the user.
       'dynamicColor': false,
@@ -352,6 +428,15 @@ class DesktopLyricsController extends ChangeNotifier {
     return text.isEmpty ? '♪' : text;
   }
 
+  Future<String?> _resolveFontPath(String fontFamily) async {
+    if (_resolvedFontFamily == fontFamily) return _resolvedFontPath;
+    _resolvedFontFamily = fontFamily;
+    final reference = await FontService().resolveFontFile(fontFamily);
+    _resolvedFontPath = reference?.path;
+    _resolvedFontCollectionIndex = reference?.collectionIndex ?? 0;
+    return _resolvedFontPath;
+  }
+
   Future<void> _refreshNotification() async {
     await _playlist?.refreshDesktopLyricsMediaSession();
   }
@@ -359,8 +444,10 @@ class DesktopLyricsController extends ChangeNotifier {
   @override
   void dispose() {
     _settings?.removeListener(_onSettingsChanged);
+    _theme?.removeListener(_onThemeChanged);
     _playlist?.removeListener(_onPlaylistChanged);
     _positionSubscription?.cancel();
+    _songSwitchSyncTimer?.cancel();
     _mediaCommandSubscription?.cancel();
     if (isSupported) unawaited(_channel.invokeMethod<void>('hide'));
     super.dispose();

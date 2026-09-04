@@ -3,6 +3,8 @@ package com.myune.music
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
@@ -10,6 +12,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.text.TextUtils
 import android.util.TypedValue
 import android.view.Gravity
 import android.view.MotionEvent
@@ -19,7 +22,73 @@ import android.widget.ImageButton
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.TextView
+import java.io.File
 import kotlin.math.abs
+
+private class OutlinedLyricTextView(context: Context) : TextView(context) {
+    private var fillColor = Color.WHITE
+    private var outlineEnabled = false
+    private var outlineWidth = resources.displayMetrics.density * 1.15f
+    private var outlineColor = Color.WHITE
+
+    fun setLyricColor(color: Int) {
+        fillColor = color
+        setTextColor(fillColor)
+        invalidate()
+    }
+
+    fun setOutline(enabled: Boolean, width: Float, color: Int, opacity: Float) {
+        outlineEnabled = enabled
+        outlineWidth = resources.displayMetrics.density * width.coerceIn(0.5f, 4f)
+        outlineColor = Color.argb(
+            (Color.alpha(color) * opacity.coerceIn(0.1f, 1f)).toInt(),
+            Color.red(color),
+            Color.green(color),
+            Color.blue(color),
+        )
+        invalidate()
+    }
+
+    fun setStableText(value: String) {
+        if (text.toString() == value) return
+        scrollTo(0, 0)
+        text = value
+        scrollTo(0, 0)
+    }
+
+    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
+        super.onLayout(changed, left, top, right, bottom)
+        if (scrollX != 0 || scrollY != 0) scrollTo(0, 0)
+    }
+
+    override fun onDraw(canvas: Canvas) {
+        val textLayout = layout ?: return
+        val saveCount = canvas.save()
+        canvas.clipRect(
+            compoundPaddingLeft.toFloat(),
+            extendedPaddingTop.toFloat(),
+            (width - compoundPaddingRight).toFloat(),
+            (height - extendedPaddingBottom).toFloat(),
+        )
+        canvas.translate(
+            compoundPaddingLeft.toFloat(),
+            extendedPaddingTop.toFloat(),
+        )
+
+        if (outlineEnabled) {
+            paint.style = Paint.Style.STROKE
+            paint.strokeWidth = outlineWidth
+            paint.strokeJoin = Paint.Join.ROUND
+            paint.color = outlineColor
+            textLayout.draw(canvas)
+        }
+
+        paint.style = Paint.Style.FILL
+        paint.color = fillColor
+        textLayout.draw(canvas)
+        canvas.restoreToCount(saveCount)
+    }
+}
 
 class DesktopLyricsOverlayManager(
     private val context: Context,
@@ -40,9 +109,15 @@ class DesktopLyricsOverlayManager(
     private var hasContent = false
     private var lyricColor = Color.rgb(0, 169, 214)
     private var lyricSize = 22f
+    private var lyricFontPath = ""
+    private var lyricFontCollectionIndex = 0
+    private var lyricTypeface: Typeface = Typeface.DEFAULT
+    private var outlineEnabled = false
+    private var outlineWidth = 1.15f
+    private var outlineColor = Color.WHITE
+    private var outlineOpacity = 1f
 
-    // Neutral gray at 30% opacity, independent from the app's dynamic theme.
-    private val expandedBackgroundColor = Color.argb(77, 128, 128, 128)
+    private val expandedBackgroundColor = Color.argb(128, 48, 48, 48)
     private val mainHandler = Handler(Looper.getMainLooper())
     private val autoCollapseRunnable = Runnable {
         if (expanded && !locked) {
@@ -61,11 +136,26 @@ class DesktopLyricsOverlayManager(
 
     fun update(values: Map<String, Any?>) {
         val wasLocked = locked
-        values["lyric"]?.let { lyricView?.text = it.toString() }
+        values["lyric"]?.let {
+            (lyricView as? OutlinedLyricTextView)?.setStableText(it.toString())
+        }
         values["isPlaying"]?.let { playing = it as? Boolean ?: playing }
         values["isLocked"]?.let { locked = it as? Boolean ?: locked }
         (values["color"] as? Number)?.let { lyricColor = it.toInt() }
         (values["fontSize"] as? Number)?.let { lyricSize = it.toFloat().coerceIn(16f, 38f) }
+        val incomingFontPath = values["fontPath"]?.toString() ?: lyricFontPath
+        val incomingFontIndex =
+            (values["fontCollectionIndex"] as? Number)?.toInt()?.coerceAtLeast(0)
+                ?: lyricFontCollectionIndex
+        if (incomingFontPath != lyricFontPath || incomingFontIndex != lyricFontCollectionIndex) {
+            lyricFontPath = incomingFontPath
+            lyricFontCollectionIndex = incomingFontIndex
+            lyricTypeface = loadLyricTypeface(incomingFontPath, incomingFontIndex)
+        }
+        values["outlineEnabled"]?.let { outlineEnabled = it as? Boolean ?: false }
+        (values["outlineWidth"] as? Number)?.let { outlineWidth = it.toFloat() }
+        (values["outlineColor"] as? Number)?.let { outlineColor = it.toInt() }
+        (values["outlineOpacity"] as? Number)?.let { outlineOpacity = it.toFloat() }
         applyVisualState(refreshWindow = wasLocked != locked)
     }
 
@@ -149,12 +239,16 @@ class DesktopLyricsOverlayManager(
             setPadding(dp(14), dp(8), dp(14), dp(8))
         }
 
-        lyricView = TextView(context).apply {
+        lyricView = OutlinedLyricTextView(context).apply {
             gravity = Gravity.CENTER
             maxLines = 3
+            ellipsize = TextUtils.TruncateAt.END
+            setHorizontallyScrolling(false)
+            breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
+            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
+            includeFontPadding = false
             setTypeface(typeface, Typeface.NORMAL)
             setPadding(dp(8), dp(6), dp(8), dp(6))
-            setShadowLayer(dp(1).toFloat(), 0f, dp(1).toFloat(), Color.argb(150, 0, 0, 0))
         }
         installDragAndExpand(lyricView!!)
         root!!.addView(lyricView, matchWrap())
@@ -285,16 +379,22 @@ class DesktopLyricsOverlayManager(
     }
 
     private fun applyVisualState(refreshWindow: Boolean = false) {
-        lyricView?.setTextColor(lyricColor)
-        lyricView?.textSize = lyricSize
+        (lyricView as? OutlinedLyricTextView)?.setLyricColor(lyricColor)
+        (lyricView as? OutlinedLyricTextView)?.setOutline(
+            outlineEnabled,
+            outlineWidth,
+            outlineColor,
+            outlineOpacity,
+        )
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            lyricView?.setAutoSizeTextTypeWithDefaults(TextView.AUTO_SIZE_TEXT_TYPE_NONE)
+        }
+        lyricView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, lyricSize)
+        lyricView?.typeface = lyricTypeface
         playButton?.setImageResource(
             if (playing) R.drawable.ic_desktop_lyrics_pause else R.drawable.ic_desktop_lyrics_play,
         )
-        root?.background = if (expanded) {
-            roundedBackground(expandedBackgroundColor)
-        } else {
-            null
-        }
+        root?.background = if (expanded) roundedBackground(expandedBackgroundColor) else null
         params?.let { lp ->
             val base = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
@@ -308,6 +408,24 @@ class DesktopLyricsOverlayManager(
         if (refreshWindow) refreshLayout()
     }
 
+    private fun loadLyricTypeface(path: String, collectionIndex: Int): Typeface {
+        if (path.isBlank()) return Typeface.DEFAULT
+        return try {
+            val file = File(path)
+            if (file.isFile && file.canRead()) {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    Typeface.Builder(file).setTtcIndex(collectionIndex).build()
+                } else {
+                    Typeface.createFromFile(file)
+                }
+            } else {
+                Typeface.DEFAULT
+            }
+        } catch (_: RuntimeException) {
+            Typeface.DEFAULT
+        }
+    }
+
     private fun refreshLayout() {
         val view = root ?: return
         if (view.parent != null) windowManager.updateViewLayout(view, params)
@@ -317,7 +435,7 @@ class DesktopLyricsOverlayManager(
         ImageButton(context).apply {
             setImageResource(icon)
             contentDescription = description
-            setColorFilter(Color.rgb(205, 211, 226))
+            setColorFilter(Color.WHITE)
             scaleType = ImageView.ScaleType.CENTER_INSIDE
             setPadding(dp(12), dp(10), dp(12), dp(10))
             val typedValue = TypedValue()
@@ -342,7 +460,7 @@ class DesktopLyricsOverlayManager(
         text = label
         textSize = 22f
         gravity = Gravity.CENTER
-        setTextColor(Color.rgb(205, 211, 226))
+        setTextColor(Color.WHITE)
         setTypeface(typeface, Typeface.BOLD)
         setPadding(dp(10), dp(5), dp(10), dp(5))
         setOnClickListener {

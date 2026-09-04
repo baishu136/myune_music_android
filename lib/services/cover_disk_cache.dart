@@ -10,7 +10,7 @@ class CoverDiskCache {
   CoverDiskCache({
     Directory? rootDirectory,
     this.maximumBytes = 192 * 1024 * 1024,
-    this.maximumEntries = 4000,
+    this.maximumEntries = 12000,
     this.cleanupInterval = 32,
     this.beforeMaintenance,
   }) : assert(maximumBytes > 0),
@@ -40,7 +40,10 @@ class CoverDiskCache {
         await file.delete();
         return null;
       }
-      await file.setLastModified(DateTime.now());
+      // A cache hit is on the critical path for rapidly appearing list rows.
+      // Touching every thumbnail adds a metadata write for each image and can
+      // serialize otherwise parallel reads on Android storage. Generation time
+      // remains a sufficiently stable eviction order for this bounded cache.
       return bytes;
     } catch (_) {
       return null;

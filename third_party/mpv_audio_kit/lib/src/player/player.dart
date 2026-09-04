@@ -210,8 +210,10 @@ class Player extends _PlayerBase
       // entry — never writing the global `http-header-fields` / `stream-lavf-o`.
       await _commandChecked(['loadfile', resolved.uri, 'replace', '-1', opts]);
     }
+    if (_disposed || epoch != _loadEpoch) return;
     if (parkedAtEof && shouldPlay) {
       await _prop('pause', 'no');
+      if (_disposed || epoch != _loadEpoch) return;
     }
     // Drop visible per-track state — cover art, chapter list and current
     // chapter index — so a UI that reads the state immediately after
@@ -377,7 +379,8 @@ class Player extends _PlayerBase
         await _commandChecked(['loadfile', resolved[i].uri, 'append']);
       } else {
         await _commandChecked(
-            ['loadfile', resolved[i].uri, 'append', '-1', opts],);
+          ['loadfile', resolved[i].uri, 'append', '-1', opts],
+        );
       }
       if (_disposed || epoch != _loadEpoch) return bailDisposing();
     }
@@ -1225,7 +1228,8 @@ abstract class _PlayerBase {
       var hooksSettled = true;
       if (_pendingHookAdds.isNotEmpty) {
         try {
-          await Future.wait(_pendingHookAdds).timeout(const Duration(seconds: 2));
+          await Future.wait(_pendingHookAdds)
+              .timeout(const Duration(seconds: 2));
         } on TimeoutException {
           hooksSettled = false;
         } catch (_) {}

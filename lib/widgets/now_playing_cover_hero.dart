@@ -9,6 +9,22 @@ bool shouldEnableNowPlayingCoverHero({
   required bool initialCoverHeroReady,
 }) => !showLyrics && (routeTransitionComplete || initialCoverHeroReady);
 
+/// The previous decoded frame may bridge only the currently active artwork
+/// handoff. Once that bounded handoff expires it must never be presented as a
+/// different song's cover.
+bool shouldRetainPreviousNowPlayingArtwork({
+  required String songPath,
+  required String? preparedPath,
+  required String? handoffTargetPath,
+}) => preparedPath != songPath && handoffTargetPath == songPath;
+
+/// Realtime lyric effects stay dormant while the route is being composited.
+/// Artwork preparation is intentionally independent and may continue.
+bool shouldRunNowPlayingLyricsRealtime({
+  required bool showLyrics,
+  required bool routeTransitionActive,
+}) => showLyrics && !routeTransitionActive;
+
 class NowPlayingCoverHero extends StatelessWidget {
   const NowPlayingCoverHero({
     super.key,

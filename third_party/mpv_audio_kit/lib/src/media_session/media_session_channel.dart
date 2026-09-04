@@ -12,6 +12,18 @@ import '../models/media_session.dart';
 import '../types/enums/loop.dart';
 import '../types/sealed/media_session_command.dart';
 
+/// Hidden compatibility escape hatch for Android system media surfaces.
+///
+/// The default single-item timeline is robust when an OEM seek controller
+/// supplies a stale media-item index. A diagnostic/fallback APK can restore
+/// the historical synthetic prev/current/next timeline without changing
+/// source code:
+///
+/// `--dart-define=MYUNE_LEGACY_ANDROID_MEDIA_TIMELINE=true`
+const bool _legacyAndroidMediaTimeline = bool.fromEnvironment(
+  'MYUNE_LEGACY_ANDROID_MEDIA_TIMELINE',
+);
+
 /// Effective metadata snapshot pushed to native — already resolved
 /// (override > mpv-derived). The controller computes this and hands it
 /// to the channel; the channel just serialises and ships.
@@ -245,6 +257,8 @@ class MediaSessionChannel {
       'fastForwardIntervalMs': s.fastForwardInterval.inMilliseconds,
       'rewindIntervalMs': s.rewindInterval.inMilliseconds,
       'supportedPlaybackRates': s.supportedPlaybackRates,
+      if (defaultTargetPlatform == TargetPlatform.android)
+        'legacyAndroidMediaTimeline': _legacyAndroidMediaTimeline,
     };
     // `appName` is consumed by Windows SMTC (the process AUMID) and Linux MPRIS
     // (Identity / bus name); macOS / iOS / Android use the system app identity.

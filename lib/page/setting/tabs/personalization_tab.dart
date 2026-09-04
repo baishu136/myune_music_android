@@ -22,8 +22,22 @@ class PersonalizationTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('personalization'),
       children: [
-        if (Platform.isAndroid) const ThemeSettingsSection(),
-        if (Platform.isAndroid) const CustomThemeSettingsSection(),
+        if (Platform.isAndroid) ...[
+          const _PersonalizationSectionHeader(
+            icon: Icons.palette_outlined,
+            title: '主题与配色',
+          ),
+          const ThemeSettingsSection(),
+          const _PersonalizationSectionHeader(
+            icon: Icons.wallpaper_outlined,
+            title: '背景',
+          ),
+          const CustomThemeSettingsSection(),
+        ],
+        const _PersonalizationSectionHeader(
+          icon: Icons.text_fields_outlined,
+          title: '字体与排版',
+        ),
         // 系统字体选择器
         const Padding(
           padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -82,16 +96,45 @@ class PersonalizationTab extends StatelessWidget {
               context.read<SettingsProvider>().setPreferExternalLyrics(value);
             },
           ),
-        // 始终显示专辑名称
-        SwitchListTile(
-          title: const Text('始终显示专辑名称'),
-          value: settings.showAlbumName,
-          onChanged: (value) {
-            context.read<SettingsProvider>().setShowAlbumName(value);
-          },
-        ),
-        if (Platform.isAndroid) ...playbackPageSettingTiles(context),
+        if (Platform.isAndroid) ...[
+          const _PersonalizationSectionHeader(
+            icon: Icons.play_circle_outline,
+            title: '播放页',
+          ),
+          ...playbackPageSettingTiles(context),
+        ],
       ],
+    );
+  }
+}
+
+class _PersonalizationSectionHeader extends StatelessWidget {
+  const _PersonalizationSectionHeader({
+    required this.icon,
+    required this.title,
+  });
+
+  final IconData icon;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 20, 16, 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 20, color: scheme.primary),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: Theme.of(context).textTheme.titleMedium?.copyWith(
+              color: scheme.primary,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

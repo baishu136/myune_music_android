@@ -57,15 +57,28 @@ class SongPlayStat {
 
 class StatisticsData extends ChangeNotifier {
   final Map<String, SongPlayStat> _songStats = {};
+  int _totalPlaybackMilliseconds = 0;
 
   StatisticsData();
 
   Map<String, SongPlayStat> get songStats => Map.unmodifiable(_songStats);
+  Duration get totalPlaybackDuration =>
+      Duration(milliseconds: _totalPlaybackMilliseconds);
 
   // 用于更新统计数据的方法
-  void updateStats(Map<String, SongPlayStat> newStats) {
+  void updateStats(
+    Map<String, SongPlayStat> newStats, {
+    Duration totalPlaybackDuration = Duration.zero,
+  }) {
     _songStats.clear();
     _songStats.addAll(newStats);
+    _totalPlaybackMilliseconds = totalPlaybackDuration.inMilliseconds;
+    notifyListeners();
+  }
+
+  void addPlaybackDuration(Duration duration) {
+    if (duration <= Duration.zero) return;
+    _totalPlaybackMilliseconds += duration.inMilliseconds;
     notifyListeners();
   }
 
@@ -183,6 +196,8 @@ class StatisticsData extends ChangeNotifier {
             data._songStats[stat.path] = stat;
           }
         }
+        data._totalPlaybackMilliseconds =
+            (json['totalPlaybackMilliseconds'] as num?)?.toInt() ?? 0;
       } catch (e) {
         // 流空
       }
@@ -193,11 +208,15 @@ class StatisticsData extends ChangeNotifier {
   // 转换为json
   String toJson() {
     final songsJson = _songStats.values.map((stat) => stat.toJson()).toList();
-    return jsonEncode({'songs': songsJson});
+    return jsonEncode({
+      'songs': songsJson,
+      'totalPlaybackMilliseconds': _totalPlaybackMilliseconds,
+    });
   }
 
   void clearStats() {
     _songStats.clear();
+    _totalPlaybackMilliseconds = 0;
     notifyListeners();
   }
 }

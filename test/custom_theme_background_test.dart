@@ -39,6 +39,62 @@ void main() {
     expect(find.text('content'), findsOne);
   });
 
+  testWidgets('stable background parameters reuse the Gaussian filter', (
+    tester,
+  ) async {
+    Widget buildBackground(String label) => MaterialApp(
+      home: CustomThemeBackground(
+        path: null,
+        enabled: false,
+        dim: 0.6,
+        coverBytes: pixel,
+        coverEnabled: true,
+        coverBlurSigma: 28,
+        child: Text(label),
+      ),
+    );
+
+    await tester.pumpWidget(buildBackground('first frame'));
+    final firstFilter = tester.widget<ImageFiltered>(
+      find.byType(ImageFiltered),
+    );
+    await tester.pumpWidget(buildBackground('updated foreground'));
+    final secondFilter = tester.widget<ImageFiltered>(
+      find.byType(ImageFiltered),
+    );
+
+    expect(
+      identical(firstFilter.imageFilter, secondFilter.imageFilter),
+      isTrue,
+    );
+    expect(find.text('updated foreground'), findsOneWidget);
+  });
+
+  testWidgets('album artwork takes priority over a custom background', (
+    tester,
+  ) async {
+    const customPath = '/unused/custom-background.png';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: CustomThemeBackground(
+          path: customPath,
+          enabled: true,
+          dim: 0.6,
+          coverBytes: pixel,
+          coverEnabled: true,
+          child: const Text('cover first'),
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('cover-follow-background')), findsOne);
+    expect(
+      find.byKey(const ValueKey('custom-theme-background-$customPath')),
+      findsNothing,
+    );
+  });
+
   testWidgets('theme falls back to normal content without usable artwork', (
     tester,
   ) async {
@@ -176,26 +232,29 @@ void main() {
     expect(settings.playbackLyricGlowRadius, 8);
   });
 
-  test('legacy integer sliders do not interrupt background restoration', () async {
-    SharedPreferences.setMockInitialValues({
-      'fontSize': 20,
-      'lyricVerticalSpacing': 6,
-      'homeThemeImagePath': '/persisted/home-background.jpg',
-      'homeThemeImageEnabled': true,
-      'homeThemeImageDim': 1,
-      'homeThemeImageBlur': 18,
-    });
+  test(
+    'legacy integer sliders do not interrupt background restoration',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'fontSize': 20,
+        'lyricVerticalSpacing': 6,
+        'homeThemeImagePath': '/persisted/home-background.jpg',
+        'homeThemeImageEnabled': true,
+        'homeThemeImageDim': 1,
+        'homeThemeImageBlur': 18,
+      });
 
-    final settings = SettingsProvider();
-    await settings.initializationFuture;
+      final settings = SettingsProvider();
+      await settings.initializationFuture;
 
-    expect(settings.fontSize, 20);
-    expect(settings.lyricVerticalSpacing, 6);
-    expect(settings.homeThemeImagePath, '/persisted/home-background.jpg');
-    expect(settings.homeThemeImageEnabled, isTrue);
-    expect(settings.homeThemeImageDim, 0.9);
-    expect(settings.homeThemeImageBlur, 18);
-  });
+      expect(settings.fontSize, 20);
+      expect(settings.lyricVerticalSpacing, 6);
+      expect(settings.homeThemeImagePath, '/persisted/home-background.jpg');
+      expect(settings.homeThemeImageEnabled, isTrue);
+      expect(settings.homeThemeImageDim, 0.9);
+      expect(settings.homeThemeImageBlur, 18);
+    },
+  );
 
   test(
     'persisted background controls are clamped to supported ranges',

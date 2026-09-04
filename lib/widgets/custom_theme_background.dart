@@ -18,6 +18,20 @@ double backgroundGaussianSigma(double strength) {
   return (normalized * 2.25).clamp(0.0, 90.0);
 }
 
+final Map<double, ui.ImageFilter> _backgroundBlurFilters = {};
+
+ui.ImageFilter _cachedBackgroundBlur(double sigma) {
+  final cacheKey = (sigma * 4).round() / 4;
+  return _backgroundBlurFilters.putIfAbsent(
+    cacheKey,
+    () => ui.ImageFilter.blur(
+      sigmaX: cacheKey,
+      sigmaY: cacheKey,
+      tileMode: TileMode.mirror,
+    ),
+  );
+}
+
 class CustomThemeBackground extends StatelessWidget {
   const CustomThemeBackground({
     super.key,
@@ -56,7 +70,7 @@ class CustomThemeBackground extends StatelessWidget {
   Widget build(BuildContext context) {
     final showCover = _canShowCover;
     if (!showCover && !_canShowCustomImage) return child;
-    final mode = context.watch<ThemeProvider?>()?.themeMode;
+    final mode = context.watch<ThemeProvider?>()?.effectiveThemeMode;
     final dark = brightnessOverride != null
         ? brightnessOverride == Brightness.dark
         : switch (mode) {
@@ -91,18 +105,14 @@ class CustomThemeBackground extends StatelessWidget {
             filterQuality: FilterQuality.medium,
             gaplessPlayback: true,
             errorBuilder: (_, __, ___) =>
-                const ColoredBox(color: Colors.transparent),
+                ColoredBox(color: Theme.of(context).scaffoldBackgroundColor),
           );
     if (effectiveBlur > 0) {
       image = ClipRect(
         child: Transform.scale(
           scale: (1 + effectiveBlur / 450).clamp(1.0, 1.20),
           child: ImageFiltered(
-            imageFilter: ui.ImageFilter.blur(
-              sigmaX: effectiveBlur,
-              sigmaY: effectiveBlur,
-              tileMode: TileMode.mirror,
-            ),
+            imageFilter: _cachedBackgroundBlur(effectiveBlur),
             child: image,
           ),
         ),

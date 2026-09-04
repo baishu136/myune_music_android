@@ -28,17 +28,18 @@ ArtworkPrefetchPlan planArtworkPrefetch({
   final visible = math.max(1, (viewportPixels / itemExtent).ceil());
   final speed = velocityPixelsPerSecond.abs();
   final screens = speed >= 3500
-      ? 18
+      ? 8
       : speed >= 1400
-      ? 10
-      : 5;
+      ? 6
+      : 4;
   final predictedPixels = math.max(
     0.0,
-    pixels + velocityPixelsPerSecond * 0.32,
+    pixels + velocityPixelsPerSecond * 0.20,
   );
-  final predicted = (predictedPixels / itemExtent)
-      .round()
-      .clamp(0, itemCount - 1);
+  final predicted = (predictedPixels / itemExtent).round().clamp(
+    0,
+    itemCount - 1,
+  );
   final forward = velocityPixelsPerSecond >= 0;
   final baseStart = forward ? first - visible : first - visible * screens;
   final baseEnd = forward

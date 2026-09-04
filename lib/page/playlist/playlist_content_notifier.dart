@@ -35,6 +35,17 @@ import '../../services/interaction_performance_controller.dart';
 import '../../services/search_service.dart';
 import '../../widgets/artwork_image.dart';
 
+double playbackSleepFadeFactor(
+  Duration remaining, {
+  Duration fadeWindow = const Duration(seconds: 30),
+}) {
+  if (remaining <= Duration.zero) return 0;
+  if (fadeWindow <= Duration.zero || remaining >= fadeWindow) return 1;
+  return (remaining.inMicroseconds / fadeWindow.inMicroseconds)
+      .clamp(0.0, 1.0)
+      .toDouble();
+}
+
 enum SortCriterion {
   title,
   artist,
@@ -52,6 +63,22 @@ enum DetailViewContext { playlist, allSongs, artist, album }
 
 enum ArtworkRequestPriority { visible, near, far, background }
 
+enum ArtworkResolutionState { loading, available, unavailable }
+
+class PlaybackSourceSnapshot {
+  const PlaybackSourceSnapshot({
+    required this.usesQueue,
+    required this.songs,
+    required this.currentIndex,
+    this.playlist,
+  });
+
+  final bool usesQueue;
+  final List<Song> songs;
+  final int currentIndex;
+  final Playlist? playlist;
+}
+
 const _networkLyricFallbackPriority = ['netease', 'qq', 'kugou'];
 
 List<String> networkLyricSourceOrder(
@@ -66,6 +93,49 @@ List<String> networkLyricSourceOrder(
     selected,
     ..._networkLyricFallbackPriority.where((source) => source != selected),
   ];
+}
+
+List<String> lyricResolutionPriority({
+  required bool preferExternalLyrics,
+  required bool enableOnlineLyrics,
+}) {
+  if (preferExternalLyrics) {
+    return ['external', if (enableOnlineLyrics) 'online', 'embedded'];
+  }
+  return [if (enableOnlineLyrics) 'online', 'external', 'embedded'];
+}
+
+class SongSortPreference {
+  const SongSortPreference({required this.criterion, required this.descending});
+
+  final SortCriterion criterion;
+  final bool descending;
+
+  Map<String, Object> toJson() => {
+    'criterion': criterion.name,
+    'descending': descending,
+  };
+
+  static SongSortPreference? fromJson(Object? value) {
+    if (value is! Map) return null;
+    final criterionName = value['criterion'];
+    final criterion = SortCriterion.values.where(
+      (item) => item.name == criterionName,
+    );
+    if (criterion.isEmpty) return null;
+    return SongSortPreference(
+      criterion: criterion.first,
+      descending: value['descending'] == true,
+    );
+  }
+}
+
+bool folderPlaylistTracksImportedRoot(Playlist playlist, String root) {
+  if (!playlist.isFolderBased) return false;
+  final normalizedRoot = p.normalize(root).toLowerCase();
+  return playlist.folderPaths.any(
+    (folder) => p.normalize(folder).toLowerCase() == normalizedRoot,
+  );
 }
 
 List<String> combineNetworkLyricLines(
@@ -109,6 +179,36 @@ List<int> playbackLyricNeighborIndices({
   ];
   return candidates.where((index) => index != currentIndex).toSet().toList();
 }
+
+List<int> playbackArtworkPrewarmIndices({
+  required int songCount,
+  required int currentIndex,
+  List<int>? playOrder,
+}) => playbackLyricNeighborIndices(
+  songCount: songCount,
+  currentIndex: currentIndex,
+  playOrder: playOrder,
+).take(2).toList(growable: false);
+
+int artworkWorkerLimit({required bool hasUrgentWork, int urgentLimit = 2}) =>
+    hasUrgentWork ? urgentLimit : 1;
+
+bool libraryMembershipChanged(
+  Iterable<String> savedPaths,
+  Iterable<String> availablePaths,
+) {
+  final saved = savedPaths.map(p.normalize).toList(growable: false);
+  final available = availablePaths.map(p.normalize).toSet();
+  final savedSet = saved.toSet();
+  return saved.length != savedSet.length ||
+      savedSet.length != available.length ||
+      !savedSet.containsAll(available);
+}
+
+bool canAdmitLibraryArtworkWarmRequest({
+  required int scheduledCount,
+  int maximumQueued = 4,
+}) => scheduledCount < maximumQueued;
 
 class ReplayGainWriteSummary {
   final int total;
@@ -157,6 +257,13 @@ class ImportedFolderRefreshSummary {
 
 class PlaylistContentNotifier extends ChangeNotifier
     with WidgetsBindingObserver {
+  static const String libraryPinScope = 'library';
+  static const String artistsPinScope = 'artists';
+  static const String albumsPinScope = 'albums';
+  static const String _pinnedItemsKey = 'pinned_items_v1';
+  static const String _songSortPreferencesKey = 'song_sort_preferences_v1';
+  static const String _allSongsSortScope = 'allSongs';
+
   // --- 播放列表相关 ---
   final PlaylistManager _playlistManager = PlaylistManager();
   final SettingsProvider _settingsProvider;
@@ -304,10 +411,236 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   List<Song> _allSongs = []; // 所有不重复歌曲的集合
   List<Song> get allSongs => _allSongs;
+  final Map<String, int> _allSongsIndexByPath = {};
+  int _artistGroupsRevision = -1;
+  String _artistGroupsSeparatorSignature = '';
+  Map<String, List<Song>> _artistGroupsCache = const {};
+  int _albumGroupsRevision = -1;
+  Map<String, List<Song>> _albumGroupsCache = const {};
   int _libraryRevision = 0;
   int get libraryRevision => _libraryRevision;
+  int _allSongsUpdateGeneration = 0;
+  int _metadataVerificationGeneration = 0;
+  int _libraryArtworkWarmGeneration = 0;
   int _playlistRevision = 0;
   int get playlistRevision => _playlistRevision;
+  final Map<String, List<String>> _pinnedItems = {};
+  final Map<String, SongSortPreference> _songSortPreferences = {};
+  final Map<String, int> _sortMembershipSignatures = {};
+
+  String playlistPinScope(String playlistId) => 'playlist:$playlistId';
+  String artistSongsPinScope(String artist) => 'artistSongs:$artist';
+  String albumSongsPinScope(String album) => 'albumSongs:$album';
+
+  String _playlistSortScope(String playlistId) => 'playlist:$playlistId';
+  String _artistSortScope(String artist) => 'artist:$artist';
+  String _albumSortScope(String album) => 'album:$album';
+
+  SongSortPreference? get currentSortPreference {
+    return switch (_currentDetailViewContext) {
+      DetailViewContext.allSongs => _songSortPreferences[_allSongsSortScope],
+      DetailViewContext.artist =>
+        _songSortPreferences[_artistSortScope(_activeDetailTitle)],
+      DetailViewContext.album =>
+        _songSortPreferences[_albumSortScope(_activeDetailTitle)],
+      DetailViewContext.playlist =>
+        _selectedIndex >= 0 && _selectedIndex < _playlists.length
+            ? _songSortPreferences[_playlistSortScope(
+                _playlists[_selectedIndex].id,
+              )]
+            : null,
+    };
+  }
+
+  String get currentSongPinScope {
+    switch (_currentDetailViewContext) {
+      case DetailViewContext.allSongs:
+        return libraryPinScope;
+      case DetailViewContext.artist:
+        return artistSongsPinScope(_activeDetailTitle);
+      case DetailViewContext.album:
+        return albumSongsPinScope(_activeDetailTitle);
+      case DetailViewContext.playlist:
+        if (_selectedIndex >= 0 && _selectedIndex < _playlists.length) {
+          return playlistPinScope(_playlists[_selectedIndex].id);
+        }
+        return 'playlist:unselected';
+    }
+  }
+
+  String _pinIdentity(String value) => value.trim().toLowerCase();
+
+  bool isPinned(String scope, String value) =>
+      _pinnedItems[scope]?.contains(_pinIdentity(value)) ?? false;
+
+  bool hasPins(String scope) => _pinnedItems[scope]?.isNotEmpty ?? false;
+
+  List<Song> pinnedFirst(String scope, Iterable<Song> songs) {
+    final source = songs is List<Song> ? songs : songs.toList(growable: false);
+    final pins = _pinnedItems[scope];
+    if (pins == null || pins.isEmpty) return source;
+    final byPath = <String, Song>{
+      for (final song in source) _pinIdentity(song.normalizedPath): song,
+    };
+    return [
+      for (final path in pins)
+        if (byPath[path] case final song?) song,
+      for (final song in source)
+        if (!pins.contains(_pinIdentity(song.normalizedPath))) song,
+    ];
+  }
+
+  List<String> pinnedNamesFirst(String scope, Iterable<String> names) {
+    final source = names is List<String>
+        ? names
+        : names.toList(growable: false);
+    final pins = _pinnedItems[scope];
+    if (pins == null || pins.isEmpty) return source;
+    final byName = <String, String>{
+      for (final name in source) _pinIdentity(name): name,
+    };
+    return [
+      for (final name in pins)
+        if (byName[name] case final original?) original,
+      for (final name in source)
+        if (!pins.contains(_pinIdentity(name))) name,
+    ];
+  }
+
+  List<Song> get pinnedLibrarySongs => pinnedFirst(libraryPinScope, _allSongs)
+      .where((song) => isPinned(libraryPinScope, song.normalizedPath))
+      .take(2)
+      .toList(growable: false);
+
+  Future<bool> togglePinned(String scope, String value) async {
+    final identity = _pinIdentity(value);
+    if (identity.isEmpty) return false;
+    final pins = _pinnedItems.putIfAbsent(scope, () => <String>[]);
+    final wasPinned = pins.remove(identity);
+    if (!wasPinned) {
+      if (scope == libraryPinScope && pins.length >= 2) {
+        _infoStreamController.add('音乐库最多置顶两首歌曲');
+        return false;
+      }
+      pins.insert(0, identity);
+    }
+    if (pins.isEmpty) _pinnedItems.remove(scope);
+    await _savePinnedItems();
+    _libraryRevision++;
+    _playlistRevision++;
+    notifyListeners();
+    return true;
+  }
+
+  Future<void> _loadPinnedItems() async {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = prefs.getString(_pinnedItemsKey);
+    if (encoded == null || encoded.isEmpty) return;
+    try {
+      final decoded = jsonDecode(encoded) as Map<String, dynamic>;
+      _pinnedItems
+        ..clear()
+        ..addAll(
+          decoded.map(
+            (scope, values) => MapEntry(
+              scope,
+              (values as List<dynamic>)
+                  .map((value) => _pinIdentity(value.toString()))
+                  .where((value) => value.isNotEmpty)
+                  .toSet()
+                  .toList(),
+            ),
+          ),
+        );
+      final libraryPins = _pinnedItems[libraryPinScope];
+      if (libraryPins != null && libraryPins.length > 2) {
+        _pinnedItems[libraryPinScope] = libraryPins.take(2).toList();
+      }
+    } catch (_) {
+      _pinnedItems.clear();
+    }
+  }
+
+  Future<void> _savePinnedItems() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_pinnedItemsKey, jsonEncode(_pinnedItems));
+  }
+
+  Future<void> _loadSongSortPreferences() async {
+    final prefs = await SharedPreferences.getInstance();
+    final encoded = prefs.getString(_songSortPreferencesKey);
+    if (encoded == null || encoded.isEmpty) return;
+    try {
+      final decoded = jsonDecode(encoded) as Map<String, dynamic>;
+      _songSortPreferences.clear();
+      for (final entry in decoded.entries) {
+        final preference = SongSortPreference.fromJson(entry.value);
+        if (preference != null) {
+          _songSortPreferences[entry.key] = preference;
+        }
+      }
+    } catch (_) {
+      _songSortPreferences.clear();
+    }
+  }
+
+  Future<void> _rememberSortPreference(
+    String scope,
+    SortCriterion criterion,
+    bool descending,
+  ) async {
+    _songSortPreferences[scope] = SongSortPreference(
+      criterion: criterion,
+      descending: descending,
+    );
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _songSortPreferencesKey,
+      jsonEncode(
+        _songSortPreferences.map((key, value) => MapEntry(key, value.toJson())),
+      ),
+    );
+  }
+
+  int _songMembershipSignature(Iterable<String> paths) {
+    final normalized = paths.map(_normalizePath).toList()..sort();
+    return Object.hashAll(normalized);
+  }
+
+  Future<void> _reapplyChangedPlaylistSorts() async {
+    for (final playlist in _playlists) {
+      final scope = _playlistSortScope(playlist.id);
+      final preference = _songSortPreferences[scope];
+      if (preference == null) continue;
+      final signature = _songMembershipSignature(playlist.songFilePaths);
+      if (_sortMembershipSignatures[scope] == signature) continue;
+
+      final sortedPaths = await _sortFilePaths(
+        paths: playlist.songFilePaths,
+        criterion: preference.criterion,
+        descending: preference.descending,
+      );
+      playlist.songFilePaths = sortedPaths;
+      if (playlist.songs != null) {
+        final songMap = {
+          for (final song in playlist.songs!)
+            _normalizePath(song.filePath): song,
+        };
+        final sortedSongs = sortedPaths
+            .map((path) => songMap[_normalizePath(path)])
+            .whereType<Song>()
+            .toList();
+        playlist.songs = sortedSongs.length == sortedPaths.length
+            ? sortedSongs
+            : null;
+      }
+      _sortMembershipSignatures[scope] = signature;
+      if (_selectedIndex == _playlists.indexOf(playlist)) {
+        _currentPlaylistSongs = playlist.songs ?? [];
+      }
+    }
+  }
+
   static const _hiddenLibrarySongsKey = 'hidden_library_song_paths';
   static const _hiddenLibrarySongIdentitiesKey =
       'hidden_library_song_identities';
@@ -318,6 +651,8 @@ class PlaylistContentNotifier extends ChangeNotifier
   // --- 元数据缓存 ---
   final Map<String, SongMetadataCacheEntry> _songMetadataCache = {};
   Timer? _metadataCacheSaveTimer;
+  Timer? _playbackStateSaveTimer;
+  int _playbackStateSaveGeneration = 0;
 
   // --- 封面加载队列 ---
   // A cover can be visible in more than one route at the same time (for
@@ -334,10 +669,23 @@ class PlaylistContentNotifier extends ChangeNotifier
   };
   final Map<String, ArtworkRequestPriority> _queuedCoverPriorities = {};
   final Set<String> _prefetchCoverPaths = {};
+  final Set<String> _libraryArtworkWarmPaths = {};
+  final ListQueue<String> _libraryArtworkWarmBacklog = ListQueue<String>();
+  final Set<String> _scheduledLibraryArtworkWarmPaths = {};
   final Map<String, List<Completer<Uint8List?>>> _coverWaiters = {};
   final Map<String, ChangeNotifier> _coverSignals = {};
   int _activeCoverWorkers = 0;
-  static const int _maxConcurrentCoverWorkers = 3;
+  int _activeUrgentCoverWorkers = 0;
+  // Two foreground metadata readers keep scrolling responsive without
+  // saturating the CPU/raster pipeline while a track change is opening.
+  static const int _maxConcurrentCoverWorkers = 2;
+  static const int _maxQueuedLibraryArtworkWarmRequests = 4;
+  String? _playbackVisualCoverPath;
+  final Set<String> _playbackArtworkPrewarmPaths = {};
+  final ValueNotifier<int> _playbackArtworkPrewarmRevision = ValueNotifier(0);
+  final ValueNotifier<String?> _playbackArtworkTargetListenable = ValueNotifier(
+    null,
+  );
 
   // --- 封面内存缓存 ---
   final ArtworkMemoryCache _coverCache = ArtworkMemoryCache(
@@ -350,6 +698,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   );
   final LinkedHashMap<String, Uint8List> _fullCoverCache = LinkedHashMap();
   final Set<String> _fullCoverUnavailable = {};
+  final Map<String, Set<Uint8List>> _undecodableCoverBytes = {};
   final Map<String, int> _coverVersionMs = {};
   final Set<String> _evictableCoverPaths = {};
   final CoverDiskCache _coverDiskCache = CoverDiskCache(
@@ -386,12 +735,130 @@ class PlaylistContentNotifier extends ChangeNotifier
   bool _appExitShutdownStarted = false;
   StreamSubscription<Duration>? _positionSubscription;
   bool _isAppForeground = true;
+  Timer? _foregroundArtworkRecoveryTimer;
+  int _foregroundArtworkRecoveryGeneration = 0;
 
   StreamSubscription<bool>? _exclusiveModeSubscription; // 用于管理独占模式的流订阅
   StreamSubscription? _loudnessSubscription; // 用于管理音量响度平衡的流订阅
 
   bool _isPlaying = false; // 播放器状态
   bool get isPlaying => _isPlaying;
+
+  Timer? _playbackSleepTimer;
+  Timer? _playbackSleepFadeStartTimer;
+  Timer? _playbackSleepFadeTicker;
+  DateTime? _playbackSleepTimerDeadline;
+  Duration _playbackSleepFadeWindow = const Duration(seconds: 30);
+  double _playbackSleepFadeFactor = 1;
+  int _playbackSleepTimerGeneration = 0;
+
+  DateTime? get playbackSleepTimerDeadline => _playbackSleepTimerDeadline;
+
+  Duration? get playbackSleepTimerRemaining {
+    final deadline = _playbackSleepTimerDeadline;
+    if (deadline == null) return null;
+    final remaining = deadline.difference(DateTime.now());
+    return remaining.isNegative ? Duration.zero : remaining;
+  }
+
+  void setPlaybackSleepTimer(Duration duration) {
+    if (duration <= Duration.zero) {
+      throw ArgumentError.value(duration, 'duration', '必须大于零');
+    }
+    final generation = ++_playbackSleepTimerGeneration;
+    _playbackSleepTimer?.cancel();
+    _playbackSleepFadeStartTimer?.cancel();
+    _playbackSleepFadeTicker?.cancel();
+    _playbackSleepFadeFactor = 1;
+    unawaited(_audioService.player.setVolume(_volume));
+    _playbackSleepTimerDeadline = DateTime.now().add(duration);
+    const maximumFadeWindow = Duration(seconds: 30);
+    _playbackSleepFadeWindow = duration < maximumFadeWindow
+        ? duration
+        : maximumFadeWindow;
+    _playbackSleepTimer = Timer(
+      duration,
+      () => unawaited(_handlePlaybackSleepTimerElapsed(generation)),
+    );
+    final fadeDelay = duration - _playbackSleepFadeWindow;
+    if (fadeDelay <= Duration.zero) {
+      _startPlaybackSleepFade(generation);
+    } else {
+      _playbackSleepFadeStartTimer = Timer(
+        fadeDelay,
+        () => _startPlaybackSleepFade(generation),
+      );
+    }
+    notifyListeners();
+  }
+
+  void cancelPlaybackSleepTimer() {
+    if (_playbackSleepTimerDeadline == null) return;
+    _playbackSleepTimerGeneration++;
+    _playbackSleepTimer?.cancel();
+    _playbackSleepFadeStartTimer?.cancel();
+    _playbackSleepFadeTicker?.cancel();
+    _playbackSleepTimer = null;
+    _playbackSleepFadeStartTimer = null;
+    _playbackSleepFadeTicker = null;
+    _playbackSleepTimerDeadline = null;
+    _playbackSleepFadeFactor = 1;
+    unawaited(_audioService.player.setVolume(_volume));
+    notifyListeners();
+  }
+
+  void _startPlaybackSleepFade(int generation) {
+    if (generation != _playbackSleepTimerGeneration ||
+        _playbackSleepTimerDeadline == null) {
+      return;
+    }
+    _playbackSleepFadeStartTimer = null;
+    _playbackSleepFadeTicker?.cancel();
+    _updatePlaybackSleepFade(generation);
+    _playbackSleepFadeTicker = Timer.periodic(
+      const Duration(milliseconds: 250),
+      (_) => _updatePlaybackSleepFade(generation),
+    );
+  }
+
+  void _updatePlaybackSleepFade(int generation) {
+    final deadline = _playbackSleepTimerDeadline;
+    if (generation != _playbackSleepTimerGeneration || deadline == null) {
+      return;
+    }
+    _playbackSleepFadeFactor = playbackSleepFadeFactor(
+      deadline.difference(DateTime.now()),
+      fadeWindow: _playbackSleepFadeWindow,
+    );
+    unawaited(
+      _audioService.player.setVolume(_volume * _playbackSleepFadeFactor),
+    );
+  }
+
+  Future<void> _handlePlaybackSleepTimerElapsed(int generation) async {
+    if (generation != _playbackSleepTimerGeneration) return;
+    _playbackSleepTimer = null;
+    _playbackSleepFadeStartTimer?.cancel();
+    _playbackSleepFadeTicker?.cancel();
+    _playbackSleepFadeStartTimer = null;
+    _playbackSleepFadeTicker = null;
+    _playbackSleepTimerDeadline = null;
+    _playbackSleepFadeFactor = 0;
+    await _audioService.player.setVolume(0);
+    if (generation != _playbackSleepTimerGeneration) {
+      await _audioService.player.setVolume(_volume * _playbackSleepFadeFactor);
+      return;
+    }
+    notifyListeners();
+    try {
+      await pause();
+    } finally {
+      if (generation == _playbackSleepTimerGeneration) {
+        _playbackSleepFadeFactor = 1;
+        await _audioService.player.setVolume(_volume);
+      }
+    }
+  }
 
   // 播放器的 playing 流表示实际输出状态，在加载和缓冲时可能短暂为 false，
   // 因此不能用它判断用户是否仍希望播放。请求序号保证异步切歌时仅最后一次
@@ -400,6 +867,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   int _playbackRequestRevision = 0;
   int _transportCommandRevision = 0;
   int? _activeTrackChangeRevision;
+  bool _startupPlaybackRestoreSuperseded = false;
 
   int _currentSongIndex = -1; // 当前播放歌曲的索引（在当前歌单中）
   Song? _currentSong; // 当前播放的歌曲
@@ -426,6 +894,8 @@ class PlaylistContentNotifier extends ChangeNotifier
     Duration.zero,
   );
   final ValueNotifier<int> _lyricLineIndexListenable = ValueNotifier(-1);
+  final ValueNotifier<int> _artworkRecoveryListenable = ValueNotifier(0);
+  int _artworkImageCacheGeneration = 0;
   final Stopwatch _positionNotifyStopwatch = Stopwatch()..start();
   Duration _totalDuration = Duration.zero; // 当前歌曲总时长
 
@@ -433,6 +903,16 @@ class PlaylistContentNotifier extends ChangeNotifier
   ValueListenable<Duration> get positionListenable => _positionListenable;
   ValueListenable<int> get lyricLineIndexListenable =>
       _lyricLineIndexListenable;
+  ValueListenable<int> get artworkRecoveryListenable =>
+      _artworkRecoveryListenable;
+  ValueListenable<String?> get playbackArtworkTargetListenable =>
+      _playbackArtworkTargetListenable;
+  ValueListenable<int> get playbackArtworkPrewarmListenable =>
+      _playbackArtworkPrewarmRevision;
+  List<String> get playbackArtworkPrewarmPaths =>
+      List.unmodifiable(_playbackArtworkPrewarmPaths);
+  int get artworkImageCacheGeneration => _artworkImageCacheGeneration;
+  bool get isAppForeground => _isAppForeground;
   Duration get totalDuration => _totalDuration;
 
   // --- 音调与倍速 ---
@@ -456,6 +936,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     EqualizerPreset('自定义', [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     EqualizerPreset('默认', [0, 0, 0, 0, 0, 0, 0, 0, 0, 0]),
     EqualizerPreset('流行乐', [1, 2, 3, 2, 0, -1, 0, 2, 3, 2]),
+    EqualizerPreset('舞曲', [6, 5, 4, 2, 0, -1, 0, 1, 2, 1]),
+    EqualizerPreset('蓝调', [2, 2, 2, 3, 2, 1, 2, 1, 0, -1]),
+    EqualizerPreset('慢歌', [1, 1, 0, 0, 2, 3, 2, 1, 0, -1]),
+    EqualizerPreset('乡村', [0, 0, 0, 1, 2, 2, 3, 2, 1, 0]),
     EqualizerPreset('摇滚乐', [4, 3, 2, 0, -1, -1, 1, 3, 4, 3]),
     EqualizerPreset('古典', [2, 2, 1, 0, 0, 0, -1, 1, 2, 3]),
     EqualizerPreset('爵士', [3, 2, 1, 1, -1, -1, 0, 1, 2, 2]),
@@ -506,7 +990,11 @@ class PlaylistContentNotifier extends ChangeNotifier
   final LinkedHashMap<String, List<LyricLine>> _lyricCache = LinkedHashMap();
   final Map<String, Future<List<LyricLine>>> _lyricRequests = {};
   static const int _maximumLyricCacheEntries = 16;
-  int _dynamicColorRequestGeneration = 0;
+  int _dynamicColorApplyGeneration = 0;
+  int _dynamicColorPrefetchGeneration = 0;
+  final LinkedHashMap<String, Color> _dynamicColorCache = LinkedHashMap();
+  final Map<String, Future<Color?>> _dynamicColorRequests = {};
+  static const int _maximumDynamicColorCacheEntries = 6;
 
   List<LyricLine> get currentLyrics => _currentLyrics;
   int get currentLyricLineIndex => _currentLyricLineIndex;
@@ -524,6 +1012,36 @@ class PlaylistContentNotifier extends ChangeNotifier
     // Empty results are not cached, so this retries while still reusing an
     // identical request that may already be running for preloading.
     await _loadLyricsForSong(song.filePath);
+  }
+
+  /// When local lyrics are not preferred, retries the selected network source
+  /// without clearing the currently visible lyric. A successful response
+  /// replaces local/embedded content; a failed response leaves it untouched.
+  Future<void> refreshCurrentNetworkLyrics() async {
+    final song = _currentSong;
+    if (song == null ||
+        _settingsProvider.preferExternalLyrics ||
+        !_settingsProvider.enableOnlineLyrics) {
+      return;
+    }
+
+    final requestGeneration = ++_lyricRequestGeneration;
+    ++_lyricPrefetchGeneration;
+    final lyrics = await _fetchOnlineLyrics(song);
+    if (lyrics.isEmpty ||
+        requestGeneration != _lyricRequestGeneration ||
+        _currentSong?.normalizedPath != song.normalizedPath) {
+      return;
+    }
+
+    _cacheLyrics(_lyricCacheKey(song), lyrics);
+    _currentLyrics = lyrics;
+    // Replacing lyrics while the playback page is already visible must not
+    // publish a transient -1 index. The lyric list clamps -1 to its first
+    // row, so emitting it here produces a visible first-row flash before the
+    // next position tick restores the actual playing line.
+    updateLyricLine(_currentPosition);
+    notifyListeners();
   }
 
   /// Reloads the current song using the normal external/embedded/network
@@ -681,6 +1199,9 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _handleCoverOverridesChanged() {
+    _undecodableCoverBytes.clear();
+    _dynamicColorCache.clear();
+    _dynamicColorPrefetchGeneration++;
     for (final signal in _coverSignals.values) {
       signal.notifyListeners();
     }
@@ -730,6 +1251,8 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<void> _loadAllData() async {
+    await _runStartupStage('加载置顶项目', _loadPinnedItems);
+    await _runStartupStage('加载歌曲排序设置', _loadSongSortPreferences);
     // 先加载歌手和专辑排序，避免初始化过程中被覆盖
     await _runStartupStage('加载歌手排序', () async {
       _artistSortOrders = await _playlistManager.loadArtistSortOrders();
@@ -906,14 +1429,14 @@ class PlaylistContentNotifier extends ChangeNotifier
         ? defaultLastVolume
         : storedLastVolume;
 
-    await _audioService.player.setVolume(_volume);
+    await _audioService.player.setVolume(_volume * _playbackSleepFadeFactor);
   }
 
   Future<void> setVolume(double newVolume) async {
     _volume = _sanitizeVolume(newVolume, 0.0);
     if (_volume > 1.0) _lastVolumeBeforeMute = _volume;
 
-    await _audioService.player.setVolume(_volume);
+    await _audioService.player.setVolume(_volume * _playbackSleepFadeFactor);
 
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_volumeKey, _volume);
@@ -1095,32 +1618,56 @@ class PlaylistContentNotifier extends ChangeNotifier
     if (_appExitShutdownStarted) return;
     _appExitShutdownStarted = true;
     _cancelPendingTrackChange();
+    _playbackStateSaveTimer?.cancel();
+    _playbackStateSaveGeneration++;
     _isPlaying = false;
     PlaybackTracker().pauseTracking();
-    await savePlaybackState();
-    await _audioService.dispose();
+    // These operations are independent. Running them together removes the
+    // visible serial pause before Android closes the activity while preserving
+    // the same save-and-release guarantees.
+    await Future.wait<void>([
+      StatisticsManager().flushPendingSave(),
+      savePlaybackState(),
+      _audioService.dispose(),
+    ]);
   }
 
   @override
   // --- 播放器相关 ---
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _playbackSleepTimer?.cancel();
+    _playbackSleepFadeStartTimer?.cancel();
+    _playbackSleepFadeTicker?.cancel();
+    _foregroundArtworkRecoveryGeneration++;
+    _libraryArtworkWarmGeneration++;
+    _allSongsUpdateGeneration++;
+    _foregroundArtworkRecoveryTimer?.cancel();
+    _playbackStateSaveTimer?.cancel();
+    _playbackStateSaveGeneration++;
+    _clearPlaybackArtworkPrewarm();
+    _setPlaybackVisualCover(null);
     _coverOverrides.removeListener(_handleCoverOverridesChanged);
     _positionSubscription?.cancel();
     _positionListenable.dispose();
     _lyricLineIndexListenable.dispose();
+    _artworkRecoveryListenable.dispose();
+    _playbackArtworkTargetListenable.dispose();
+    _playbackArtworkPrewarmRevision.dispose();
     _lyricLineIndexController.close();
     _errorStreamController.close();
     _exclusiveModeSubscription?.cancel(); // 取消独占模式订阅
     _loudnessSubscription?.cancel(); // 取消响度流订阅
-    _safeDispose(); // 释放播放器资源
+    if (!_appExitShutdownStarted) {
+      _safeDispose(); // 释放播放器资源
+    }
     _cleanupSmtc();
     _metadataCacheSaveTimer?.cancel();
     _equalizerApplyTimer?.cancel();
     _audioControlSaveTimer?.cancel();
     _saveSongMetadataCache();
     _saveAudioControlSettings();
-    savePlaybackState();
+    if (!_appExitShutdownStarted) savePlaybackState();
     for (final signal in _coverSignals.values) {
       signal.dispose();
     }
@@ -1139,13 +1686,17 @@ class PlaylistContentNotifier extends ChangeNotifier
       artist: song.artist,
       album: song.album,
       artwork: MediaSessionArtwork.embedded,
+      // Keep scanner-derived duration available to non-Android media-session
+      // consumers. Android omits the seek capability below, so its native
+      // adapter intentionally hides the notification timeline while in-app
+      // seeking remains available through libmpv.
+      duration: (song.duration?.inMilliseconds ?? 0) > 0 ? song.duration : null,
       actions: const {
         MediaAction.previous,
         MediaAction.play,
         MediaAction.pause,
         MediaAction.playPause,
         MediaAction.next,
-        MediaAction.seek,
         MediaAction.desktopLyrics,
       },
       desktopLyricsState: !_settingsProvider.desktopLyricsEnabled
@@ -1211,9 +1762,9 @@ class PlaylistContentNotifier extends ChangeNotifier
     if (isForeground) {
       _setCurrentPosition(_audioService.player.state.position);
       updateLyricLine(_currentPosition);
-      _recoverRequestedArtwork();
       _listenToPositionUpdates();
-      notifyListeners();
+      _scheduleForegroundArtworkRecovery();
+      _artworkRecoveryListenable.value++;
       return;
     }
 
@@ -1222,12 +1773,71 @@ class PlaylistContentNotifier extends ChangeNotifier
     // the audio output thread; playback itself is deliberately left untouched.
     _positionSubscription?.cancel();
     _positionSubscription = null;
+    _foregroundArtworkRecoveryGeneration++;
+    _foregroundArtworkRecoveryTimer?.cancel();
+    _foregroundArtworkRecoveryTimer = null;
     _setCurrentPosition(_audioService.player.state.position);
+  }
+
+  void _scheduleForegroundArtworkRecovery() {
+    final generation = ++_foregroundArtworkRecoveryGeneration;
+    _foregroundArtworkRecoveryTimer?.cancel();
+
+    // Give Android/Flutter a clean resume frame before any artwork I/O or
+    // decode work is restarted. The currently visible playback state is kept
+    // in memory and can paint immediately; reclaimed list artwork is restored
+    // only after the first interaction-sensitive window has settled.
+    InteractionPerformanceController.instance.pulse(
+      InteractionPhase.transition,
+      settleAfter: const Duration(milliseconds: 450),
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_isAppForeground ||
+          generation != _foregroundArtworkRecoveryGeneration) {
+        return;
+      }
+      _foregroundArtworkRecoveryTimer = Timer(
+        const Duration(milliseconds: 450),
+        () async {
+          final lease = await InteractionPerformanceController.instance
+              .acquireIdleWork(
+                priority: InteractionWorkPriority.maintenance,
+                isStillNeeded: () =>
+                    _isAppForeground &&
+                    generation == _foregroundArtworkRecoveryGeneration,
+              );
+          try {
+            if (!_isAppForeground ||
+                generation != _foregroundArtworkRecoveryGeneration) {
+              return;
+            }
+            // Current-song artwork is restored separately by the mini-player
+            // warmup at currentVisual priority. Rebuild retained list artwork
+            // as serialized idle work so up to three urgent cover workers do
+            // not compete with a route transition immediately after resume.
+            _recoverRequestedArtwork(priority: ArtworkRequestPriority.far);
+          } finally {
+            lease.release();
+          }
+        },
+      );
+    });
+  }
+
+  /// Restarts the delayed recovery window when the user opens the playback
+  /// route. Already-decoded current artwork remains available, while reclaimed
+  /// list thumbnails stay out of the route animation's critical frames.
+  void postponeForegroundArtworkRecovery() {
+    if (!_isAppForeground) return;
+    _scheduleForegroundArtworkRecovery();
   }
 
   @override
   void didHaveMemoryPressure() {
     _prefetchCoverPaths.clear();
+    _libraryArtworkWarmPaths.clear();
+    _libraryArtworkWarmBacklog.clear();
+    _scheduledLibraryArtworkWarmPaths.clear();
     for (final priority in ArtworkRequestPriority.values.skip(1)) {
       for (final key in _coverQueues[priority]!) {
         _queuedCoverPriorities.remove(key);
@@ -1256,13 +1866,23 @@ class PlaylistContentNotifier extends ChangeNotifier
       _fullCoverCache[currentKey] = currentCover;
     }
     PaintingBinding.instance.imageCache.clear();
+    _artworkImageCacheGeneration++;
+    _artworkRecoveryListenable.value++;
   }
 
   void _setupMediaPlayerListeners() {
     // `playing` briefly becomes false while seeking or buffering. The stable
     // playWhenReady signal matches the user's requested transport state.
     _audioService.player.stream.playWhenReady.distinct().listen((playing) {
-      _isPlaying = playing; // 更新内部状态
+      // Opening a replacement file momentarily clears playWhenReady. Keep the
+      // requested playing state visible until the winning track-change request
+      // finishes, otherwise the central pause icon morphs to play and straight
+      // back to pause on every previous/next command.
+      if (!playing && _activeTrackChangeRevision != null && _playbackIntent) {
+        return;
+      }
+      if (_isPlaying == playing) return;
+      _isPlaying = playing;
       notifyListeners();
     });
 
@@ -1407,6 +2027,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     final List<Playlist> loadedPlaylists = await _playlistManager
         .loadPlaylists();
     _playlists = loadedPlaylists;
+    for (final playlist in _playlists) {
+      _sortMembershipSignatures[_playlistSortScope(playlist.id)] =
+          _songMembershipSignature(playlist.songFilePaths);
+    }
     _playlistRevision++;
     _selectedIndex = _playlists.isNotEmpty ? 0 : -1;
     // await _updateAllSongsList();
@@ -1426,6 +2050,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<void> _savePlaylists() async {
+    await _reapplyChangedPlaylistSorts();
     _playlistRevision++;
     await _playlistManager.savePlaylists(_playlists);
   }
@@ -1468,7 +2093,6 @@ class PlaylistContentNotifier extends ChangeNotifier
     // 确保当前播放列表的歌曲已被解析且与文件路径列表一致
     await _ensurePlaylistSongs(currentPlaylist);
     _currentPlaylistSongs = currentPlaylist.songs!;
-    unawaited(_verifySongMetadataInBackground(currentPlaylist.songFilePaths));
 
     _isLoadingSongs = false;
     if (_isSearching) {
@@ -1593,10 +2217,37 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
   }
 
-  // 为播放准备完整元数据（包括封面等）
+  Song _songFromCachedOrKnown(String filePath, {Song? knownSong}) {
+    final cacheKey = _normalizePath(filePath);
+    final cached = _songMetadataCache[cacheKey];
+    final known = knownSong ?? _findSongByPath(filePath);
+    if (cached?.usesCurrentDecoder == true) {
+      return Song(
+        title: cached!.title,
+        artist: cached.artist,
+        album: cached.album,
+        filePath: filePath,
+        albumArt: known?.albumArt,
+        duration: cached.durationMs == null
+            ? known?.duration
+            : Duration(milliseconds: cached.durationMs!),
+        trackNumber: known?.trackNumber,
+      );
+    }
+    return known ??
+        Song(
+          title: p.basenameWithoutExtension(filePath),
+          artist: '未知歌手',
+          album: '未知专辑',
+          filePath: filePath,
+        );
+  }
+
+  // Starting playback must never wait for file metadata I/O. The cached or
+  // already-published song is sufficient for the first frame; missing metadata
+  // is refreshed later by the maintenance queue.
   Future<Song> _prepareSongForPlayback(String filePath) async {
-    // 首先获取基础元数据
-    final Song basicSong = await _parseSongMetadata(filePath);
+    final basicSong = _songFromCachedOrKnown(filePath);
     final cacheKey = _normalizePath(filePath);
 
     final fullCachedCover = _takeFullCover(cacheKey);
@@ -1608,87 +2259,9 @@ class PlaylistContentNotifier extends ChangeNotifier
         filePath: basicSong.filePath,
         albumArt: fullCachedCover,
         duration: basicSong.duration,
+        trackNumber: basicSong.trackNumber,
       );
     }
-    if (_coverCache.containsKey(cacheKey) && _coverCache[cacheKey] == null) {
-      return basicSong;
-    }
-
-    // 只在没有封面的情况下加载元数据
-    if (basicSong.albumArt == null) {
-      try {
-        final normalizedPath = Uri.file(
-          filePath,
-        ).toFilePath(windows: Platform.isWindows);
-        final stat = await File(normalizedPath).stat();
-        final modifiedMs = stat.modified.millisecondsSinceEpoch;
-        final metadata = await readAudioInfo(
-          path: normalizedPath,
-          options: const AudioInfoOptions(
-            needCover: true,
-            needLyrics: false,
-            needAudioProps: true,
-            needExtraTags: false,
-            needTrackNumber: false,
-          ),
-        );
-
-        // 使用获取到的完整信息创建Song对象
-        String title = basicSong.title;
-        String artist = basicSong.artist;
-        String album = basicSong.album;
-        Duration? duration = basicSong.duration;
-
-        if (metadata.title != null && metadata.title!.isNotEmpty) {
-          title = metadata.title!;
-        }
-        if (metadata.artist != null && metadata.artist!.isNotEmpty) {
-          artist = metadata.artist!;
-        }
-        if (metadata.album != null && metadata.album!.isNotEmpty) {
-          album = metadata.album!;
-        }
-        if (metadata.durationMs != null) {
-          duration = Duration(milliseconds: metadata.durationMs!.toInt());
-        }
-
-        // 更新缓存
-        if (_songMetadataCache.containsKey(cacheKey)) {
-          final cachedEntry = _songMetadataCache[cacheKey]!;
-          _songMetadataCache[cacheKey] = SongMetadataCacheEntry(
-            title: cachedEntry.title,
-            artist: cachedEntry.artist,
-            album: cachedEntry.album,
-            durationMs: cachedEntry.durationMs,
-            modifiedMs: cachedEntry.modifiedMs,
-          );
-        }
-
-        final extractedCover = metadata.cover;
-        final cover = extractedCover != null && extractedCover.isNotEmpty
-            ? extractedCover
-            : null;
-        _coverVersionMs[cacheKey] = modifiedMs;
-        if (cover != null) {
-          _putFullCover(cacheKey, cover);
-          unawaited(_storeThumbnailFromSource(cacheKey, modifiedMs, cover));
-        } else {
-          _coverCache[cacheKey] = null;
-        }
-
-        return Song(
-          title: title,
-          artist: artist,
-          album: album,
-          filePath: filePath,
-          albumArt: cover,
-          duration: duration,
-        );
-      } catch (e) {
-        return basicSong;
-      }
-    }
-
     return basicSong;
   }
 
@@ -1748,22 +2321,6 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
   }
 
-  // 应用缓存的元数据
-  void _applyCachedMetadata(String filePath, SongMetadataCacheEntry entry) {
-    _updateSongInCollections(filePath, (song) {
-      return Song(
-        title: entry.title,
-        artist: entry.artist,
-        album: entry.album,
-        filePath: song.filePath,
-        albumArt: song.albumArt,
-        duration: entry.durationMs != null
-            ? Duration(milliseconds: entry.durationMs!)
-            : song.duration,
-      );
-    });
-  }
-
   Song _markSongMissing(Song song) {
     return Song(
       title: song.title,
@@ -1772,22 +2329,119 @@ class PlaylistContentNotifier extends ChangeNotifier
       filePath: song.filePath,
       albumArt: null,
       duration: song.duration,
+      trackNumber: song.trackNumber,
     );
+  }
+
+  Song _songWithCachedMetadata(Song song, SongMetadataCacheEntry entry) {
+    final duration = entry.durationMs == null
+        ? song.duration
+        : Duration(milliseconds: entry.durationMs!);
+    if (song.title == entry.title &&
+        song.artist == entry.artist &&
+        song.album == entry.album &&
+        song.duration == duration) {
+      return song;
+    }
+    return Song(
+      title: entry.title,
+      artist: entry.artist,
+      album: entry.album,
+      filePath: song.filePath,
+      albumArt: song.albumArt,
+      duration: duration,
+      trackNumber: song.trackNumber,
+    );
+  }
+
+  void _applyMetadataBatch(Map<String, SongMetadataCacheEntry?> updates) {
+    if (updates.isEmpty) return;
+    var updated = false;
+    final visitedLists = HashSet<List<Song>>.identity();
+
+    void updateList(List<Song>? songs) {
+      if (songs == null || !visitedLists.add(songs)) return;
+      for (var index = 0; index < songs.length; index++) {
+        final song = songs[index];
+        if (!updates.containsKey(song.normalizedPath)) continue;
+        final entry = updates[song.normalizedPath];
+        final replacement = entry == null
+            ? (song.artist == '文件不存在 (解析失败)' ? song : _markSongMissing(song))
+            : _songWithCachedMetadata(song, entry);
+        if (!identical(song, replacement)) {
+          songs[index] = replacement;
+          updated = true;
+        }
+      }
+    }
+
+    for (final playlist in _playlists) {
+      updateList(playlist.songs);
+    }
+    updateList(_allSongs);
+    updateList(_allSongsVirtualPlaylist.songs);
+    updateList(_currentPlaylistSongs);
+    updateList(_activeSongList);
+    updateList(_filteredSongs);
+    updateList(_playingPlaylist?.songs);
+    updateList(_currentPlayingQueue);
+
+    final currentSong = _currentSong;
+    if (currentSong != null &&
+        updates.containsKey(currentSong.normalizedPath)) {
+      final entry = updates[currentSong.normalizedPath];
+      final replacement = entry == null
+          ? (currentSong.artist == '文件不存在 (解析失败)'
+                ? currentSong
+                : _markSongMissing(currentSong))
+          : _songWithCachedMetadata(currentSong, entry);
+      if (!identical(currentSong, replacement)) {
+        _currentSong = replacement;
+        updated = true;
+      }
+    }
+
+    if (updated) {
+      _libraryRevision++;
+      _searchService.rebuild(_allSongs);
+      notifyListeners();
+    }
   }
 
   // 后台校验更新歌曲的元数据
   Future<void> _verifySongMetadataInBackground(
     Iterable<String> filePaths,
   ) async {
+    final verificationGeneration = ++_metadataVerificationGeneration;
     // 延迟执行以避免与前台操作竞争资源
     await Future.delayed(const Duration(milliseconds: 300));
+    if (verificationGeneration != _metadataVerificationGeneration) return;
+
+    final pendingUpdates = <String, SongMetadataCacheEntry?>{};
+
+    void flushUpdates() {
+      if (pendingUpdates.isEmpty) return;
+      _applyMetadataBatch(
+        Map<String, SongMetadataCacheEntry?>.from(pendingUpdates),
+      );
+      pendingUpdates.clear();
+    }
 
     for (final filePath in filePaths) {
-      await InteractionPerformanceController.instance.waitForIdle(
-        maxWait: const Duration(milliseconds: 350),
-      );
+      if (verificationGeneration != _metadataVerificationGeneration) return;
       final cacheKey = _normalizePath(filePath);
       final cached = _songMetadataCache[cacheKey];
+      // A current cache entry is trusted during startup. File timestamp checks
+      // belong to explicit imports/refreshes, not the first interactive frame.
+      if (cached?.usesCurrentDecoder == true) continue;
+
+      final lease = await InteractionPerformanceController.instance
+          .acquireIdleWork(
+            priority: InteractionWorkPriority.maintenance,
+            isStillNeeded: () =>
+                verificationGeneration == _metadataVerificationGeneration,
+          );
+      if (!lease.isGranted) return;
       final normalizedPath = Uri.file(
         filePath,
       ).toFilePath(windows: Platform.isWindows);
@@ -1837,15 +2491,22 @@ class PlaylistContentNotifier extends ChangeNotifier
           modifiedMs: modifiedMs,
         );
 
+        if (verificationGeneration != _metadataVerificationGeneration) return;
         _songMetadataCache[cacheKey] = entry;
         _scheduleMetadataCacheSave();
-        _applyCachedMetadata(filePath, entry);
+        pendingUpdates[cacheKey] = entry;
       } catch (e) {
         if (_songMetadataCache.remove(cacheKey) != null) {
           _scheduleMetadataCacheSave();
         }
-        _updateSongInCollections(filePath, _markSongMissing);
+        pendingUpdates[cacheKey] = null;
+      } finally {
+        lease.release();
       }
+      if (pendingUpdates.length >= 64) flushUpdates();
+    }
+    if (verificationGeneration == _metadataVerificationGeneration) {
+      flushUpdates();
     }
   }
 
@@ -1865,23 +2526,23 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
   }
 
-  Uint8List? coverForSongPath(String filePath) {
-    final override = _coverOverrides.songCover(filePath);
-    if (override != null && override.isNotEmpty) return override;
-    final cacheKey = _normalizePath(filePath);
-    final fullCover = _takeFullCover(cacheKey);
-    if (fullCover != null && fullCover.isNotEmpty) return fullCover;
-    final embeddedCover = _findSongByPath(filePath)?.albumArt;
-    if (embeddedCover != null && embeddedCover.isNotEmpty) {
-      return embeddedCover;
+  Uint8List? _usableCoverCandidate(String cacheKey, Uint8List? candidate) {
+    if (candidate == null || candidate.isEmpty) return null;
+    if (_undecodableCoverBytes[cacheKey]?.contains(candidate) == true) {
+      return null;
     }
-    final cachedCover = _coverCache[cacheKey];
-    if (cachedCover != null && cachedCover.isNotEmpty) {
-      return cachedCover;
-    }
-    if (_coverCache.containsKey(cacheKey)) return null;
+    return candidate;
+  }
 
-    return null;
+  Uint8List? coverForSongPath(String filePath) {
+    final cacheKey = _normalizePath(filePath);
+    return _usableCoverCandidate(
+          cacheKey,
+          _coverOverrides.songCover(filePath),
+        ) ??
+        _usableCoverCandidate(cacheKey, _takeFullCover(cacheKey)) ??
+        _usableCoverCandidate(cacheKey, _findSongByPath(filePath)?.albumArt) ??
+        _usableCoverCandidate(cacheKey, _coverCache[cacheKey]);
   }
 
   /// Artwork used by the UI. User overrides always win over embedded tags.
@@ -1889,23 +2550,62 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   /// Full-resolution artwork only. Unlike [displayCoverForSong], this never
   /// promotes a collection thumbnail to playback-cover quality.
-  Uint8List? displayFullCoverForSong(Song song) {
-    final override = _coverOverrides.songCover(song.filePath);
-    if (override != null && override.isNotEmpty) return override;
-    final fullCover = _takeFullCover(song.normalizedPath);
-    if (fullCover != null && fullCover.isNotEmpty) return fullCover;
-    final embedded = _findSongByPath(song.filePath)?.albumArt;
-    return embedded != null && embedded.isNotEmpty ? embedded : null;
+  Uint8List? displayFullCoverForPath(String filePath) {
+    final cacheKey = _normalizePath(filePath);
+    return _usableCoverCandidate(
+          cacheKey,
+          _coverOverrides.songCover(filePath),
+        ) ??
+        _usableCoverCandidate(cacheKey, _takeFullCover(cacheKey)) ??
+        _usableCoverCandidate(cacheKey, _findSongByPath(filePath)?.albumArt);
+  }
+
+  Uint8List? displayFullCoverForSong(Song song) =>
+      displayFullCoverForPath(song.filePath);
+
+  /// Artwork suitable for the large playback surface. A resolved disk
+  /// thumbnail is used only when the original/full source has definitively
+  /// failed; while the full source is still loading the previous painted frame
+  /// can remain in place without introducing a low-to-high-resolution flash.
+  Uint8List? displayPlaybackCoverForPath(String filePath) {
+    final fullCover = displayFullCoverForPath(filePath);
+    if (fullCover != null) return fullCover;
+    final cacheKey = _normalizePath(filePath);
+    if (!_isFullCoverResolved(cacheKey)) return null;
+    return _usableCoverCandidate(cacheKey, _coverCache[cacheKey]);
+  }
+
+  ArtworkResolutionState artworkResolutionStateForPath(String filePath) {
+    if (displayPlaybackCoverForPath(filePath) != null) {
+      return ArtworkResolutionState.available;
+    }
+    final cacheKey = _normalizePath(filePath);
+    if (_coverCache.containsKey(cacheKey) && _isFullCoverResolved(cacheKey)) {
+      return ArtworkResolutionState.unavailable;
+    }
+    return ArtworkResolutionState.loading;
+  }
+
+  void reportUndecodableCover(String filePath, Uint8List bytes) {
+    final cacheKey = _normalizePath(filePath);
+    final rejected = _undecodableCoverBytes.putIfAbsent(
+      cacheKey,
+      () => HashSet<Uint8List>.identity(),
+    );
+    if (!rejected.add(bytes)) return;
+    _notifyCoverChanged(cacheKey);
   }
 
   /// Small collection artwork. This never promotes a thumbnail to the full
   /// playback cover and is therefore safe to keep aggressively cached.
   Uint8List? displayThumbnailForSong(Song song) {
-    final override = _coverOverrides.songCover(song.filePath);
-    if (override != null && override.isNotEmpty) return override;
-    final cached = _coverCache[song.normalizedPath];
-    if (cached != null && cached.isNotEmpty) return cached;
-    return null;
+    final cacheKey = song.normalizedPath;
+    return _usableCoverCandidate(
+          cacheKey,
+          _coverOverrides.songCover(song.filePath),
+        ) ??
+        _usableCoverCandidate(cacheKey, _coverCache[cacheKey]) ??
+        _usableCoverCandidate(cacheKey, song.albumArt);
   }
 
   /// Reloads an embedded cover after an explicit source-file edit.
@@ -1938,6 +2638,70 @@ class PlaylistContentNotifier extends ChangeNotifier
   Listenable coverListenableForSongPath(String filePath) {
     final cacheKey = _normalizePath(filePath);
     return _coverSignals.putIfAbsent(cacheKey, ChangeNotifier.new);
+  }
+
+  void _setPlaybackVisualCover(String? filePath) {
+    final nextPath = filePath == null ? null : _normalizePath(filePath);
+    if (_playbackVisualCoverPath == nextPath) return;
+    final previousPath = _playbackVisualCoverPath;
+    _playbackVisualCoverPath = nextPath;
+    if (nextPath != null) {
+      requestSongCover(
+        nextPath,
+        priority: ArtworkRequestPriority.visible,
+        fullResolution: true,
+      );
+    }
+    // Publish only after the new full-resolution request is retained. The
+    // shell can then begin the exact playback decode before currentSong is
+    // committed, while the old painted frame remains visible.
+    _playbackArtworkTargetListenable.value = nextPath;
+    if (previousPath != null) {
+      releaseSongCover(previousPath, fullResolution: true);
+    }
+  }
+
+  void _clearPlaybackArtworkPrewarm() {
+    for (final path in _playbackArtworkPrewarmPaths.toList(growable: false)) {
+      releaseSongCover(path, fullResolution: true);
+    }
+    _playbackArtworkPrewarmPaths.clear();
+    _playbackArtworkPrewarmRevision.value++;
+  }
+
+  /// Keeps only the immediate previous/next full-resolution covers warm.
+  /// Extraction runs at background priority and is automatically serialized by
+  /// the interaction controller, while a real track change promotes an already
+  /// queued path to visible priority through the normal request merger.
+  void _refreshAdjacentPlaybackArtworkPrewarm() {
+    final currentPath = _currentSong?.normalizedPath;
+    final desired = currentPath == null
+        ? <String>{}
+        : _adjacentPlaybackPaths(currentPath)
+              .map(_normalizePath)
+              .where((path) => path != currentPath)
+              .take(2)
+              .toSet();
+
+    var changed = false;
+    for (final path
+        in _playbackArtworkPrewarmPaths
+            .difference(desired)
+            .toList(growable: false)) {
+      releaseSongCover(path, fullResolution: true);
+      _playbackArtworkPrewarmPaths.remove(path);
+      changed = true;
+    }
+    for (final path in desired.difference(_playbackArtworkPrewarmPaths)) {
+      _playbackArtworkPrewarmPaths.add(path);
+      changed = true;
+      requestSongCover(
+        path,
+        priority: ArtworkRequestPriority.background,
+        fullResolution: true,
+      );
+    }
+    if (changed) _playbackArtworkPrewarmRevision.value++;
   }
 
   void _notifyCoverChanged(String cacheKey) {
@@ -1994,7 +2758,9 @@ class PlaylistContentNotifier extends ChangeNotifier
     _processCoverQueue();
   }
 
-  void _recoverRequestedArtwork() {
+  void _recoverRequestedArtwork({
+    ArtworkRequestPriority priority = ArtworkRequestPriority.visible,
+  }) {
     for (final entry in _coverRequestCounts.entries) {
       if (entry.value <= 0) continue;
       final cacheKey = entry.key;
@@ -2003,7 +2769,7 @@ class PlaylistContentNotifier extends ChangeNotifier
           (_fullCoverRequestCounts[cacheKey] ?? 0) > 0 &&
           !_isFullCoverResolved(cacheKey);
       if (!needsThumbnail && !needsFull) continue;
-      _enqueueCover(cacheKey, ArtworkRequestPriority.visible);
+      _enqueueCover(cacheKey, priority);
     }
     _processCoverQueue();
   }
@@ -2021,6 +2787,13 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
     _artworkPrefetchMisses++;
     _recordArtworkOperation();
+    final existingWaiters = _coverWaiters[cacheKey];
+    if (existingWaiters != null && existingWaiters.isNotEmpty) {
+      _prefetchCoverPaths.add(cacheKey);
+      _enqueueCover(cacheKey, priority);
+      _processCoverQueue();
+      return existingWaiters.first.future;
+    }
     final completer = Completer<Uint8List?>();
     _coverWaiters.putIfAbsent(cacheKey, () => []).add(completer);
     _prefetchCoverPaths.add(cacheKey);
@@ -2042,13 +2815,119 @@ class PlaylistContentNotifier extends ChangeNotifier
     _processCoverQueue();
   }
 
+  /// Builds the persistent thumbnail cache outside scrolling. Unlike viewport
+  /// prefetch, these requests survive direction changes and are processed by a
+  /// single deferred worker until urgent visible artwork arrives.
+  void warmLibraryArtworkCache(Iterable<Song> songs) {
+    final desired = songs.map((song) => song.normalizedPath).toSet();
+    for (final path
+        in _libraryArtworkWarmPaths
+            .difference(desired)
+            .toList(growable: false)) {
+      _libraryArtworkWarmPaths.remove(path);
+      _scheduledLibraryArtworkWarmPaths.remove(path);
+      if (_isCoverRequested(path) ||
+          _prefetchCoverPaths.contains(path) ||
+          _activeCoverPaths.contains(path)) {
+        continue;
+      }
+      _pendingCoverRequests.remove(path);
+      _removeFromCoverQueue(path);
+    }
+    // Rebuild the maintenance backlog in one linear pass. Removing many paths
+    // individually from a ListQueue would recreate the same quadratic cost
+    // that this bounded admission path is intended to avoid.
+    _libraryArtworkWarmBacklog.clear();
+    for (final path in desired) {
+      if (_coverCache.containsKey(path)) {
+        _libraryArtworkWarmPaths.remove(path);
+        _scheduledLibraryArtworkWarmPaths.remove(path);
+        continue;
+      }
+      if (!_libraryArtworkWarmPaths.add(path)) {
+        continue;
+      }
+      if (!_activeCoverPaths.contains(path) &&
+          !_queuedCoverPriorities.containsKey(path)) {
+        _libraryArtworkWarmBacklog.addLast(path);
+      }
+    }
+    _scheduleLibraryArtworkWarmRequests();
+    _processCoverQueue();
+  }
+
+  void _scheduleLibraryArtworkWarmCache() {
+    final generation = ++_libraryArtworkWarmGeneration;
+    unawaited(_warmLibraryArtworkCacheWhenIdle(generation));
+  }
+
+  Future<void> _warmLibraryArtworkCacheWhenIdle(int generation) async {
+    // The first frames belong to restoring and displaying the library. Do not
+    // build even the lightweight maintenance backlog until that content has
+    // become interactive.
+    await Future<void>.delayed(const Duration(milliseconds: 900));
+    if (generation != _libraryArtworkWarmGeneration || _allSongs.isEmpty) {
+      return;
+    }
+    final lease = await InteractionPerformanceController.instance
+        .acquireIdleWork(
+          priority: InteractionWorkPriority.maintenance,
+          isStillNeeded: () =>
+              generation == _libraryArtworkWarmGeneration &&
+              _allSongs.isNotEmpty,
+        );
+    try {
+      if (!lease.isGranted ||
+          generation != _libraryArtworkWarmGeneration ||
+          _allSongs.isEmpty) {
+        return;
+      }
+      warmLibraryArtworkCache(_allSongs);
+    } finally {
+      lease.release();
+    }
+  }
+
+  /// Keeps the shared priority queue small. Visible rows may promote a queued
+  /// background request, and ListQueue removal is linear, so admitting the
+  /// entire library here would make a fast scroll progressively more costly.
+  void _scheduleLibraryArtworkWarmRequests() {
+    while (canAdmitLibraryArtworkWarmRequest(
+          scheduledCount: _scheduledLibraryArtworkWarmPaths.length,
+          maximumQueued: _maxQueuedLibraryArtworkWarmRequests,
+        ) &&
+        _libraryArtworkWarmBacklog.isNotEmpty) {
+      final path = _libraryArtworkWarmBacklog.removeFirst();
+      if (!_libraryArtworkWarmPaths.contains(path) ||
+          _coverCache.containsKey(path)) {
+        _libraryArtworkWarmPaths.remove(path);
+        continue;
+      }
+      // A visible/near request already owns this path. Its normal completion
+      // will also retire the corresponding maintenance request.
+      if (_activeCoverPaths.contains(path) ||
+          _queuedCoverPriorities.containsKey(path)) {
+        continue;
+      }
+      _scheduledLibraryArtworkWarmPaths.add(path);
+      _enqueueCover(path, ArtworkRequestPriority.background);
+      if (!_queuedCoverPriorities.containsKey(path)) {
+        _scheduledLibraryArtworkWarmPaths.remove(path);
+      }
+    }
+  }
+
   /// Cancels obsolete queued prefetch work when a viewport changes direction
   /// or makes a large jump. At most the already-running workers are allowed to
   /// finish; visible requests are never cancelled.
   void beginArtworkPrefetchWindow() {
     for (final key in _prefetchCoverPaths.toList(growable: false)) {
       _prefetchCoverPaths.remove(key);
-      if (_isCoverRequested(key) || _activeCoverPaths.contains(key)) continue;
+      if (_isCoverRequested(key) ||
+          _libraryArtworkWarmPaths.contains(key) ||
+          _activeCoverPaths.contains(key)) {
+        continue;
+      }
       _pendingCoverRequests.remove(key);
       _removeFromCoverQueue(key);
       final waiters = _coverWaiters.remove(key);
@@ -2098,6 +2977,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
     _coverRequestCounts.remove(cacheKey);
     if (!_prefetchCoverPaths.contains(cacheKey) &&
+        !_libraryArtworkWarmPaths.contains(cacheKey) &&
         !_activeCoverPaths.contains(cacheKey)) {
       _pendingCoverRequests.remove(cacheKey);
       _removeFromCoverQueue(cacheKey);
@@ -2154,6 +3034,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     _coverCache.remove(cacheKey);
     _fullCoverCache.remove(cacheKey);
     _fullCoverUnavailable.remove(cacheKey);
+    _undecodableCoverBytes.remove(cacheKey);
     _coverVersionMs.remove(cacheKey);
     _pendingCoverRequests.remove(cacheKey);
     _prefetchCoverPaths.remove(cacheKey);
@@ -2189,8 +3070,11 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _processCoverQueue() {
-    while (_activeCoverWorkers < _maxConcurrentCoverWorkers &&
-        _hasQueuedCovers) {
+    final workerLimit = artworkWorkerLimit(
+      hasUrgentWork: _hasQueuedUrgentCoverWork,
+      urgentLimit: _maxConcurrentCoverWorkers,
+    );
+    while (_activeCoverWorkers < workerLimit && _hasQueuedCovers) {
       _activeCoverWorkers++;
       unawaited(_coverWorker());
     }
@@ -2198,6 +3082,15 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   bool get _hasQueuedCovers =>
       _coverQueues.values.any((queue) => queue.isNotEmpty);
+
+  bool get _hasUrgentCoverWork =>
+      _activeUrgentCoverWorkers > 0 ||
+      _coverQueues[ArtworkRequestPriority.visible]!.isNotEmpty ||
+      _coverQueues[ArtworkRequestPriority.near]!.isNotEmpty;
+
+  bool get _hasQueuedUrgentCoverWork =>
+      _coverQueues[ArtworkRequestPriority.visible]!.isNotEmpty ||
+      _coverQueues[ArtworkRequestPriority.near]!.isNotEmpty;
 
   (String, ArtworkRequestPriority)? _takeNextCover() {
     for (final priority in ArtworkRequestPriority.values) {
@@ -2213,19 +3106,39 @@ class PlaylistContentNotifier extends ChangeNotifier
   Future<void> _coverWorker() async {
     try {
       while (_hasQueuedCovers) {
+        // Collapse back to one deferred worker after visible/near work drains.
+        // This prevents a large first-run library warmup from decoding several
+        // embedded covers concurrently while preserving four-way foreground
+        // throughput when rows are actually on screen.
+        if (!_hasQueuedUrgentCoverWork && _activeCoverWorkers > 1) break;
         final request = _takeNextCover();
         if (request == null) break;
         final (cacheKey, priority) = request;
+        InteractionWorkLease? deferredWorkLease;
         if (priority == ArtworkRequestPriority.far ||
             priority == ArtworkRequestPriority.background) {
-          await InteractionPerformanceController.instance.waitForIdle(
-            maxWait: const Duration(milliseconds: 350),
-          );
+          deferredWorkLease = await InteractionPerformanceController.instance
+              .acquireIdleWork(
+                priority: priority == ArtworkRequestPriority.far
+                    ? InteractionWorkPriority.background
+                    : InteractionWorkPriority.maintenance,
+                isStillNeeded: () =>
+                    _isCoverNeeded(cacheKey) && !_hasUrgentCoverWork,
+              );
+          if (!deferredWorkLease.isGranted) {
+            if (_isCoverNeeded(cacheKey)) _enqueueCover(cacheKey, priority);
+            continue;
+          }
         }
         if (!_isCoverNeeded(cacheKey)) {
+          deferredWorkLease?.release();
           _pendingCoverRequests.remove(cacheKey);
           continue;
         }
+        final urgent =
+            priority == ArtworkRequestPriority.visible ||
+            priority == ArtworkRequestPriority.near;
+        if (urgent) _activeUrgentCoverWorkers++;
         _activeCoverPaths.add(cacheKey);
         final filePath = cacheKey;
         Uint8List? diskCover;
@@ -2274,7 +3187,10 @@ class PlaylistContentNotifier extends ChangeNotifier
             }
           } else {
             if (_isFullCoverRequested(cacheKey)) {
-              _fullCoverUnavailable.add(cacheKey);
+              final changed = _fullCoverUnavailable.add(cacheKey);
+              if (changed && diskCover != null) {
+                _notifyCoverChanged(cacheKey);
+              }
             }
             if (diskCover == null) {
               _storeLoadedCover(cacheKey, null, modifiedMs: modifiedMs);
@@ -2283,13 +3199,21 @@ class PlaylistContentNotifier extends ChangeNotifier
         } catch (e) {
           debugPrint('加载封面失败: ${p.basename(filePath)} - $e');
           if (_isFullCoverRequested(cacheKey)) {
-            _fullCoverUnavailable.add(cacheKey);
+            final changed = _fullCoverUnavailable.add(cacheKey);
+            if (changed && diskCover != null) {
+              _notifyCoverChanged(cacheKey);
+            }
           }
           if (diskCover == null) _storeLoadedCover(cacheKey, null);
         } finally {
+          deferredWorkLease?.release();
+          if (urgent) _activeUrgentCoverWorkers--;
           _activeCoverPaths.remove(cacheKey);
           _pendingCoverRequests.remove(cacheKey);
           _prefetchCoverPaths.remove(cacheKey);
+          _libraryArtworkWarmPaths.remove(cacheKey);
+          _scheduledLibraryArtworkWarmPaths.remove(cacheKey);
+          _scheduleLibraryArtworkWarmRequests();
           if (_isFullCoverRequested(cacheKey) &&
               !_isFullCoverResolved(cacheKey)) {
             _enqueueCover(cacheKey, ArtworkRequestPriority.visible);
@@ -2339,7 +3263,9 @@ class PlaylistContentNotifier extends ChangeNotifier
       _fullCoverUnavailable.contains(cacheKey) || _hasFullCover(cacheKey);
 
   bool _isCoverNeeded(String cacheKey) =>
-      _isCoverRequested(cacheKey) || _prefetchCoverPaths.contains(cacheKey);
+      _isCoverRequested(cacheKey) ||
+      _prefetchCoverPaths.contains(cacheKey) ||
+      _libraryArtworkWarmPaths.contains(cacheKey);
 
   Future<void> _storeThumbnailFromSource(
     String cacheKey,
@@ -2931,9 +3857,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
         final affectedPlaylists = _playlists
             .where(
-              (playlist) => playlist.songFilePaths.any(
-                (path) => _pathIsInsideFolder(path, root),
-              ),
+              (playlist) => folderPlaylistTracksImportedRoot(playlist, root),
             )
             .toList();
         if (affectedPlaylists.isEmpty) {
@@ -3225,44 +4149,34 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 确保播放列表的歌曲已被解析
   Future<void> _ensurePlaylistSongs(Playlist playlist) async {
-    if (playlist.songs == null) {
-      final List<Song> songsWithMetadata = [];
-      for (final filePath in playlist.songFilePaths) {
-        final song = await _parseSongMetadata(filePath);
-        songsWithMetadata.add(song);
-      }
-      playlist.songs = songsWithMetadata;
-    } else {
-      // 检查歌曲列表是否与文件路径列表一致
-      if (playlist.songs!.length != playlist.songFilePaths.length) {
-        // 重新解析所有歌曲
-        final List<Song> songsWithMetadata = [];
-        for (final filePath in playlist.songFilePaths) {
-          final song = await _parseSongMetadata(filePath);
-          songsWithMetadata.add(song);
-        }
-        playlist.songs = songsWithMetadata;
-      } else {
-        // 检查文件路径是否匹配
-        bool needsUpdate = false;
-        for (int i = 0; i < playlist.songFilePaths.length; i++) {
-          if (playlist.songs![i].filePath != playlist.songFilePaths[i]) {
-            needsUpdate = true;
-            break;
-          }
-        }
-
-        if (needsUpdate) {
-          // 重新解析所有歌曲
-          final List<Song> songsWithMetadata = [];
-          for (final filePath in playlist.songFilePaths) {
-            final song = await _parseSongMetadata(filePath);
-            songsWithMetadata.add(song);
-          }
-          playlist.songs = songsWithMetadata;
+    final existingSongs = playlist.songs;
+    var needsUpdate =
+        existingSongs == null ||
+        existingSongs.length != playlist.songFilePaths.length;
+    if (!needsUpdate) {
+      for (var index = 0; index < playlist.songFilePaths.length; index++) {
+        if (_normalizePath(existingSongs[index].filePath) !=
+            _normalizePath(playlist.songFilePaths[index])) {
+          needsUpdate = true;
+          break;
         }
       }
     }
+    if (!needsUpdate) return;
+
+    final knownSongs = <String, Song>{
+      for (final song in existingSongs ?? const <Song>[])
+        song.normalizedPath: song,
+    };
+    playlist.songs = playlist.songFilePaths
+        .map(
+          (filePath) => _songFromCachedOrKnown(
+            filePath,
+            knownSong: knownSongs[_normalizePath(filePath)],
+          ),
+        )
+        .toList(growable: false);
+    unawaited(_verifySongMetadataInBackground(playlist.songFilePaths));
   }
 
   // 查找歌单中不存在的文件
@@ -3422,6 +4336,8 @@ class PlaylistContentNotifier extends ChangeNotifier
     _setCurrentPosition(Duration.zero);
     _totalDuration = Duration.zero;
     _isPlaying = false;
+    _refreshAdjacentPlaybackArtworkPrewarm();
+    _setPlaybackVisualCover(null);
     notifyListeners();
   }
 
@@ -3430,6 +4346,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _cancelPendingTrackChange() {
+    _startupPlaybackRestoreSuperseded = true;
     _playbackIntent = false;
     _transportCommandRevision++;
     _playbackRequestRevision++;
@@ -3834,6 +4751,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _refreshGaplessNext() {
+    _refreshAdjacentPlaybackArtworkPrewarm();
     if (!_gaplessEnabled) return;
     final nextPath = _peekNextPath();
     _audioService.replaceNext(nextPath);
@@ -3842,6 +4760,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   Future<void> _handleGaplessTransition() async {
     if (_isGaplessTransitioning) return;
     final transitionRevision = _playbackRequestRevision;
+    final previousVisualPath = _currentSong?.filePath;
     _isGaplessTransitioning = true;
     _isAutoPlaying = true;
 
@@ -3886,6 +4805,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
 
       if (songFilePath != null) {
+        _setPlaybackVisualCover(songFilePath);
         final songToPlay = await _prepareSongForPlayback(songFilePath);
         if (!_isGaplessTransitionCurrent(transitionRevision)) return;
         final oldSongPath = _currentSong?.normalizedPath;
@@ -3893,6 +4813,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
         _currentSong = songToPlay;
         _evictableCoverPaths.remove(newSongPath);
+        _refreshAdjacentPlaybackArtworkPrewarm();
         if (oldSongPath != null &&
             oldSongPath != newSongPath &&
             !_isCoverRequested(oldSongPath)) {
@@ -3912,7 +4833,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
         PlaybackTracker().startTracking(songToPlay);
 
-        savePlaybackState();
+        _schedulePlaybackStateSave();
       }
 
       if (!_isGaplessTransitionCurrent(transitionRevision)) return;
@@ -3925,7 +4846,10 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       notifyListeners();
     } catch (e) {
-      //
+      if (_isGaplessTransitionCurrent(transitionRevision) &&
+          _currentSong?.filePath == previousVisualPath) {
+        _setPlaybackVisualCover(previousVisualPath);
+      }
     } finally {
       _isAutoPlaying = false;
       _isGaplessTransitioning = false;
@@ -4155,6 +5079,115 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
   }
 
+  /// Plays [song] without replacing the list that originally started playback.
+  ///
+  /// Queue/library drawers may present a filtered view (for example, songs by
+  /// the current artist). Mapping the selected song back to the active source
+  /// keeps previous/next navigation anchored to that original source.
+  Future<void> playSongFromPlaybackSource(Song song) async {
+    final source = playingQueueSongs;
+    final sourceIndex = _indexOfSongInSource(source, song);
+    if (sourceIndex != -1) {
+      await playSongFromQueue(sourceIndex);
+      return;
+    }
+
+    // This fallback is only needed before a playback source exists. Once a
+    // source is active, never replace it merely because a filtered view changed.
+    if (source.isEmpty) {
+      final libraryIndex = _indexOfSongInSource(_allSongs, song);
+      if (libraryIndex != -1) {
+        await playSongFromAllSongs(libraryIndex);
+      }
+    }
+  }
+
+  PlaybackSourceSnapshot capturePlaybackSource() {
+    return PlaybackSourceSnapshot(
+      usesQueue: _isUsingQueue,
+      songs: List<Song>.from(playingQueueSongs),
+      currentIndex: _isUsingQueue ? _currentQueueIndex : _playingSongIndex,
+      playlist: _isUsingQueue ? null : _playingPlaylist,
+    );
+  }
+
+  /// Restores previous/next navigation without restarting the current audio.
+  /// If the previewed song did not belong to the original source, it is
+  /// inserted next to the original position so navigation remains well-defined.
+  Future<void> restorePlaybackSource(PlaybackSourceSnapshot snapshot) async {
+    final songs = List<Song>.from(snapshot.songs);
+    if (songs.isEmpty) return;
+
+    var currentIndex = _currentSong == null
+        ? -1
+        : _indexOfSongInSource(songs, _currentSong!);
+    if (currentIndex == -1 && _currentSong != null) {
+      final insertAt = (snapshot.currentIndex + 1).clamp(0, songs.length);
+      songs.insert(insertAt, _currentSong!);
+      currentIndex = insertAt;
+    }
+    if (currentIndex == -1) {
+      currentIndex = snapshot.currentIndex.clamp(0, songs.length - 1);
+    }
+
+    if (snapshot.usesQueue) {
+      _isUsingQueue = true;
+      _currentPlayingQueue = songs;
+      _currentPlayingQueueFilePaths = songs
+          .map((song) => song.filePath)
+          .toList(growable: false);
+      _currentQueueIndex = currentIndex;
+    } else {
+      _isUsingQueue = false;
+      _currentPlayingQueue = null;
+      _currentPlayingQueueFilePaths = null;
+      _currentQueueIndex = -1;
+
+      final originalPlaylist = snapshot.playlist;
+      final currentSong = _currentSong;
+      final canReuseOriginal =
+          originalPlaylist != null &&
+          currentSong != null &&
+          _indexOfSongInSource(snapshot.songs, currentSong) != -1;
+      if (canReuseOriginal) {
+        _playingPlaylist = originalPlaylist;
+      } else {
+        _playingPlaylist = Playlist(
+          id: 'restored-source-${DateTime.now().millisecondsSinceEpoch}',
+          name: originalPlaylist?.name ?? '原播放列表',
+          songFilePaths: songs.map((song) => song.filePath).toList(),
+          songs: songs,
+        );
+      }
+      _playingSongIndex = currentIndex;
+    }
+
+    _generateShuffledIndices(count: songs.length);
+    _refreshGaplessNext();
+    notifyListeners();
+    if (!snapshot.usesQueue) {
+      await savePlaybackState();
+    }
+  }
+
+  Future<void> playSongFromPlaylist(Playlist playlist, int index) async {
+    // Mark the persisted startup restore stale before metadata preparation can
+    // yield. Otherwise a first tap during app startup could still be followed
+    // by the old saved song before this method reaches _startPlaybackNow().
+    _startupPlaybackRestoreSuperseded = true;
+    await _ensurePlaylistSongs(playlist);
+    final songs = playlist.songs;
+    if (songs == null || index < 0 || index >= songs.length) return;
+
+    _isUsingQueue = false;
+    _currentPlayingQueue = null;
+    _currentPlayingQueueFilePaths = null;
+    _currentQueueIndex = -1;
+    _playingPlaylist = playlist;
+    _playingSongIndex = index;
+    await _startPlaybackNow();
+  }
+
   // 切换播放模式
   void togglePlayMode() {
     switch (_playMode) {
@@ -4375,9 +5408,22 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<void> _startPlaybackNow({bool playAfterLoad = true}) async {
+    _startupPlaybackRestoreSuperseded = true;
     final requestRevision = ++_playbackRequestRevision;
     _activeTrackChangeRevision = requestRevision;
     _playbackIntent = playAfterLoad;
+    InteractionPerformanceController.instance.pulse(
+      InteractionPhase.transition,
+      settleAfter: const Duration(milliseconds: 280),
+    );
+
+    // Publish the user's final transport intent once. Native backends may
+    // report a short paused state while replacing the file; that transient is
+    // filtered by the playWhenReady listener above.
+    if (_isPlaying != playAfterLoad) {
+      _isPlaying = playAfterLoad;
+      notifyListeners();
+    }
 
     String? songFilePath;
 
@@ -4406,17 +5452,8 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
 
     try {
-      // 立即停止旧曲，避免解析新歌曲元数据期间两首歌状态重叠。
-      await _audioService.pause();
-      _isPlaying = false;
-      notifyListeners();
-
-      if (!_isPlaybackRequestCurrent(requestRevision)) return;
+      _setPlaybackVisualCover(songFilePath);
       final songToPlay = await _prepareSongForPlayback(songFilePath);
-      if (!_isPlaybackRequestCurrent(requestRevision)) return;
-
-      final session = _buildMediaSession(songToPlay);
-      await _audioService.player.setMediaSession(session);
       if (!_isPlaybackRequestCurrent(requestRevision)) return;
 
       if (_gaplessEnabled) {
@@ -4428,7 +5465,7 @@ class PlaylistContentNotifier extends ChangeNotifier
           eqGains: _equalizerGains,
           eqFrequencies: equalizerFrequencies,
           exclusiveMode: _isExclusiveModeEnabled,
-          play: false,
+          play: playAfterLoad,
         );
       } else {
         await _audioService.playSong(
@@ -4438,7 +5475,7 @@ class PlaylistContentNotifier extends ChangeNotifier
           eqGains: _equalizerGains,
           eqFrequencies: equalizerFrequencies,
           exclusiveMode: _isExclusiveModeEnabled,
-          play: false,
+          play: playAfterLoad,
         );
       }
       if (!_isPlaybackRequestCurrent(requestRevision)) return;
@@ -4450,6 +5487,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       _currentSong = songToPlay;
       _evictableCoverPaths.remove(newSongPath);
+      _refreshAdjacentPlaybackArtworkPrewarm();
       if (oldSongPath != null &&
           oldSongPath != newSongPath &&
           !_isCoverRequested(oldSongPath)) {
@@ -4457,17 +5495,16 @@ class PlaylistContentNotifier extends ChangeNotifier
         _scheduleCoverEviction();
       }
 
-      if (_playbackIntent) {
-        await _audioService.play();
-        _isPlaying = true;
-      } else {
-        _isPlaying = false;
-      }
+      _isPlaying = _playbackIntent;
+
+      // Media-session publication is independent of native file replacement.
+      // Do not put Android notification work in front of audible playback.
+      unawaited(_publishMediaSessionForTrack(songToPlay, requestRevision));
 
       _currentLyrics = [];
       _setCurrentLyricLineIndex(-1);
 
-      _loadLyricsForSong(songFilePath);
+      unawaited(_loadLyricsForSong(songFilePath));
 
       // 提取并应用动态主题色
       unawaited(_applyDynamicColorForSong(songToPlay));
@@ -4479,7 +5516,8 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
 
       // 保存播放状态
-      savePlaybackState();
+      _schedulePlaybackStateSave();
+      unawaited(_verifySongMetadataInBackground([songFilePath]));
 
       notifyListeners();
     } catch (e) {
@@ -4489,12 +5527,9 @@ class PlaylistContentNotifier extends ChangeNotifier
         // continuing underneath a failed new-song request.
         _playbackIntent = false;
         _isPlaying = false;
+        _setPlaybackVisualCover(_currentSong?.filePath);
         PlaybackTracker().pauseTracking();
-        try {
-          await _audioService.pause();
-        } catch (_) {
-          // The native player may already be tearing down after the failure.
-        }
+        unawaited(_audioService.pause().catchError((_) {}));
 
         final errorMessage = '无法播放 ${p.basename(songFilePath)}，请检查文件或音频输出设备。';
         if (!_settingsProvider.ignorePlaybackErrors) {
@@ -4512,6 +5547,23 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   bool _isPlaybackRequestCurrent(int revision) {
     return revision == _playbackRequestRevision;
+  }
+
+  Future<void> _publishMediaSessionForTrack(
+    Song song,
+    int requestRevision,
+  ) async {
+    if (!_isPlaybackRequestCurrent(requestRevision)) return;
+    try {
+      await _audioService.player.setMediaSession(_buildMediaSession(song));
+    } catch (error) {
+      _writeErrorToLog('更新媒体会话失败', error);
+    }
+  }
+
+  bool _isStartupPlaybackRestoreCurrent(int revision) {
+    return !_startupPlaybackRestoreSuperseded &&
+        revision == _playbackRequestRevision;
   }
 
   // 启用独占模式
@@ -4625,6 +5677,27 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   // 保存播放状态
+  void _schedulePlaybackStateSave() {
+    final generation = ++_playbackStateSaveGeneration;
+    _playbackStateSaveTimer?.cancel();
+    _playbackStateSaveTimer = Timer(
+      const Duration(milliseconds: 650),
+      () async {
+        final lease = await InteractionPerformanceController.instance
+            .acquireIdleWork(
+              priority: InteractionWorkPriority.maintenance,
+              isStillNeeded: () => generation == _playbackStateSaveGeneration,
+            );
+        try {
+          if (generation != _playbackStateSaveGeneration) return;
+          await savePlaybackState();
+        } finally {
+          lease.release();
+        }
+      },
+    );
+  }
+
   Future<void> savePlaybackState() async {
     // 只有在有播放列表和当前歌曲索引有效时才保存
     if (_playingPlaylist != null &&
@@ -4647,10 +5720,18 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 恢复播放状态
   Future<void> _restorePlaybackState() async {
+    // Startup data loading is deliberately late. A user may already have
+    // selected a song by then; persisted state must never overwrite that
+    // explicit request.
+    if (_startupPlaybackRestoreSuperseded ||
+        _playbackRequestRevision != 0 ||
+        _currentSong != null) {
+      return;
+    }
     final restoreRevision = _playbackRequestRevision;
     final playbackState = await _playlistManager.loadPlaybackState();
     final playbackQueue = await _playlistManager.loadPlaybackQueue();
-    if (restoreRevision != _playbackRequestRevision) return;
+    if (!_isStartupPlaybackRestoreCurrent(restoreRevision)) return;
 
     if (playbackState != null) {
       // 查找对应的播放列表
@@ -4665,102 +5746,132 @@ class PlaylistContentNotifier extends ChangeNotifier
         targetPlaylist = _allSongsVirtualPlaylist;
       }
 
-      // 如果有保存的播放队列，则使用它更新播放列表
+      // Keep restoration isolated until the native player has accepted it.
+      // Mutating a live playlist here can otherwise race a startup tap.
+      Playlist restoredPlaylist = targetPlaylist;
       if (playbackQueue != null) {
-        targetPlaylist.songFilePaths = playbackQueue;
+        restoredPlaylist = Playlist(
+          id: targetPlaylist.id,
+          name: targetPlaylist.name,
+          isDefault: targetPlaylist.isDefault,
+          songFilePaths: List<String>.from(playbackQueue),
+          currentPlayingIndex: targetPlaylist.currentPlayingIndex,
+          isFolderBased: targetPlaylist.isFolderBased,
+          folderPaths: List<String>.from(targetPlaylist.folderPaths),
+        );
       }
 
       // 检查歌曲索引是否有效
       if (playbackState.songIndex >= 0 &&
-          targetPlaylist.songFilePaths.length > playbackState.songIndex) {
-        // 设置播放上下文
-        _playingPlaylist = targetPlaylist;
-        _playingSongIndex = playbackState.songIndex;
-
+          restoredPlaylist.songFilePaths.length > playbackState.songIndex) {
         // 确保播放列表的歌曲已被解析
-        await _ensurePlaylistSongs(_playingPlaylist!);
-        if (restoreRevision != _playbackRequestRevision) return;
+        await _ensurePlaylistSongs(restoredPlaylist);
+        if (!_isStartupPlaybackRestoreCurrent(restoreRevision)) return;
 
-        final songFilePath = _playingPlaylist!.songFilePaths[_playingSongIndex];
-        _currentSong = await _prepareSongForPlayback(songFilePath);
-        if (restoreRevision != _playbackRequestRevision) return;
+        final restoredSongIndex = playbackState.songIndex;
+        final songFilePath = restoredPlaylist.songFilePaths[restoredSongIndex];
+        _setPlaybackVisualCover(songFilePath);
+        final preparedSong = _prepareSongForPlayback(songFilePath);
+        // Restore the mini-player only after its small artwork has resolved.
+        // Metadata and artwork run concurrently, so cached thumbnails normally
+        // add only one disk-cache read and the first painted mini-player frame
+        // is never an avoidable blank placeholder.
+        if (coverForSongPath(songFilePath) == null &&
+            artworkResolutionStateForPath(songFilePath) !=
+                ArtworkResolutionState.unavailable) {
+          await ensureSongThumbnail(
+            songFilePath,
+            priority: ArtworkRequestPriority.visible,
+          );
+        }
+        if (!_isStartupPlaybackRestoreCurrent(restoreRevision)) return;
+        final restoredSong = await preparedSong;
+        if (!_isStartupPlaybackRestoreCurrent(restoreRevision)) return;
 
-        // 钉选当前播放歌曲的封面
-        _evictableCoverPaths.remove(_normalizePath(songFilePath));
-
-        // 加载歌词
-        _loadLyricsForSong(songFilePath);
-
-        final session = _buildMediaSession(_currentSong!);
-        await _audioService.player.setMediaSession(session);
-
-        // 提取并应用动态主题色
-        unawaited(_applyDynamicColorForSong(_currentSong!));
-
-        // 将歌曲加载到播放器中，但不自动播放
         try {
-          // 检查文件是否存在
           final songFile = File(songFilePath);
-          if (await songFile.exists()) {
-            if (restoreRevision != _playbackRequestRevision) return;
-            await _audioService.player.open(
-              Media(songFilePath),
-              play: false, // 不自动播放
-            );
+          if (!await songFile.exists()) {
+            if (!_isStartupPlaybackRestoreCurrent(restoreRevision)) return;
+            await _playlistManager.clearPlaybackState();
+            await _playlistManager.clearPlaybackQueue();
+            _setPlaybackVisualCover(null);
+            _setCurrentPosition(Duration.zero);
+            notifyListeners();
+            return;
+          }
+          if (!_isStartupPlaybackRestoreCurrent(restoreRevision)) return;
 
-            // 播放状态恢复的后续处理
-          } else {
-            // 如果文件不存在，清除播放状态
+          await _audioService.player.setMediaSession(
+            _buildMediaSession(restoredSong),
+          );
+          if (!_isStartupPlaybackRestoreCurrent(restoreRevision)) return;
+          await _audioService.player.open(
+            Media(songFilePath),
+            play: false, // 不自动播放
+          );
+          if (!_isStartupPlaybackRestoreCurrent(restoreRevision)) return;
+
+          // Commit UI state only after native restoration succeeds. Until then
+          // a startup tap remains free to supersede the whole operation.
+          _playingPlaylist = restoredPlaylist;
+          _playingSongIndex = restoredSongIndex;
+          _currentSong = restoredSong;
+          _evictableCoverPaths.remove(_normalizePath(songFilePath));
+          _refreshAdjacentPlaybackArtworkPrewarm();
+          unawaited(_loadLyricsForSong(songFilePath));
+          unawaited(_applyDynamicColorForSong(restoredSong));
+          notifyListeners();
+        } catch (e) {
+          if (_isStartupPlaybackRestoreCurrent(restoreRevision)) {
             await _playlistManager.clearPlaybackState();
             await _playlistManager.clearPlaybackQueue();
             _playingPlaylist = null;
             _playingSongIndex = -1;
-            if (_currentSong != null) {
-              final oldPath = _currentSong!.normalizedPath;
-              _currentSong = null;
-              if (!_isCoverRequested(oldPath)) {
-                _evictableCoverPaths.add(oldPath);
-                _scheduleCoverEviction();
-              }
-            } else {
-              _currentSong = null;
-            }
+            _currentSong = null;
+            _setPlaybackVisualCover(null);
             _setCurrentPosition(Duration.zero);
+            notifyListeners();
           }
-        } catch (e) {
-          // 如果加载失败，清除播放状态
-          await _playlistManager.clearPlaybackState();
-          await _playlistManager.clearPlaybackQueue();
-          _playingPlaylist = null;
-          _playingSongIndex = -1;
-          if (_currentSong != null) {
-            final oldPath = _currentSong!.normalizedPath;
-            _currentSong = null;
-            if (!_isCoverRequested(oldPath)) {
-              _evictableCoverPaths.add(oldPath);
-              _scheduleCoverEviction();
-            }
-          } else {
-            _currentSong = null;
-          }
-          _setCurrentPosition(Duration.zero);
         }
-
-        notifyListeners();
       }
     }
   }
 
   // -- 主题管理 --
   Future<void> _applyDynamicColorForSong(Song song) async {
-    await InteractionPerformanceController.instance.waitForIdle(
-      maxWait: const Duration(milliseconds: 500),
-    );
-    if (_currentSong?.normalizedPath != song.normalizedPath) return;
-    await extractAndApplyDynamicColor(
-      displayCoverForSong(song),
-      sourceSongPath: song.normalizedPath,
-    );
+    if (!_settingsProvider.useDynamicColor) return;
+    final songPath = song.normalizedPath;
+    final cached = _takeDynamicColor(songPath);
+    if (cached != null) {
+      if (_currentSong?.normalizedPath != songPath) return;
+      await _themeProvider.setDynamicSeedColor(cached);
+      unawaited(_prefetchAdjacentDynamicColors(songPath));
+      return;
+    }
+    final lease = await InteractionPerformanceController.instance
+        .acquireIdleWork(
+          priority: InteractionWorkPriority.userVisible,
+          isStillNeeded: () =>
+              _settingsProvider.useDynamicColor &&
+              _currentSong?.normalizedPath == songPath,
+        );
+    try {
+      if (!_settingsProvider.useDynamicColor ||
+          _currentSong?.normalizedPath != songPath) {
+        return;
+      }
+      final preparedWhileQueued = _takeDynamicColor(songPath);
+      if (preparedWhileQueued != null) {
+        await _themeProvider.setDynamicSeedColor(preparedWhileQueued);
+        return;
+      }
+      await extractAndApplyDynamicColor(
+        displayCoverForSong(song),
+        sourceSongPath: songPath,
+      );
+    } finally {
+      lease.release();
+    }
   }
 
   // 提取并应用动态主题色。sourceSongPath 用于阻止旧歌曲的异步结果回写。
@@ -4768,30 +5879,140 @@ class PlaylistContentNotifier extends ChangeNotifier
     Uint8List? albumArt, {
     String? sourceSongPath,
   }) async {
-    final requestGeneration = ++_dynamicColorRequestGeneration;
+    final requestGeneration = ++_dynamicColorApplyGeneration;
     if (!_settingsProvider.useDynamicColor || albumArt == null) {
       return;
     }
 
     try {
-      final colors = await extractColor(
-        artworkImageProvider(null, albumArt, size: ArtworkSize.medium),
-        8,
-      );
-      if (requestGeneration != _dynamicColorRequestGeneration ||
+      final songPath = sourceSongPath ?? _currentSong?.normalizedPath;
+      if (songPath == null) return;
+      final color = await _resolveDynamicColor(songPath, albumArt);
+      if (requestGeneration != _dynamicColorApplyGeneration ||
           !_settingsProvider.useDynamicColor ||
-          (sourceSongPath != null &&
-              _currentSong?.normalizedPath != sourceSongPath) ||
-          colors.isEmpty) {
+          _currentSong?.normalizedPath != songPath ||
+          color == null) {
         return;
       }
-      final palette = colors
-          .map((color) => Color.fromRGBO(color.r, color.g, color.b, 1))
-          .toList(growable: false);
-      final color = selectRepresentativeCoverColor(palette);
       await _themeProvider.setDynamicSeedColor(color);
+      unawaited(_prefetchAdjacentDynamicColors(songPath));
     } catch (e) {
       // print('提取颜色失败 $e');
+    }
+  }
+
+  Color? _takeDynamicColor(String songPath) {
+    final key = _normalizePath(songPath);
+    final color = _dynamicColorCache.remove(key);
+    if (color != null) _dynamicColorCache[key] = color;
+    return color;
+  }
+
+  void _putDynamicColor(String songPath, Color color) {
+    final key = _normalizePath(songPath);
+    _dynamicColorCache.remove(key);
+    _dynamicColorCache[key] = color;
+    while (_dynamicColorCache.length > _maximumDynamicColorCacheEntries) {
+      _dynamicColorCache.remove(_dynamicColorCache.keys.first);
+    }
+  }
+
+  Future<Color?> _resolveDynamicColor(
+    String songPath,
+    Uint8List albumArt,
+  ) async {
+    final cached = _takeDynamicColor(songPath);
+    if (cached != null) return cached;
+    final key = _normalizePath(songPath);
+    final inFlight = _dynamicColorRequests[key];
+    if (inFlight != null) return inFlight;
+
+    final request = _extractRepresentativeDynamicColor(albumArt);
+    _dynamicColorRequests[key] = request;
+    try {
+      final color = await request;
+      if (color != null) _putDynamicColor(key, color);
+      return color;
+    } finally {
+      if (identical(_dynamicColorRequests[key], request)) {
+        _dynamicColorRequests.remove(key);
+      }
+    }
+  }
+
+  Future<Color?> _extractRepresentativeDynamicColor(Uint8List albumArt) async {
+    final colors = await extractColor(
+      artworkImageProvider(null, albumArt, size: ArtworkSize.medium),
+      8,
+    );
+    if (colors.isEmpty) return null;
+    final palette = colors
+        .map((color) => Color.fromRGBO(color.r, color.g, color.b, 1))
+        .toList(growable: false);
+    return selectRepresentativeCoverColor(palette);
+  }
+
+  List<String> _adjacentPlaybackPaths(String currentSongPath) {
+    final paths = _isUsingQueue
+        ? _currentPlayingQueueFilePaths
+        : _playingPlaylist?.songFilePaths;
+    if (paths == null || paths.length <= 1) return const [];
+    var currentIndex = _isUsingQueue ? _currentQueueIndex : _playingSongIndex;
+    if (currentIndex < 0 ||
+        currentIndex >= paths.length ||
+        _normalizePath(paths[currentIndex]) != currentSongPath) {
+      currentIndex = paths.indexWhere(
+        (path) => _normalizePath(path) == currentSongPath,
+      );
+    }
+    if (currentIndex < 0) return const [];
+    return playbackArtworkPrewarmIndices(
+      songCount: paths.length,
+      currentIndex: currentIndex,
+      playOrder: _playMode == PlayMode.shuffle ? _shuffledIndices : null,
+    ).map((index) => paths[index]).toList(growable: false);
+  }
+
+  Future<void> _prefetchAdjacentDynamicColors(String currentSongPath) async {
+    if (!_settingsProvider.useDynamicColor ||
+        _currentSong?.normalizedPath != currentSongPath) {
+      return;
+    }
+    final generation = ++_dynamicColorPrefetchGeneration;
+    final paths = _adjacentPlaybackPaths(currentSongPath);
+    for (final path in paths) {
+      if (generation != _dynamicColorPrefetchGeneration ||
+          !_settingsProvider.useDynamicColor ||
+          _currentSong?.normalizedPath != currentSongPath) {
+        return;
+      }
+      if (_takeDynamicColor(path) != null) continue;
+      final albumArt =
+          coverForSongPath(path) ??
+          await ensureSongThumbnail(
+            path,
+            priority: ArtworkRequestPriority.background,
+          );
+      if (albumArt == null || albumArt.isEmpty) continue;
+      final lease = await InteractionPerformanceController.instance
+          .acquireIdleWork(
+            priority: InteractionWorkPriority.background,
+            isStillNeeded: () =>
+                generation == _dynamicColorPrefetchGeneration &&
+                _currentSong?.normalizedPath == currentSongPath,
+          );
+      try {
+        if (generation != _dynamicColorPrefetchGeneration ||
+            _currentSong?.normalizedPath != currentSongPath) {
+          return;
+        }
+        final color = await _resolveDynamicColor(path, albumArt);
+        if (color != null) _themeProvider.prewarmDynamicSeedColor(color);
+      } catch (_) {
+        // A failed adjacent cover must not affect current-song theme updates.
+      } finally {
+        lease.release();
+      }
     }
   }
 
@@ -5046,6 +6267,11 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     // 更新数据模型
     currentPlaylist.songFilePaths = sortedPaths;
+    final sortScope = _playlistSortScope(currentPlaylist.id);
+    await _rememberSortPreference(sortScope, criterion, descending);
+    _sortMembershipSignatures[sortScope] = _songMembershipSignature(
+      sortedPaths,
+    );
 
     // 同时更新songs列表的顺序
     if (currentPlaylist.songs != null) {
@@ -5093,9 +6319,23 @@ class PlaylistContentNotifier extends ChangeNotifier
       return;
     }
 
+    final hadVisibleLyrics =
+        _currentLyrics.isNotEmpty || _currentLyricLineIndex != -1;
     _currentLyrics = []; // 清空之前的歌词
     _setCurrentLyricLineIndex(-1); // 重置歌词行索引
-    notifyListeners();
+    if (hadVisibleLyrics) notifyListeners();
+    final startLease = await InteractionPerformanceController.instance
+        .acquireIdleWork(
+          priority: InteractionWorkPriority.background,
+          isStillNeeded: () =>
+              requestGeneration == _lyricRequestGeneration &&
+              _currentSong?.normalizedPath == song.normalizedPath,
+        );
+    startLease.release();
+    if (requestGeneration != _lyricRequestGeneration ||
+        _currentSong?.normalizedPath != song.normalizedPath) {
+      return;
+    }
     final lyrics = await _resolveLyricsForSong(song);
     if (requestGeneration != _lyricRequestGeneration ||
         _currentSong?.normalizedPath != song.normalizedPath) {
@@ -5109,7 +6349,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   String _lyricCacheKey(Song song) => [
     song.normalizedPath,
-    _settingsProvider.preferExternalLyrics ? 'external' : 'embedded',
+    _settingsProvider.preferExternalLyrics ? 'externalFirst' : 'networkFirst',
     _settingsProvider.enableOnlineLyrics ? 'online' : 'local',
     _settingsProvider.primaryLyricSource,
     _settingsProvider.enableLyricSourceFallback ? 'fallback' : 'single',
@@ -5154,21 +6394,25 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<List<LyricLine>> _resolveLyricsUncached(Song song) async {
-    final localReaders = _settingsProvider.preferExternalLyrics
-        ? <Future<List<LyricLine>> Function()>[
-            () => _readExternalLyrics(song.filePath),
-            () => _readEmbeddedLyrics(song.filePath),
-          ]
-        : <Future<List<LyricLine>> Function()>[
-            () => _readEmbeddedLyrics(song.filePath),
-            () => _readExternalLyrics(song.filePath),
-          ];
-    for (final read in localReaders) {
-      final lyrics = await read();
-      if (lyrics.isNotEmpty) return lyrics;
+    final priority = lyricResolutionPriority(
+      preferExternalLyrics: _settingsProvider.preferExternalLyrics,
+      enableOnlineLyrics: _settingsProvider.enableOnlineLyrics,
+    );
+    for (final source in priority) {
+      try {
+        final lyrics = switch (source) {
+          'external' => await _readExternalLyrics(song.filePath),
+          'embedded' => await _readEmbeddedLyrics(song.filePath),
+          _ => await _fetchOnlineLyrics(song),
+        };
+        if (lyrics.isNotEmpty) return lyrics;
+      } catch (error) {
+        // A broken network response or unreadable embedded tag must not stop
+        // the remaining source chain, especially the adjacent LRC fallback.
+        _writeErrorToLog('歌词源 $source 读取失败，继续尝试下一来源', error);
+      }
     }
-    if (!_settingsProvider.enableOnlineLyrics) return const [];
-    return _fetchOnlineLyrics(song);
+    return const [];
   }
 
   Future<List<LyricLine>> _fetchOnlineLyrics(Song song) async {
@@ -6919,18 +8163,24 @@ class PlaylistContentNotifier extends ChangeNotifier
     // 应用持久化排序
     final savedOrder = _artistSortOrders[artistName];
     if (savedOrder != null) {
-      // 如果存在已保存的顺序，就按这个顺序重新排列歌曲列表
       final songMap = {for (final song in _activeSongList) song.filePath: song};
-      // 过滤掉已不存在的歌曲路径，并按保存的顺序排列
-      _activeSongList = savedOrder
+      final ordered = savedOrder
           .map((path) => songMap[path])
           .where((song) => song != null)
           .cast<Song>()
           .toList();
+      final orderedPaths = ordered.map((song) => song.filePath).toSet();
+      ordered.addAll(
+        _activeSongList.where((song) => !orderedPaths.contains(song.filePath)),
+      );
+      _activeSongList = ordered;
     }
 
     if (_isSearching) stopSearch();
     notifyListeners();
+    unawaited(
+      _reapplyActiveSortIfChanged(DetailViewContext.artist, artistName),
+    );
   }
 
   void setActiveAlbumView(String albumName) {
@@ -6942,14 +8192,60 @@ class PlaylistContentNotifier extends ChangeNotifier
     final savedOrder = _albumSortOrders[albumName];
     if (savedOrder != null) {
       final songMap = {for (final song in _activeSongList) song.filePath: song};
-      _activeSongList = savedOrder
+      final ordered = savedOrder
           .map((path) => songMap[path])
           .where((song) => song != null)
           .cast<Song>()
           .toList();
+      final orderedPaths = ordered.map((song) => song.filePath).toSet();
+      ordered.addAll(
+        _activeSongList.where((song) => !orderedPaths.contains(song.filePath)),
+      );
+      _activeSongList = ordered;
     }
 
     if (_isSearching) stopSearch();
+    notifyListeners();
+    unawaited(_reapplyActiveSortIfChanged(DetailViewContext.album, albumName));
+  }
+
+  Future<void> _reapplyActiveSortIfChanged(
+    DetailViewContext viewContext,
+    String title,
+  ) async {
+    final scope = viewContext == DetailViewContext.artist
+        ? _artistSortScope(title)
+        : _albumSortScope(title);
+    final preference = _songSortPreferences[scope];
+    if (preference == null) return;
+    final source = List<Song>.from(_activeSongList);
+    final signature = _songMembershipSignature(
+      source.map((song) => song.filePath),
+    );
+    if (_sortMembershipSignatures[scope] == signature) return;
+
+    final sortedPaths = await _sortFilePaths(
+      paths: source.map((song) => song.filePath).toList(),
+      criterion: preference.criterion,
+      descending: preference.descending,
+    );
+    if (_currentDetailViewContext != viewContext ||
+        _activeDetailTitle != title) {
+      return;
+    }
+    final songMap = {for (final song in source) song.filePath: song};
+    _activeSongList = sortedPaths
+        .map((path) => songMap[path])
+        .whereType<Song>()
+        .toList();
+    _sortMembershipSignatures[scope] = signature;
+    if (viewContext == DetailViewContext.artist) {
+      _artistSortOrders[title] = sortedPaths;
+      await _playlistManager.saveArtistSortOrders(_artistSortOrders);
+    } else {
+      _albumSortOrders[title] = sortedPaths;
+      await _playlistManager.saveAlbumSortOrders(_albumSortOrders);
+    }
     notifyListeners();
   }
 
@@ -7000,6 +8296,14 @@ class PlaylistContentNotifier extends ChangeNotifier
       for (final s in _activeSongList) s.filePath: s,
     };
     _activeSongList = sortedPaths.map((path) => songMap[path]!).toList();
+
+    final sortScope = _currentDetailViewContext == DetailViewContext.artist
+        ? _artistSortScope(_activeDetailTitle)
+        : _albumSortScope(_activeDetailTitle);
+    await _rememberSortPreference(sortScope, criterion, descending);
+    _sortMembershipSignatures[sortScope] = _songMembershipSignature(
+      sortedPaths,
+    );
 
     if (_currentDetailViewContext == DetailViewContext.artist) {
       // 如果当前是歌手视图，更新歌手排序 Map
@@ -7086,26 +8390,32 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 根据设置的自定义分隔符，将歌手字符串拆分为独立歌手
   List<String> getIndividualArtists(String artistString) {
+    return _splitIndividualArtists(
+      artistString,
+      _artistSeparatorPattern(_settingsProvider.artistSeparators),
+    );
+  }
+
+  RegExp? _artistSeparatorPattern(Iterable<String> separators) {
+    final validSeparators = separators.where(
+      (separator) => separator.isNotEmpty && separator.trim().isNotEmpty,
+    );
+    if (validSeparators.isEmpty) return null;
+    final pattern = validSeparators.map(RegExp.escape).join('|');
+    return RegExp('[$pattern]');
+  }
+
+  List<String> _splitIndividualArtists(
+    String artistString,
+    RegExp? separatorPattern,
+  ) {
     if (artistString.isEmpty) {
       return ['未知歌手'];
     }
-
-    final separators = _settingsProvider.artistSeparators;
-    final validSeparators = separators
-        .where(
-          (separator) => separator.isNotEmpty && separator.trim().isNotEmpty,
-        )
-        .toList();
-
-    if (validSeparators.isEmpty) {
-      return [artistString];
-    }
-
-    final pattern = validSeparators.map((s) => RegExp.escape(s)).join('|');
-    final RegExp separatorRegExp = RegExp('[$pattern]');
+    if (separatorPattern == null) return [artistString];
 
     final individualArtists = artistString
-        .split(separatorRegExp)
+        .split(separatorPattern)
         .map((artist) => artist.trim())
         .where((artist) => artist.isNotEmpty)
         .toList();
@@ -7119,27 +8429,43 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 多歌手识别与分组
   Map<String, List<Song>> get songsByArtist {
+    final separators = _settingsProvider.artistSeparators;
+    final separatorSignature = jsonEncode(separators);
+    if (_artistGroupsRevision == _libraryRevision &&
+        _artistGroupsSeparatorSignature == separatorSignature) {
+      return _artistGroupsCache;
+    }
     final Map<String, List<Song>> grouped = {};
+    final separatorPattern = _artistSeparatorPattern(separators);
 
     for (final song in _allSongs) {
-      final individualArtists = getIndividualArtists(song.artist);
+      final individualArtists = _splitIndividualArtists(
+        song.artist,
+        separatorPattern,
+      );
 
       for (final artistName in individualArtists) {
         grouped.putIfAbsent(artistName, () => []).add(song);
       }
     }
 
-    return grouped;
+    _artistGroupsRevision = _libraryRevision;
+    _artistGroupsSeparatorSignature = separatorSignature;
+    _artistGroupsCache = grouped;
+    return _artistGroupsCache;
   }
 
   // 这个的逻辑与上面类似，只是键变成了专辑名
   Map<String, List<Song>> get songsByAlbum {
+    if (_albumGroupsRevision == _libraryRevision) return _albumGroupsCache;
     final Map<String, List<Song>> grouped = {};
     for (final song in _allSongs) {
       // 使用专辑名作为分组的键
       grouped.putIfAbsent(song.album, () => []).add(song);
     }
-    return grouped;
+    _albumGroupsRevision = _libraryRevision;
+    _albumGroupsCache = grouped;
+    return _albumGroupsCache;
   }
 
   // 处理在歌手/专辑详情页中的拖动排序
@@ -7171,10 +8497,91 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // --- 全部歌曲页面相关 ---
 
-  Future<void> _updateAllSongsList() async {
-    // 初始化加载状态
-    _allSongsLoaded = false;
+  List<Song> _buildImmediateLibrarySnapshot(Iterable<String> paths) {
+    final knownSongs = <String, Song>{
+      for (final song in _allSongs) song.normalizedPath: song,
+    };
+    for (final playlist in _playlists) {
+      for (final song in playlist.songs ?? const <Song>[]) {
+        knownSongs.putIfAbsent(song.normalizedPath, () => song);
+      }
+    }
+
+    final songs = <Song>[];
+    final seenPaths = <String>{};
+    final seenTrustedIdentities = <String>{};
+    for (final path in paths) {
+      final normalizedPath = _normalizePath(path);
+      if (!seenPaths.add(normalizedPath)) continue;
+      final cached = _songMetadataCache[normalizedPath];
+      final known = knownSongs[normalizedPath];
+      final hasTrustedMetadata =
+          cached?.usesCurrentDecoder == true ||
+          (known != null &&
+              !known.artist.contains('解析失败') &&
+              known.artist != '未知歌手');
+      final song = cached?.usesCurrentDecoder == true
+          ? Song(
+              title: cached!.title,
+              artist: cached.artist,
+              album: cached.album,
+              filePath: path,
+              albumArt: known?.albumArt,
+              duration: cached.durationMs == null
+                  ? known?.duration
+                  : Duration(milliseconds: cached.durationMs!),
+              trackNumber: known?.trackNumber,
+            )
+          : known ??
+                Song(
+                  title: p.basenameWithoutExtension(path),
+                  artist: '未知歌手',
+                  album: '未知专辑',
+                  filePath: path,
+                );
+      if (hasTrustedMetadata) {
+        final identity = _libraryDedupKey(song);
+        if (_hiddenLibrarySongIdentities.contains(identity) ||
+            !seenTrustedIdentities.add(identity)) {
+          continue;
+        }
+      }
+      songs.add(song);
+    }
+    return songs;
+  }
+
+  void _publishAllSongsSnapshot(List<Song> songs) {
+    _allSongs = songs;
+    _libraryRevision++;
+    _searchService.rebuild(_allSongs);
+    _syncAllSongsPlaybackSnapshot();
+    _allSongsLoaded = true;
     notifyListeners();
+  }
+
+  void _syncAllSongsPlaybackSnapshot() {
+    final paths = _allSongs
+        .map((song) => song.filePath)
+        .toList(growable: false);
+    _allSongsVirtualPlaylist.songFilePaths = paths;
+    _allSongsVirtualPlaylist.songs = List<Song>.from(_allSongs);
+    _allSongsIndexByPath
+      ..clear()
+      ..addEntries(
+        _allSongs.indexed.map(
+          (entry) => MapEntry(entry.$2.normalizedPath, entry.$1),
+        ),
+      );
+  }
+
+  Future<void> _updateAllSongsList() async {
+    final updateGeneration = ++_allSongsUpdateGeneration;
+    // 初始化加载状态
+    if (_allSongs.isEmpty) {
+      _allSongsLoaded = false;
+      notifyListeners();
+    }
     try {
       // 从所有歌单中获取当前所有可用的、不重复的歌曲路径集合
       final allAvailablePaths = <String>{};
@@ -7193,11 +8600,17 @@ class PlaylistContentNotifier extends ChangeNotifier
       // 恢复列表，避免下一次保存把可恢复的顺序也覆盖为空。
       final List<String> savedOrder = await _playlistManager
           .loadAllSongsOrder();
+      if (updateGeneration != _allSongsUpdateGeneration) return;
       if (allAvailablePaths.isEmpty && savedOrder.isNotEmpty) {
         for (final path in savedOrder) {
           if (await _localSongPathExists(path)) allAvailablePaths.add(path);
+          if (updateGeneration != _allSongsUpdateGeneration) return;
         }
       }
+      final membershipChanged = libraryMembershipChanged(
+        savedOrder,
+        allAvailablePaths,
+      );
       _pruneMetadataCache(allAvailablePaths);
 
       savedOrder.removeWhere((path) => !allAvailablePaths.contains(path));
@@ -7206,63 +8619,68 @@ class PlaylistContentNotifier extends ChangeNotifier
         allAvailablePaths.where((path) => !existingPathsInOrder.contains(path)),
       );
 
-      final dedupedSongs = <Song>[];
-      final seen = <String>{};
-      var parsedCount = 0;
-      for (final path in savedOrder) {
-        parsedCount++;
-        if (parsedCount % 64 == 0) {
-          await Future<void>.delayed(Duration.zero);
-          await InteractionPerformanceController.instance.waitForIdle(
-            maxWait: const Duration(milliseconds: 120),
-          );
-        }
-        Song song;
-        try {
-          song = await _parseSongMetadata(path);
-        } catch (error) {
-          await _writeErrorToLog('解析歌曲失败：$path', error);
-          song = Song(
-            title: p.basenameWithoutExtension(path),
-            artist: '未知歌手 (解析失败)',
-            album: '未知专辑',
-            filePath: path,
-            albumArt: null,
-            duration: null,
-          );
-        }
+      final dedupedSongs = _buildImmediateLibrarySnapshot(savedOrder);
+      if (updateGeneration != _allSongsUpdateGeneration) return;
+      _publishAllSongsSnapshot(dedupedSongs);
 
-        final identity = _libraryDedupKey(song);
-        if (!_hiddenLibrarySongIdentities.contains(identity) &&
-            seen.add(identity)) {
-          dedupedSongs.add(song);
+      var refreshedSongs = dedupedSongs;
+      final sortPreference = _songSortPreferences[_allSongsSortScope];
+      final membershipSignature = _songMembershipSignature(
+        dedupedSongs.map((song) => song.filePath),
+      );
+      if (sortPreference != null && membershipChanged) {
+        final lease = await InteractionPerformanceController.instance
+            .acquireIdleWork(
+              priority: InteractionWorkPriority.maintenance,
+              isStillNeeded: () =>
+                  updateGeneration == _allSongsUpdateGeneration,
+            );
+        try {
+          if (!lease.isGranted ||
+              updateGeneration != _allSongsUpdateGeneration) {
+            return;
+          }
+          final sortedPaths = await _sortFilePaths(
+            paths: dedupedSongs.map((song) => song.filePath).toList(),
+            criterion: sortPreference.criterion,
+            descending: sortPreference.descending,
+          );
+          if (updateGeneration != _allSongsUpdateGeneration) return;
+          final songMap = {
+            for (final song in dedupedSongs)
+              _normalizePath(song.filePath): song,
+          };
+          refreshedSongs = sortedPaths
+              .map((path) => songMap[_normalizePath(path)])
+              .whereType<Song>()
+              .toList();
+        } finally {
+          lease.release();
         }
       }
-
-      _allSongs = dedupedSongs;
-      _libraryRevision++;
-      _searchService.rebuild(_allSongs);
+      _sortMembershipSignatures[_allSongsSortScope] = membershipSignature;
+      if (updateGeneration != _allSongsUpdateGeneration) return;
+      if (!identical(refreshedSongs, dedupedSongs)) {
+        _publishAllSongsSnapshot(refreshedSongs);
+      }
 
       final finalPathOrder = _allSongs.map((s) => s.filePath).toList();
       await _playlistManager.saveAllSongsOrder(finalPathOrder);
+      if (updateGeneration != _allSongsUpdateGeneration) return;
 
-      // 同步更新虚拟播放列表的路径，以便播放逻辑正常工作
-      _allSongsVirtualPlaylist.songFilePaths = finalPathOrder;
-      _allSongsVirtualPlaylist.songs = List<Song>.from(_allSongs);
       unawaited(
         _verifySongMetadataInBackground(_allSongsVirtualPlaylist.songFilePaths),
       );
       _cleanupInvalidSortingData();
-      prefetchSongCovers(
-        _allSongs.take(100),
-        priority: ArtworkRequestPriority.background,
-      );
+      _scheduleLibraryArtworkWarmCache();
     } catch (error, stackTrace) {
       debugPrint('重建全部歌曲列表失败: $error\n$stackTrace');
       await _writeErrorToLog('重建全部歌曲列表失败', error);
     } finally {
-      _allSongsLoaded = true;
-      notifyListeners();
+      if (updateGeneration == _allSongsUpdateGeneration && !_allSongsLoaded) {
+        _allSongsLoaded = true;
+        notifyListeners();
+      }
     }
   }
 
@@ -7298,7 +8716,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     await _playlistManager.saveAllSongsOrder(newPathOrder);
 
     // 更新虚拟播放列表以匹配新顺序
-    _allSongsVirtualPlaylist.songFilePaths = newPathOrder;
+    _syncAllSongsPlaybackSnapshot();
 
     // 如果正在播放的歌曲被移动，同步更新其索引以防播放错乱
     if (_playingPlaylist?.id == _allSongsVirtualPlaylist.id) {
@@ -7328,13 +8746,6 @@ class PlaylistContentNotifier extends ChangeNotifier
     _currentPlayingQueueFilePaths = null;
     _currentQueueIndex = -1;
 
-    // 恢复播放状态可能保存的是旧队列，进入曲库播放时必须按当前曲库
-    // 重新建立完整上下文，否则通知栏上一曲/下一曲只能反复播放旧曲。
-    _allSongsVirtualPlaylist.songFilePaths = _allSongs
-        .map((song) => song.filePath)
-        .toList();
-    _allSongsVirtualPlaylist.songs = List<Song>.from(_allSongs);
-
     // 设置播放上下文为虚拟歌单
     _playingPlaylist = _allSongsVirtualPlaylist;
     _playingSongIndex = index;
@@ -7351,8 +8762,8 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   /// 播放曲库搜索结果，但保留完整曲库作为上一曲/下一曲的播放上下文。
   Future<void> playAllSongsSearchResult(Song song) async {
-    final index = _indexOfSongInSource(_allSongs, song);
-    if (index == -1) return;
+    final index = _allSongsIndexByPath[song.normalizedPath];
+    if (index == null) return;
     stopSearch();
     await playSongFromAllSongs(index);
   }
@@ -7387,19 +8798,30 @@ class PlaylistContentNotifier extends ChangeNotifier
       criterion: criterion,
       descending: descending,
     );
+    await _rememberSortPreference(_allSongsSortScope, criterion, descending);
+    _sortMembershipSignatures[_allSongsSortScope] = _songMembershipSignature(
+      sortedPaths,
+    );
 
     // 持久化保存
     await _playlistManager.saveAllSongsOrder(sortedPaths);
 
-    // 重新加载全部歌曲列表以匹配新顺序
-    final sortedSongList = <Song>[];
-    for (final path in sortedPaths) {
-      sortedSongList.add(await _parseSongMetadata(path));
-    }
+    // Reorder the already-published objects without re-reading every file.
+    final existingByPath = {
+      for (final song in _allSongs) song.normalizedPath: song,
+    };
+    final sortedSongList = sortedPaths
+        .map(
+          (path) => _songFromCachedOrKnown(
+            path,
+            knownSong: existingByPath[_normalizePath(path)],
+          ),
+        )
+        .toList(growable: false);
     _allSongs = sortedSongList;
     _libraryRevision++;
-    _allSongsVirtualPlaylist.songFilePaths = sortedPaths;
-    _allSongsVirtualPlaylist.songs = sortedSongList;
+    _searchService.rebuild(_allSongs);
+    _syncAllSongsPlaybackSnapshot();
 
     if (_playingPlaylist?.id == _allSongsVirtualPlaylist.id &&
         _currentSong != null) {
@@ -7428,7 +8850,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     await _playlistManager.saveAllSongsOrder(newPathOrder);
 
     // 更新播放列表以匹配新顺序
-    _allSongsVirtualPlaylist.songFilePaths = newPathOrder;
+    _syncAllSongsPlaybackSnapshot();
 
     _infoStreamController.add('已将歌曲“${songToMove.title}”置于顶部');
 

@@ -3,16 +3,29 @@ import '../page/playlist/playlist_content_notifier.dart';
 
 class SortDialog extends StatefulWidget {
   final bool isAlbumView; // 新增参数，标识是否在专辑视图中
+  final SongSortPreference? initialPreference;
 
-  const SortDialog({super.key, this.isAlbumView = false});
+  const SortDialog({
+    super.key,
+    this.isAlbumView = false,
+    this.initialPreference,
+  });
 
   @override
   State<SortDialog> createState() => _SortDialogState();
 }
 
 class _SortDialogState extends State<SortDialog> {
-  SortCriterion _selectedCriterion = SortCriterion.title;
-  bool _isDescending = false;
+  late SortCriterion _selectedCriterion;
+  late bool _isDescending;
+
+  @override
+  void initState() {
+    super.initState();
+    _selectedCriterion =
+        widget.initialPreference?.criterion ?? SortCriterion.title;
+    _isDescending = widget.initialPreference?.descending ?? false;
+  }
 
   bool get _usesFixedOrder =>
       _selectedCriterion == SortCriterion.random ||

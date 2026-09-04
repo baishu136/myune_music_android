@@ -18,13 +18,9 @@ class PlaybackSettingsTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('playback_settings'),
       children: [
-        const ListTile(
-          leading: Icon(Icons.slideshow_outlined),
-          title: Text('进入播放页时展示'),
-          subtitle: Text('退出播放页后重置；播放页内切歌保持当前封面或歌词页'),
-        ),
+        const ListTile(title: Text('进入播放页时展示')),
         Padding(
-          padding: const EdgeInsets.fromLTRB(56, 0, 16, 12),
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 12),
           child: SegmentedButton<PlaybackInitialView>(
             expandedInsets: EdgeInsets.zero,
             showSelectedIcon: false,
@@ -47,9 +43,7 @@ class PlaybackSettingsTab extends StatelessWidget {
         ),
         if (Platform.isAndroid)
           SwitchListTile(
-            secondary: const Icon(Icons.multitrack_audio_outlined),
             title: const Text('播放被占用时自动暂停'),
-            subtitle: const Text('关闭后，其他应用占用音频焦点时继续播放；耳机断开仍会安全暂停'),
             value: settings.pauseOnAudioInterruption,
             onChanged: (value) async {
               await settings.setPauseOnAudioInterruption(value);

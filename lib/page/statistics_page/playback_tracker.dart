@@ -28,6 +28,7 @@ class PlaybackTracker {
   }
 
   void stopTracking() {
+    _commitActiveSegment();
     _playTimer?.cancel();
     _playTimer = null;
     _currentSong = null;
@@ -38,20 +39,31 @@ class PlaybackTracker {
 
   // 暂停跟踪（例如当歌曲暂停时）
   void pauseTracking() {
-    if (_playTimer != null && _playStartTime != null) {
+    if (_playStartTime != null) {
       // 累加本次播放时间
-      _accumulatedPlayTime += DateTime.now().difference(_playStartTime!);
+      _commitActiveSegment();
       _playTimer?.cancel();
       _playTimer = null;
       _playStartTime = null;
     }
   }
 
+  void _commitActiveSegment() {
+    final startedAt = _playStartTime;
+    if (startedAt == null) return;
+    final elapsed = DateTime.now().difference(startedAt);
+    if (elapsed > Duration.zero) {
+      _accumulatedPlayTime += elapsed;
+      StatisticsManager().recordPlaybackDuration(elapsed);
+    }
+    _playStartTime = null;
+  }
+
   // 恢复跟踪（例如当歌曲恢复播放时）
   void resumeTracking() {
-    if (_currentSong != null && !_hasRecorded) {
+    if (_currentSong != null && _playStartTime == null) {
       _playStartTime = DateTime.now();
-      _updateTimer();
+      if (!_hasRecorded) _updateTimer();
     }
   }
 

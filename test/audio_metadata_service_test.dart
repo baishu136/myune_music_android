@@ -87,6 +87,83 @@ void main() {
       await tempDirectory.delete(recursive: true);
     }
   });
+
+  test('valid Unicode WAV ID3 overrides truncated RIFF INFO title', () async {
+    const title = 'أنشودة أحلم بالشهادة  بلال الأحمد';
+    final tempDirectory = await Directory.systemTemp.createTemp(
+      'myune-wav-truncated-info-',
+    );
+    final wavFile = File('${tempDirectory.path}/arabic-title.wav');
+
+    try {
+      wavFile.writeAsBytesSync(_wavWithUnicodeId3AndTruncatedInfo(title));
+
+      final result = await readAudioInfoWithDart(
+        path: wavFile.path,
+        options: const AudioInfoOptions(
+          needCover: false,
+          needLyrics: false,
+          needAudioProps: false,
+          needExtraTags: false,
+          needTrackNumber: false,
+        ),
+      );
+
+      expect(result.title, title);
+    } finally {
+      await tempDirectory.delete(recursive: true);
+    }
+  });
+}
+
+Uint8List _wavWithUnicodeId3AndTruncatedInfo(String title) {
+  final encodedTitle = BytesBuilder(copy: false)
+    ..addByte(1)
+    ..add([0xff, 0xfe]);
+  for (final unit in title.codeUnits) {
+    encodedTitle.add(_uint16(unit));
+  }
+
+  final titlePayload = encodedTitle.takeBytes();
+  final titleFrame = BytesBuilder(copy: false)
+    ..add('TIT2'.codeUnits)
+    ..add(_uint32(titlePayload.length, Endian.big))
+    ..add([0, 0])
+    ..add(titlePayload);
+  final frameBytes = titleFrame.takeBytes();
+  final id3 = BytesBuilder(copy: false)
+    ..add('ID3'.codeUnits)
+    ..add([3, 0, 0])
+    ..add(_syncSafe(frameBytes.length))
+    ..add(frameBytes);
+
+  final lossyInfo = Uint8List.fromList([
+    for (final unit in title.codeUnits) unit & 0xff,
+    0,
+  ]);
+  final info = BytesBuilder(copy: false)
+    ..add('INFO'.codeUnits)
+    ..add(_riffChunk('INAM', lossyInfo));
+  final fmt = BytesBuilder(copy: false)
+    ..add(_uint16(1))
+    ..add(_uint16(1))
+    ..add(_uint32(8000))
+    ..add(_uint32(16000))
+    ..add(_uint16(2))
+    ..add(_uint16(16));
+  final chunks = BytesBuilder(copy: false)
+    ..add(_riffChunk('fmt ', fmt.takeBytes()))
+    ..add(_riffChunk('data', Uint8List(160)))
+    ..add(_riffChunk('id3 ', id3.takeBytes()))
+    ..add(_riffChunk('LIST', info.takeBytes()));
+  final chunkBytes = chunks.takeBytes();
+
+  return (BytesBuilder(copy: false)
+        ..add('RIFF'.codeUnits)
+        ..add(_uint32(4 + chunkBytes.length))
+        ..add('WAVE'.codeUnits)
+        ..add(chunkBytes))
+      .takeBytes();
 }
 
 Uint8List _wavWithGbkInfo() {

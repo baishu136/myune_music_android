@@ -2,6 +2,10 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/widgets/artwork_image.dart';
 
 void main() {
+  test('compact grouped artwork decodes at 312 pixels', () {
+    expect(ArtworkSize.groupCompact.basePixels, 312);
+  });
+
   test('cover decode preserves landscape artwork proportions', () {
     final size = coverDecodeDimensions(
       intrinsicWidth: 1200,
@@ -32,5 +36,23 @@ void main() {
     );
 
     expect(size, (width: 96, height: 64));
+  });
+
+  test('playback artwork target is bounded to the final quality range', () {
+    expect(
+      playbackArtworkTargetPixels(logicalSize: 360, devicePixelRatio: 1),
+      768,
+    );
+    expect(
+      playbackArtworkTargetPixels(logicalSize: 360, devicePixelRatio: 3),
+      1024,
+    );
+  });
+
+  test('playback artwork target keeps an exact in-range physical size', () {
+    expect(
+      playbackArtworkTargetPixels(logicalSize: 360, devicePixelRatio: 2.5),
+      900,
+    );
   });
 }

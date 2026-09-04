@@ -73,22 +73,44 @@ internal class MpvControllerPlayer(looper: Looper) : SimpleBasePlayer(looper) {
                 cachedMediaMetadata = it
             }
         }
-        val wantsNextPrev =
-            cfg.actions.contains("next") || cfg.actions.contains("previous")
-        // Include a prev/next placeholder only when navigation is actually
-        // available, so Media3 greys the skip buttons out at playlist bounds.
-        // A single item / external queue keeps both (hasNext/Prev=true).
+        // Default to a single, fully-described item. The old synthetic
+        // [prev, current, next] window exposed unknown-duration, non-seekable
+        // placeholders. Some OEM SystemUI implementations (notably HyperOS
+        // 1.0) target index 0 while scrubbing, making Media3 optimistically
+        // switch to that placeholder and remove the progress bar.
+        //
+        // Navigation remains advertised through Player.Commands. The legacy
+        // timeline is retained behind a hidden build-time escape hatch for
+        // compatibility testing and emergency rollback.
+        val useLegacyTimeline = cfg.legacyAndroidMediaTimeline
+        val wantsNextPrev = useLegacyTimeline &&
+            (cfg.actions.contains("next") || cfg.actions.contains("previous"))
         val showPrev = wantsNextPrev && cfg.actions.contains("previous") && pb.hasPrevious
         val showNext = wantsNextPrev && cfg.actions.contains("next") && pb.hasNext
-        val items = buildPlaylist(meta, mediaMetadata, pb.seekable, showPrev, showNext)
+        val effectiveSeekable = mgr.effectiveSeekable()
+        // Treat the seek action as the single switch for the system timeline.
+        // When an app omits it, publish neither a seekable item nor a finite
+        // duration. This reliably suppresses notification scrubbers across OEM
+        // SystemUI variants while leaving libmpv and in-app seeking untouched.
+        val publishSystemProgress = effectiveSeekable && cfg.actions.contains("seek")
+        val items = buildPlaylist(
+            meta,
+            mediaMetadata,
+            publishSystemProgress,
+            showPrev,
+            showNext,
+        )
         val currentIndex = if (showPrev) 1 else 0
         // While a scrub is in flight the slider pins at the drop target
         // until Dart confirms the landed position (see MediaSessionManager).
-        val positionMs = mgr.scrubFreezeMs ?: pb.positionMs
+        val rawPositionMs = mgr.scrubFreezeMs ?: pb.positionMs
+        val positionMs = meta.durationMs?.takeIf { it > 0 }?.let { duration ->
+            rawPositionMs.coerceIn(0, duration)
+        } ?: rawPositionMs.coerceAtLeast(0)
 
         return State.Builder()
             .setAvailableCommands(
-                MediaSessionMappers.buildCommands(cfg.actions, pb.seekable),
+                MediaSessionMappers.buildCommands(cfg.actions, publishSystemProgress),
             )
             // STATE_ENDED at true end-of-content (Dart's eof-reached) so the OS
             // parks the scrubber at duration and renders a finished track;
@@ -164,18 +186,21 @@ internal class MpvControllerPlayer(looper: Looper) : SimpleBasePlayer(looper) {
     private fun buildPlaylist(
         meta: MediaSessionManager.MetadataSnapshot,
         mediaMetadata: MediaMetadata,
-        seekable: Boolean,
+        publishSystemProgress: Boolean,
         showPrev: Boolean,
         showNext: Boolean,
     ): List<MediaItemData> {
-        val durationUs =
+        val durationUs = if (publishSystemProgress) {
             meta.durationMs?.takeIf { it > 0 }?.let { it * 1000L } ?: C.TIME_UNSET
+        } else {
+            C.TIME_UNSET
+        }
 
         val current = MediaItemData.Builder("mpv-current")
             .setMediaItem(MediaItem.Builder().setMediaId("mpv-current").build())
             .setMediaMetadata(mediaMetadata)
             .setDurationUs(durationUs)
-            .setIsSeekable(seekable)
+            .setIsSeekable(publishSystemProgress)
             .build()
 
         val items = mutableListOf<MediaItemData>()
@@ -224,6 +249,10 @@ internal class MpvControllerPlayer(looper: Looper) : SimpleBasePlayer(looper) {
             "loop" to MediaSessionMappers.repeatModeToLoop(st.repeatMode),
             "shuffle" to st.shuffleModeEnabled,
             "frozen" to (mgr.scrubFreezeMs != null),
+            "timelineMode" to
+                if (mgr.config.legacyAndroidMediaTimeline) "legacy-window" else "single-item",
+            "timelineSize" to st.playlist.size,
+            "currentMediaItemIndex" to st.currentMediaItemIndex,
         )
     }
 

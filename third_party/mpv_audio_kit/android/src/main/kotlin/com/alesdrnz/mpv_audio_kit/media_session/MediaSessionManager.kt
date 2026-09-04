@@ -61,10 +61,14 @@ internal object MediaSessionManager :
         val supportedPlaybackRates: List<Double>,
         val isFavorite: Boolean,
         val desktopLyricsState: String,
+        val legacyAndroidMediaTimeline: Boolean,
     ) {
         companion object {
             val EMPTY =
-                ConfigSnapshot(emptySet(), "pauseAndResume", 15_000, 15_000, emptyList(), false, "off")
+                ConfigSnapshot(
+                    emptySet(), "pauseAndResume", 15_000, 15_000,
+                    emptyList(), false, "off", false,
+                )
         }
     }
 
@@ -117,6 +121,16 @@ internal object MediaSessionManager :
 
     @Volatile var scrubFreezeMs: Long? = null
         private set
+
+    /** Whether the active item was seekable when the current system scrub
+     *  started. libmpv can briefly report seekable=false during the restart;
+     *  retaining the last valid capability prevents OEM media cards from
+     *  tearing down their slider mid-gesture. */
+    @Volatile private var scrubWasSeekable: Boolean = false
+
+    private var scrubGeneration: Long = 0
+    private var scrubCommandDispatched: Boolean = false
+    private var pendingScrubCommand: Runnable? = null
 
     @Volatile var enabled: Boolean = false
         private set
@@ -289,6 +303,9 @@ internal object MediaSessionManager :
      * leaving the pressed button looking unresponsive.
      */
     fun onNavigationCommand(command: String) = runOnMain {
+        // A queued scrub belongs to the old item and must never land after a
+        // next/previous command has started switching tracks.
+        clearScrubFreeze()
         playback = playback.copy(
             playing = true,
             actualPlaying = false,
@@ -307,14 +324,60 @@ internal object MediaSessionManager :
         }
     }
 
-    /** A scrub from the OS slider: pin the slider at the drop target
-     *  (republish), then forward the absolute seek. The freeze clears in
-     *  [updatePlayback] once the landed position confirms. */
+    /** A scrub from the OS slider: pin the slider at the drop target and
+     *  coalesce a burst of OEM drag callbacks into one absolute seek.
+     *
+     *  Some notification implementations emit a command for every pointer
+     *  move. Sending every one to libmpv creates a restart storm, making the
+     *  system slider stutter and causing transient duration/seekability
+     *  resets. The latest target is still rendered immediately, while only
+     *  the settled target crosses to Dart. */
     fun onScrub(positionMs: Long) = runOnMain {
-        scrubFreezeMs = positionMs
-        player?.republish()
-        eventSink?.success(mapOf("type" to "seekTo", "positionMs" to positionMs))
+        val durationMs = metadata.durationMs?.takeIf { it > 0 }
+        val targetMs = positionMs.coerceAtLeast(0).let { target ->
+            durationMs?.let { target.coerceAtMost(it) } ?: target
+        }
+        // Media3 only calls handleSeek while the seek command is available.
+        // Treat that accepted command as the authoritative pre-scrub
+        // capability even if libmpv has already entered its transient
+        // seekable=false restart state by the time this callback runs.
+        scrubWasSeekable = true
+        scrubFreezeMs = targetMs
+        scrubCommandDispatched = false
+        val generation = ++scrubGeneration
+        // SimpleBasePlayer publishes its optimistic seek state after
+        // handleSeek returns. Queue our authoritative state for the next main
+        // loop turn so an OEM-supplied media item index cannot overwrite it.
+        mainHandler.post {
+            if (generation == scrubGeneration && scrubFreezeMs != null) {
+                player?.republish()
+            }
+        }
+
+        pendingScrubCommand?.let(mainHandler::removeCallbacks)
+        val command = Runnable {
+            if (generation != scrubGeneration || scrubFreezeMs == null) return@Runnable
+            pendingScrubCommand = null
+            scrubCommandDispatched = true
+            forwardCommand(mapOf("type" to "seekTo", "positionMs" to targetMs))
+        }
+        pendingScrubCommand = command
+        mainHandler.postDelayed(command, SCRUB_SETTLE_DELAY_MS)
+
+        // A failed/unsupported seek must not leave the media card pinned
+        // forever. Generation matching makes older timeout callbacks inert.
+        mainHandler.postDelayed({
+            if (generation == scrubGeneration && scrubFreezeMs != null) {
+                clearScrubFreeze()
+                player?.republish()
+            }
+        }, SCRUB_CONFIRM_TIMEOUT_MS)
     }
+
+    /** Effective capability presented to Media3 while a seek restart is in
+     *  flight. Normal non-seekable/live sources remain non-seekable. */
+    fun effectiveSeekable(): Boolean =
+        playback.seekable || (scrubFreezeMs != null && scrubWasSeekable)
 
     // ── Snapshot mutations ──────────────────────────────────────────────
 
@@ -322,7 +385,7 @@ internal object MediaSessionManager :
         this.config = parseConfig(config)
         this.metadata = parseMetadata(metadata)
         this.playback = parsePlayback(playback)
-        scrubFreezeMs = null
+        clearScrubFreeze()
         enabled = true
         ensureSessionCreated()
         ensureAudioFocus()
@@ -340,7 +403,15 @@ internal object MediaSessionManager :
     }
 
     private fun updateMetadata(metadata: Map<*, *>) = runOnMain {
-        this.metadata = parseMetadata(metadata)
+        val parsed = parseMetadata(metadata)
+        if (
+            this.metadata.title != parsed.title ||
+            this.metadata.artist != parsed.artist ||
+            this.metadata.album != parsed.album
+        ) {
+            clearScrubFreeze()
+        }
+        this.metadata = parsed
         publish()
     }
 
@@ -351,8 +422,13 @@ internal object MediaSessionManager :
         // Clear the scrub freeze once Dart confirms the landed position is
         // within ~1s of the drop target — the slider then tracks playback
         // again. A stale push mid-seek keeps the slider pinned.
-        if (frozen != null && kotlin.math.abs(pb.positionMs - frozen) <= 1000) {
-            scrubFreezeMs = null
+        if (
+            frozen != null &&
+            scrubCommandDispatched &&
+            (!scrubWasSeekable || pb.seekable) &&
+            kotlin.math.abs(pb.positionMs - frozen) <= 1000
+        ) {
+            clearScrubFreeze()
         }
         publish()
         // Acquire focus when playback starts (idempotent while held); focus is
@@ -375,7 +451,7 @@ internal object MediaSessionManager :
         config = ConfigSnapshot.EMPTY
         metadata = MetadataSnapshot.EMPTY
         playback = PlaybackSnapshot.EMPTY
-        scrubFreezeMs = null
+        clearScrubFreeze()
         lastButtons = emptyList()
         // Publish the idle/empty state first so Media3 removes the
         // notification and demotes the foreground service, THEN release.
@@ -550,6 +626,7 @@ internal object MediaSessionManager :
             ?.mapNotNull { (it as? Number)?.toDouble() } ?: emptyList(),
         isFavorite = map["isFavorite"] as? Boolean ?: false,
         desktopLyricsState = map["desktopLyricsState"] as? String ?: "off",
+        legacyAndroidMediaTimeline = map["legacyAndroidMediaTimeline"] as? Boolean ?: false,
     )
 
     private fun parseMetadata(map: Map<*, *>) = MetadataSnapshot(
@@ -578,6 +655,18 @@ internal object MediaSessionManager :
         hasNext = map["hasNext"] as? Boolean ?: true,
         hasPrevious = map["hasPrevious"] as? Boolean ?: true,
     )
+
+    private fun clearScrubFreeze() {
+        scrubGeneration++
+        pendingScrubCommand?.let(mainHandler::removeCallbacks)
+        pendingScrubCommand = null
+        scrubFreezeMs = null
+        scrubWasSeekable = false
+        scrubCommandDispatched = false
+    }
+
+    private const val SCRUB_SETTLE_DELAY_MS = 80L
+    private const val SCRUB_CONFIRM_TIMEOUT_MS = 3_000L
 
     private fun runOnMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) {

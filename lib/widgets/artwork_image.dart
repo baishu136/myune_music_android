@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 enum ArtworkSize {
   thumbnail(192),
   medium(256),
+  groupCompact(312),
   groupLarge(720),
   large(768),
   original(null);
@@ -24,11 +25,17 @@ enum ArtworkSize {
       return basePixels;
     }
 
-    final physicalPixels =
-        (logicalSize * MediaQuery.devicePixelRatioOf(context)).round();
-    return math.max(basePixels!, math.min(1024, physicalPixels));
+    return playbackArtworkTargetPixels(
+      logicalSize: logicalSize,
+      devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+    );
   }
 }
+
+int playbackArtworkTargetPixels({
+  required double logicalSize,
+  required double devicePixelRatio,
+}) => math.max(768, math.min(1024, (logicalSize * devicePixelRatio).round()));
 
 ImageProvider<Object> artworkImageProvider(
   BuildContext? context,

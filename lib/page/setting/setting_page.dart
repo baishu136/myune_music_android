@@ -110,19 +110,7 @@ class _SettingPageState extends State<SettingPage> {
       itemCount: _androidDestinations.length,
       itemBuilder: (context, index) => _SettingsKeepAlivePage(
         key: ValueKey('android-setting-page-$index'),
-        child: AnimatedBuilder(
-          animation: _androidPageController,
-          builder: (context, child) {
-            final currentPage =
-                _androidPageController.hasClients &&
-                    _androidPageController.position.hasContentDimensions
-                ? (_androidPageController.page ?? index.toDouble())
-                : 0.0;
-            final distance = (currentPage - index).abs().clamp(0.0, 1.0);
-            return Opacity(opacity: 1 - distance * 0.10, child: child);
-          },
-          child: _contentFor(_androidDestinations[index].$1),
-        ),
+        child: _contentFor(_androidDestinations[index].$1),
       ),
     ),
   );

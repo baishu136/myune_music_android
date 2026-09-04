@@ -36,6 +36,26 @@ void main() {
     expect(await cache.read('/music/two.flac', 2), bytes);
   });
 
+  test('cache reads do not touch thumbnail metadata', () async {
+    final root = await Directory.systemTemp.createTemp('myune_cover_cache_');
+    addTearDown(() => root.delete(recursive: true));
+    final cache = CoverDiskCache(rootDirectory: root);
+
+    await cache.write('/music/song.flac', 100, Uint8List.fromList([1, 2, 3]));
+    final directory = Directory('${root.path}/artwork_thumbnails_v3');
+    final thumbnail = await directory
+        .list()
+        .where((entity) => entity.path.endsWith('.thumb'))
+        .cast<File>()
+        .single;
+    final oldTime = DateTime.utc(2020, 1, 1);
+    await thumbnail.setLastModified(oldTime);
+    final storedTime = (await thumbnail.stat()).modified;
+
+    expect(await cache.read('/music/song.flac', 100), isNotNull);
+    expect((await thumbnail.stat()).modified, storedTime);
+  });
+
   test(
     'cover cache evicts old entries when its entry limit is exceeded',
     () async {

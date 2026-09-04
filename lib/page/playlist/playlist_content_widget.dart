@@ -709,7 +709,8 @@ class _HeadSongListWidgetState extends State<HeadSongListWidget> {
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => const SortDialog(),
+      builder: (context) =>
+          SortDialog(initialPreference: notifier.currentSortPreference),
     );
 
     if (result != null && context.mounted) {
@@ -1083,7 +1084,10 @@ class _HeadSongListWidgetState extends State<HeadSongListWidget> {
                     // 根据是否在搜索，决定使用哪个列表
                     final listToShow = notifier.isSearching
                         ? notifier.filteredSongs
-                        : notifier.currentPlaylistSongs;
+                        : notifier.pinnedFirst(
+                            notifier.currentSongPinScope,
+                            notifier.currentPlaylistSongs,
+                          );
 
                     return (
                       notifier.isLoadingSongs,
@@ -1149,14 +1153,10 @@ class _HeadSongListWidgetState extends State<HeadSongListWidget> {
                                       if (isMultiSelectMode) {
                                         notifier.toggleSongSelection(song);
                                       } else {
-                                        if (notifier.isSearching) {
-                                          notifier
-                                              .playCurrentPlaylistSearchResult(
-                                                song,
-                                              );
-                                        } else {
-                                          notifier.playSongAtIndex(index);
-                                        }
+                                        notifier
+                                            .playCurrentPlaylistSearchResult(
+                                              song,
+                                            );
                                       }
                                     },
                                     enableContextMenu:
@@ -1173,7 +1173,11 @@ class _HeadSongListWidgetState extends State<HeadSongListWidget> {
                                       .isMultiSelectMode;
 
                                   // 如果正在搜索或多选模式，则不做任何事，直接返回
-                                  if (isSearching || isMultiSelectMode) {
+                                  if (isSearching ||
+                                      isMultiSelectMode ||
+                                      notifier.hasPins(
+                                        notifier.currentSongPinScope,
+                                      )) {
                                     return;
                                   }
 
@@ -1550,6 +1554,7 @@ class SongTileWidget extends StatefulWidget {
 class _SongTileWidgetState extends State<SongTileWidget> {
   bool _isHovered = false;
   String? _requestedCoverPath;
+  Listenable? _coverListenable;
   late PlaylistContentNotifier _notifier;
 
   @override
@@ -1586,17 +1591,26 @@ class _SongTileWidgetState extends State<SongTileWidget> {
   }
 
   void _requestCover(String filePath) {
-    if (_requestedCoverPath == filePath) return;
+    if (_requestedCoverPath == filePath) {
+      _notifier.recoverSongCover(filePath);
+      return;
+    }
     _requestedCoverPath = filePath;
+    _coverListenable = _notifier.coverListenableForSongPath(filePath)
+      ..addListener(_handleCoverChanged);
     _notifier.requestSongCover(filePath);
   }
 
   void _releaseCover(String filePath) {
-    if (_requestedCoverPath == null) {
-      return;
-    }
+    if (_requestedCoverPath != filePath) return;
+    _coverListenable?.removeListener(_handleCoverChanged);
+    _coverListenable = null;
     _notifier.releaseSongCover(filePath);
     _requestedCoverPath = null;
+  }
+
+  void _handleCoverChanged() {
+    if (mounted) setState(() {});
   }
 
   void _showSongContextMenu(
@@ -1686,6 +1700,35 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                   ),
               ],
             ),
+          ),
+        ),
+
+        PopupMenuItem<String>(
+          value: 'togglePin',
+          height: 44,
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: Row(
+            children: [
+              Icon(
+                notifier.isPinned(
+                      notifier.currentSongPinScope,
+                      widget.song.normalizedPath,
+                    )
+                    ? Icons.push_pin_outlined
+                    : Icons.push_pin,
+                size: 20,
+                color: iconColor,
+              ),
+              const SizedBox(width: 12),
+              Text(
+                notifier.isPinned(
+                      notifier.currentSongPinScope,
+                      widget.song.normalizedPath,
+                    )
+                    ? '取消置顶'
+                    : '置顶',
+              ),
+            ],
           ),
         ),
 
@@ -1822,7 +1865,12 @@ class _SongTileWidgetState extends State<SongTileWidget> {
     //     await notifier.moveSongToTop(widget.index);
     //   }
     // } else
-    if (result == 'addToQueue') {
+    if (result == 'togglePin') {
+      await notifier.togglePinned(
+        notifier.currentSongPinScope,
+        widget.song.normalizedPath,
+      );
+    } else if (result == 'addToQueue') {
       // 添加到播放队列
       await notifier.addToPlayingQueue(widget.song);
     } else if (result == 'nextSong') {

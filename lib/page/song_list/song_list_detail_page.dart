@@ -22,7 +22,8 @@ class SongListDetailPage extends StatelessWidget {
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => const SortDialog(),
+      builder: (context) =>
+          SortDialog(initialPreference: notifier.currentSortPreference),
     );
 
     if (result != null && context.mounted) {
@@ -129,7 +130,10 @@ class SongListDetailWidget extends StatelessWidget {
           child: Selector<PlaylistContentNotifier, List<Song>>(
             selector: (_, notifier) => notifier.isSearching
                 ? notifier.filteredSongs
-                : notifier.activeSongList,
+                : notifier.pinnedFirst(
+                    notifier.currentSongPinScope,
+                    notifier.activeSongList,
+                  ),
             builder: (context, songs, _) {
               if (songs.isEmpty) {
                 return Center(child: Text(isSearching ? '未找到匹配的歌曲' : '没有歌曲'));
@@ -152,7 +156,12 @@ class SongListDetailWidget extends StatelessWidget {
                             itemCount: songs.length,
                             onReorderItem: (oldIndex, newIndex) {
                               // 在搜索时，禁用拖拽排序功能
-                              if (isSearching) return;
+                              if (isSearching ||
+                                  notifier.hasPins(
+                                    notifier.currentSongPinScope,
+                                  )) {
+                                return;
+                              }
 
                               notifier.reorderActiveSongList(
                                 oldIndex,
@@ -165,7 +174,7 @@ class SongListDetailWidget extends StatelessWidget {
                                 key: ValueKey(song.filePath),
                                 song: song,
                                 index: index,
-                                enableContextMenu: false, // 禁用右键菜单
+                                enableContextMenu: true,
                                 contextPlaylist:
                                     notifier.playingPlaylist ??
                                     Playlist(id: 'dummy', name: 'dummy'),

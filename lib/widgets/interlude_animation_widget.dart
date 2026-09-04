@@ -44,7 +44,7 @@ class _InterludeAnimationWidgetState extends State<InterludeAnimationWidget>
     super.initState();
     _breatheController = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 1000),
+      duration: const Duration(milliseconds: 1500),
     );
 
     _lastAudioTime = widget.currentTime;

@@ -10,6 +10,7 @@ import '../settings_provider.dart';
 import '../update_checker.dart';
 import '../about.dart';
 import 'info_icon.dart';
+import 'other_settings_section.dart';
 import 'theme_settings_section.dart';
 
 class GeneralTab extends StatefulWidget {
@@ -187,6 +188,8 @@ class _GeneralTabState extends State<GeneralTab> {
           ),
         // 关于
         const About(),
+        // 页面底部的补充信息与项目支持入口。
+        const OtherSettingsSection(),
       ],
     );
   }

@@ -139,4 +139,54 @@ void main() {
     await provider.setThemeMode(ThemeMode.light);
     expect(provider.currentSeedColor, source);
   });
+
+  test('dynamic theme data is reused after a color is revisited', () async {
+    SharedPreferences.setMockInitialValues({});
+    final provider = ThemeProvider();
+    await Future<void>.delayed(Duration.zero);
+    const dynamicSource = Color(0xFF2471A3);
+
+    provider.prewarmDynamicSeedColor(dynamicSource);
+    await provider.setDynamicSeedColor(dynamicSource);
+    final firstLightTheme = provider.lightThemeData;
+    final firstDarkTheme = provider.darkThemeData;
+
+    await provider.setSeedColor(const Color(0xFFE53935));
+    await provider.setDynamicSeedColor(dynamicSource);
+
+    expect(identical(provider.lightThemeData, firstLightTheme), isTrue);
+    expect(identical(provider.darkThemeData, firstDarkTheme), isTrue);
+  });
+
+  test(
+    'dynamic cover color does not override the selected theme mode',
+    () async {
+      SharedPreferences.setMockInitialValues({'user_theme_mode': 'system'});
+      final provider = ThemeProvider();
+      await provider.initialize();
+
+      await provider.setDynamicSeedColor(const Color(0xFF090B10));
+      expect(provider.themeMode, ThemeMode.system);
+      expect(provider.effectiveThemeMode, ThemeMode.system);
+
+      await provider.setThemeMode(ThemeMode.light);
+      expect(provider.effectiveThemeMode, ThemeMode.light);
+    },
+  );
+
+  test(
+    'dynamic colors hard switch while manual colors retain motion',
+    () async {
+      SharedPreferences.setMockInitialValues({});
+      final provider = ThemeProvider();
+      await provider.initialize();
+
+      expect(provider.animateThemeChanges, isTrue);
+      await provider.setDynamicSeedColor(const Color(0xFF2471A3));
+      expect(provider.animateThemeChanges, isFalse);
+
+      await provider.setSeedColor(const Color(0xFF123456), isManual: true);
+      expect(provider.animateThemeChanges, isTrue);
+    },
+  );
 }

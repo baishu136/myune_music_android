@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:path/path.dart' as p;
@@ -27,6 +29,9 @@ class _StatisticsState extends State<Statistics> {
 
   late final ScrollController scrollController;
   PlaylistContentNotifier? _playlistNotifier;
+  int? _libraryBytes;
+  int? _librarySizeSignature;
+  int _librarySizeGeneration = 0;
 
   @override
   void initState() {
@@ -69,9 +74,24 @@ class _StatisticsState extends State<Statistics> {
   @override
   Widget build(BuildContext context) {
     final playlistNotifier = context.watch<PlaylistContentNotifier>();
+    _statsManager = context.watch<StatisticsManager>();
     final settingsProvider = context.watch<SettingsProvider>();
     final separators = settingsProvider.artistSeparators;
     final allSongs = playlistNotifier.allSongs;
+    final librarySizeSignature = Object.hashAllUnordered(
+      allSongs.map((song) => song.normalizedPath.toLowerCase()),
+    );
+    if (_librarySizeSignature != librarySizeSignature) {
+      _librarySizeSignature = librarySizeSignature;
+      final generation = ++_librarySizeGeneration;
+      _libraryBytes = null;
+      _calculateLibraryBytes(
+        allSongs.map((song) => song.filePath).toList(growable: false),
+      ).then((bytes) {
+        if (!mounted || generation != _librarySizeGeneration) return;
+        setState(() => _libraryBytes = bytes);
+      });
+    }
 
     // 计算统计数据
     final totalDuration = allSongs.fold(
@@ -201,6 +221,26 @@ class _StatisticsState extends State<Statistics> {
                               '${(totalDuration.inHours).toString().padLeft(2, '0')}:${(totalDuration.inMinutes % 60).toString().padLeft(2, '0')}:${(totalDuration.inSeconds % 60).toString().padLeft(2, '0')}',
                         ),
                       ),
+                      SizedBox(
+                        width: (constraints.maxWidth - 32 - 16) / 2,
+                        child: _buildStatCard(
+                          icon: Icons.storage_outlined,
+                          label: '曲库空间',
+                          value: _libraryBytes == null
+                              ? '计算中…'
+                              : '${(_libraryBytes! / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB',
+                        ),
+                      ),
+                      SizedBox(
+                        width: (constraints.maxWidth - 32 - 16) / 2,
+                        child: _buildStatCard(
+                          icon: Icons.timelapse,
+                          label: '累计播放时长',
+                          value: _formatPlaybackDuration(
+                            _statsManager.totalPlaybackDuration,
+                          ),
+                        ),
+                      ),
                     ],
                   );
                 },
@@ -273,6 +313,24 @@ class _StatisticsState extends State<Statistics> {
         ),
       ),
     );
+  }
+
+  Future<int> _calculateLibraryBytes(List<String> paths) async {
+    var bytes = 0;
+    for (final path in paths) {
+      try {
+        bytes += await File(path).length();
+      } on FileSystemException {
+        // 文件可能在扫描后被移动或删除，忽略该项并继续计算。
+      }
+    }
+    return bytes;
+  }
+
+  String _formatPlaybackDuration(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60);
+    return hours > 0 ? '$hours 小时 $minutes 分钟' : '$minutes 分钟';
   }
 
   void _toggleRanking({

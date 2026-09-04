@@ -18,7 +18,6 @@ class ThemeSettingsSection extends StatelessWidget {
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
-        const ThemeSelectionScreen(),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
           child: Row(
@@ -53,6 +52,7 @@ class ThemeSettingsSection extends StatelessWidget {
             ],
           ),
         ),
+        const ThemeSelectionScreen(),
         SwitchListTile(
           title: Row(
             children: [
@@ -62,16 +62,20 @@ class ThemeSettingsSection extends StatelessWidget {
             ],
           ),
           value: settings.useDynamicColor,
-          onChanged: (value) {
-            context.read<SettingsProvider>().setUseDynamicColor(value);
+          onChanged: (value) async {
+            await context.read<SettingsProvider>().setUseDynamicColor(value);
+            if (!context.mounted) return;
             if (value) {
               final notifier = context.read<PlaylistContentNotifier>();
               final song = notifier.currentSong;
               if (song != null) {
-                notifier.extractAndApplyDynamicColor(song.albumArt);
+                await notifier.extractAndApplyDynamicColor(
+                  notifier.displayCoverForSong(song),
+                  sourceSongPath: song.normalizedPath,
+                );
               }
             } else {
-              context.read<ThemeProvider>().restoreLastManualColor();
+              await context.read<ThemeProvider>().restoreLastManualColor();
             }
           },
         ),

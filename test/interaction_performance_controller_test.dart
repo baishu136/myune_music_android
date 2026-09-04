@@ -19,16 +19,82 @@ void main() {
     expect(controller.phase, InteractionPhase.idle);
   });
 
-  test('idle wait has a bounded timeout during continuous interaction', () async {
+  test(
+    'idle wait has a bounded timeout during continuous interaction',
+    () async {
+      controller.pulse(
+        InteractionPhase.transition,
+        settleAfter: const Duration(seconds: 1),
+      );
+      final stopwatch = Stopwatch()..start();
+
+      await controller.waitForIdle(maxWait: const Duration(milliseconds: 25));
+
+      expect(stopwatch.elapsedMilliseconds, greaterThanOrEqualTo(20));
+      expect(controller.isCritical, isTrue);
+    },
+  );
+
+  test('deferred work leases are serialized across frames', () async {
+    final first = await controller.acquireIdleWork();
+    var secondGranted = false;
+    final secondFuture = controller.acquireIdleWork().then((lease) {
+      secondGranted = true;
+      return lease;
+    });
+
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    expect(secondGranted, isFalse);
+
+    first.release();
+    final second = await secondFuture.timeout(
+      const Duration(milliseconds: 200),
+    );
+    second.release();
+  });
+
+  test('current visual work overtakes background work while queued', () async {
     controller.pulse(
       InteractionPhase.transition,
-      settleAfter: const Duration(seconds: 1),
+      settleAfter: const Duration(milliseconds: 25),
     );
-    final stopwatch = Stopwatch()..start();
+    var backgroundGranted = false;
+    final backgroundFuture = controller
+        .acquireIdleWork(priority: InteractionWorkPriority.background)
+        .then((lease) {
+          backgroundGranted = true;
+          return lease;
+        });
+    final visual = await controller
+        .acquireIdleWork(priority: InteractionWorkPriority.currentVisual)
+        .timeout(const Duration(milliseconds: 200));
 
-    await controller.waitForIdle(maxWait: const Duration(milliseconds: 25));
+    expect(backgroundGranted, isFalse);
+    visual.release();
+    final background = await backgroundFuture.timeout(
+      const Duration(milliseconds: 200),
+    );
+    background.release();
+  });
 
-    expect(stopwatch.elapsedMilliseconds, greaterThanOrEqualTo(20));
-    expect(controller.isCritical, isTrue);
+  test('cancelled queued work does not consume a frame lease', () async {
+    controller.pulse(
+      InteractionPhase.transition,
+      settleAfter: const Duration(milliseconds: 25),
+    );
+    final cancelled = controller.acquireIdleWork(
+      priority: InteractionWorkPriority.currentVisual,
+      isStillNeeded: () => false,
+    );
+    final retained = controller.acquireIdleWork(
+      priority: InteractionWorkPriority.userVisible,
+    );
+
+    final leases = await Future.wait([
+      cancelled,
+      retained,
+    ]).timeout(const Duration(milliseconds: 200));
+    leases[0].release();
+    leases[1].release();
   });
 }

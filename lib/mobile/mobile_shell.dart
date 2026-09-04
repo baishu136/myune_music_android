@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/cupertino.dart' show CupertinoPageRoute;
+import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/services.dart';
@@ -20,11 +22,13 @@ import '../page/pages/statistics_page.dart';
 import '../page/pages/audio_analysis_page.dart';
 import '../page/setting/setting_page.dart';
 import '../page/setting/settings_provider.dart';
+import '../page/setting/tabs/info_icon.dart';
 import '../page/statistics_page/statistics_manager.dart';
 import '../widgets/playing_queue_drawer.dart';
 import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/now_playing_cover_hero.dart';
 import '../widgets/play_pause_button.dart';
+import '../widgets/playback_progress_header.dart';
 import '../widgets/sort_dialog.dart';
 import '../widgets/transparent_chip_surface.dart';
 import '../services/notification_service.dart';
@@ -196,6 +200,7 @@ class _MobileShellState extends State<MobileShell> {
   int _tab = 0;
   late final PageController _homePageController;
   int? _programmaticTabTarget;
+  int _homeNavigationRevision = 0;
   String _query = '';
   StreamSubscription<String>? _errorSubscription;
   StreamSubscription<String>? _infoSubscription;
@@ -292,6 +297,7 @@ class _MobileShellState extends State<MobileShell> {
 
   @override
   void dispose() {
+    _homeNavigationRevision++;
     _homePageController.dispose();
     _errorSubscription?.cancel();
     _infoSubscription?.cancel();
@@ -331,11 +337,13 @@ class _MobileShellState extends State<MobileShell> {
         onToggleSelection: _toggleLibrarySongSelection,
       ),
       1 => _PlaylistsTab(
+        topEdgeFadeEnabled: useHomeTheme,
         onCreateFromLibrary: _startPlaylistSelection,
         onAddFromLibrary: _startExistingPlaylistSelection,
+        onImportSongs: _showImportOptions,
       ),
-      2 => _GroupTab(kind: '歌手', topEdgeFadeEnabled: useHomeTheme),
-      3 => _GroupTab(kind: '专辑', topEdgeFadeEnabled: useHomeTheme),
+      2 => _GroupTab(kind: '歌手', useHomeTheme: useHomeTheme),
+      3 => _GroupTab(kind: '专辑', useHomeTheme: useHomeTheme),
       _ => _SettingsTab(
         onSwipeBack: () => _selectTab(3),
         onSectionChanged: (title) {
@@ -352,46 +360,53 @@ class _MobileShellState extends State<MobileShell> {
       (notifier) => notifier.currentSong,
     );
     final notifier = context.read<PlaylistContentNotifier>();
+    final homeCoverListenable = currentSong == null
+        ? null
+        : notifier.coverListenableForSongPath(currentSong.normalizedPath);
+    final playlistSelection = context
+        .select<PlaylistContentNotifier, ({bool enabled, int count})>(
+          (value) => (
+            enabled: value.isMultiSelectMode,
+            count: value.selectedSongPaths.length,
+          ),
+        );
     final settings = context.watch<SettingsProvider>();
-    final selecting = _tab == 0 && _librarySelectionMode;
+    final sortEnabled = switch (_tab) {
+      0 => settings.libraryViewMode == LibraryViewMode.list,
+      1 => settings.playlistViewMode == PlaylistViewMode.cards,
+      2 => settings.artistGroupViewMode == GroupViewMode.list,
+      3 => settings.albumGroupViewMode == GroupViewMode.list,
+      _ => false,
+    };
+    final librarySelecting = _tab == 0 && _librarySelectionMode;
+    final playlistSelecting = _tab == 1 && playlistSelection.enabled;
+    final selecting = librarySelecting || playlistSelecting;
     final screen = MediaQuery.sizeOf(context);
     final isTablet = screen.shortestSide >= 600;
     final useCustomHomeTheme =
         settings.homeThemeImageEnabled &&
         settings.homeThemeImagePath != null &&
         settings.homeThemeImagePath!.isNotEmpty;
-    final currentAlbumArt = currentSong == null
-        ? null
-        : notifier.displayCoverForSong(currentSong);
-    final useAlbumArtOnHome =
-        settings.followAlbumArtOnHome && currentAlbumArt != null;
-    final useHomeTheme = useCustomHomeTheme || useAlbumArtOnHome;
+    // Keep the shell styling stable while artwork resolves. Only the background
+    // below listens for cover changes, so song grids are not rebuilt into
+    // temporary placeholders when the current thumbnail becomes available.
+    final useHomeTheme =
+        useCustomHomeTheme ||
+        (settings.followAlbumArtOnHome && currentSong != null);
     final page = PageView.builder(
       controller: _homePageController,
-      physics: _librarySelectionMode
+      physics: selecting
           ? const NeverScrollableScrollPhysics()
           : const PageScrollPhysics(parent: BouncingScrollPhysics()),
       onPageChanged: _handleHomePageChanged,
       itemCount: _titles.length,
       itemBuilder: (context, index) => _KeepAlivePage(
         key: ValueKey('home-page-$index'),
-        child: AnimatedBuilder(
-          animation: _homePageController,
-          builder: (context, child) {
-            final currentPage =
-                _homePageController.hasClients &&
-                    _homePageController.position.hasContentDimensions
-                ? (_homePageController.page ?? _tab.toDouble())
-                : _tab.toDouble();
-            final distance = (currentPage - index).abs().clamp(0.0, 1.0);
-            return Opacity(opacity: 1 - distance * 0.10, child: child);
-          },
-          child: _buildHomePage(index, useHomeTheme),
-        ),
+        child: _buildHomePage(index, useHomeTheme),
       ),
     );
     final headerTitle = selecting
-        ? '已选择 ${_selectedLibrarySongPaths.length} 首'
+        ? '已选择 ${librarySelecting ? _selectedLibrarySongPaths.length : playlistSelection.count} 首'
         : _tab == 4
         ? _settingsSectionTitle
         : _titles[_tab];
@@ -410,7 +425,9 @@ class _MobileShellState extends State<MobileShell> {
             ? IconButton(
                 tooltip: '退出多选',
                 icon: const Icon(Icons.close),
-                onPressed: _exitLibrarySelection,
+                onPressed: librarySelecting
+                    ? _exitLibrarySelection
+                    : notifier.exitMultiSelectMode,
               )
             : null,
         title: ClipRect(
@@ -485,10 +502,13 @@ class _MobileShellState extends State<MobileShell> {
                         IconButton(
                           tooltip: '全选',
                           icon: const Icon(Icons.select_all),
-                          onPressed: _selectAllLibrarySongs,
+                          onPressed: librarySelecting
+                              ? _selectAllLibrarySongs
+                              : notifier.selectAllSongs,
                         ),
-                        if (_pendingPlaylistName != null ||
-                            _pendingPlaylistId != null)
+                        if (librarySelecting &&
+                            (_pendingPlaylistName != null ||
+                                _pendingPlaylistId != null))
                           IconButton(
                             tooltip: _pendingPlaylistId == null
                                 ? '创建歌单'
@@ -496,7 +516,7 @@ class _MobileShellState extends State<MobileShell> {
                             icon: const Icon(Icons.playlist_add_check),
                             onPressed: _finishPlaylistSelection,
                           )
-                        else ...[
+                        else if (librarySelecting) ...[
                           IconButton(
                             tooltip: '移除歌曲',
                             icon: const Icon(Icons.delete_outline),
@@ -507,18 +527,80 @@ class _MobileShellState extends State<MobileShell> {
                             icon: const Icon(Icons.favorite_border),
                             onPressed: _favoriteSelectedLibrarySongs,
                           ),
-                        ],
+                        ] else
+                          IconButton(
+                            tooltip: '从当前歌单移除',
+                            icon: const Icon(Icons.delete_outline),
+                            onPressed: playlistSelection.count == 0
+                                ? null
+                                : notifier.removeSelectedSongs,
+                          ),
                       ],
                     )
                   : Row(
                       key: ValueKey<String>(actionsTransitionKey),
                       mainAxisSize: MainAxisSize.min,
                       children: [
+                        if (_tab < 4)
+                          IconButton(
+                            tooltip: sortEnabled ? '排序当前页面' : '当前查看方式使用固定排序',
+                            icon: const Icon(Icons.sort),
+                            onPressed: sortEnabled ? _showSortDialog : null,
+                          ),
                         if (_tab == 0 || _tab == 1)
                           IconButton(
-                            tooltip: '排序歌曲',
-                            icon: const Icon(Icons.sort),
-                            onPressed: _showSortDialog,
+                            tooltip: '切换查看方式',
+                            icon: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 180),
+                              switchInCurve: Curves.easeOutCubic,
+                              switchOutCurve: Curves.easeInCubic,
+                              child: Icon(
+                                _tab == 0
+                                    ? settings.libraryViewMode ==
+                                              LibraryViewMode.indexed
+                                          ? Icons.sort_by_alpha
+                                          : Icons.view_list_outlined
+                                    : settings.playlistViewMode ==
+                                          PlaylistViewMode.split
+                                    ? Icons.view_sidebar_outlined
+                                    : Icons.view_carousel_outlined,
+                                key: ValueKey(
+                                  _tab == 0
+                                      ? settings.libraryViewMode
+                                      : settings.playlistViewMode,
+                                ),
+                              ),
+                            ),
+                            onPressed: _togglePrimaryViewMode,
+                          ),
+                        if (_tab == 2 || _tab == 3)
+                          IconButton(
+                            tooltip:
+                                (_tab == 2
+                                        ? settings.artistGroupViewMode
+                                        : settings.albumGroupViewMode) ==
+                                    GroupViewMode.list
+                                ? '切换到字母分组'
+                                : '切换到列表',
+                            icon: AnimatedSwitcher(
+                              duration: const Duration(milliseconds: 180),
+                              switchInCurve: Curves.easeOutCubic,
+                              switchOutCurve: Curves.easeInCubic,
+                              child: Icon(
+                                (_tab == 2
+                                            ? settings.artistGroupViewMode
+                                            : settings.albumGroupViewMode) ==
+                                        GroupViewMode.list
+                                    ? Icons.view_list_outlined
+                                    : Icons.sort_by_alpha,
+                                key: ValueKey(
+                                  _tab == 2
+                                      ? settings.artistGroupViewMode
+                                      : settings.albumGroupViewMode,
+                                ),
+                              ),
+                            ),
+                            onPressed: _toggleGroupViewMode,
                           ),
                         if (_tab != 4)
                           IconButton(
@@ -536,19 +618,6 @@ class _MobileShellState extends State<MobileShell> {
                               ),
                             ),
                           ),
-                        IconButton(
-                          tooltip: '播放队列',
-                          icon: const Icon(Icons.queue_music),
-                          onPressed: () => showModalBottomSheet<void>(
-                            context: context,
-                            isScrollControlled: true,
-                            builder: (_) => const SafeArea(
-                              child: PlayingQueueDrawer(
-                                syncHomeBackground: false,
-                              ),
-                            ),
-                          ),
-                        ),
                       ],
                     ),
             ),
@@ -624,7 +693,8 @@ class _MobileShellState extends State<MobileShell> {
               ],
             )
           : page,
-      floatingActionButton: _tab == 1
+      floatingActionButton:
+          _tab == 1 && settings.playlistViewMode != PlaylistViewMode.split
           ? FloatingActionButton.extended(
               onPressed: _showImportOptions,
               icon: const Icon(Icons.add),
@@ -679,26 +749,46 @@ class _MobileShellState extends State<MobileShell> {
               ),
             ),
     );
-    return PopScope<void>(
-      canPop: false,
-      onPopInvokedWithResult: (didPop, result) {
-        if (!didPop) unawaited(_exitAndroidApp());
-      },
-      child: CustomThemeBackground(
+    Widget buildHomeBackground(Widget child) {
+      final currentAlbumArt = currentSong == null
+          ? null
+          : notifier.displayCoverForSong(currentSong);
+      return CustomThemeBackground(
         path: settings.homeThemeImagePath,
         enabled: useCustomHomeTheme,
         dim: settings.homeThemeImageDim,
         blurSigma: settings.homeThemeImageBlur,
         coverBytes: currentAlbumArt,
-        coverEnabled: useAlbumArtOnHome,
+        coverEnabled: settings.followAlbumArtOnHome && currentAlbumArt != null,
         coverDim: settings.homeAlbumArtBackgroundDim,
         coverBlurSigma: settings.homeAlbumArtBackgroundBlur,
-        child: scaffold,
+        child: child,
+      );
+    }
+
+    final background = homeCoverListenable == null
+        ? buildHomeBackground(scaffold)
+        : AnimatedBuilder(
+            animation: homeCoverListenable,
+            child: scaffold,
+            builder: (context, child) => buildHomeBackground(child!),
+          );
+    return _PlaybackArtworkPreparationCoordinator(
+      child: PopScope<void>(
+        canPop: false,
+        onPopInvokedWithResult: (didPop, result) {
+          if (!didPop) unawaited(_exitAndroidApp());
+        },
+        child: RepaintBoundary(child: background),
       ),
     );
   }
 
   void _selectTab(int index) {
+    if (index == _tab) return;
+    if (index != 1) {
+      context.read<PlaylistContentNotifier>().exitMultiSelectMode();
+    }
     setState(() {
       if (index != 0) {
         _librarySelectionMode = false;
@@ -717,7 +807,11 @@ class _MobileShellState extends State<MobileShell> {
       if (index != target) return;
       _programmaticTabTarget = null;
     }
+    _homeNavigationRevision++;
     if (_tab == index) return;
+    if (index != 1) {
+      context.read<PlaylistContentNotifier>().exitMultiSelectMode();
+    }
     setState(() {
       if (index != 0) {
         _librarySelectionMode = false;
@@ -828,17 +922,38 @@ class _MobileShellState extends State<MobileShell> {
       _programmaticTabTarget = null;
       return;
     }
+    final navigationRevision = ++_homeNavigationRevision;
     _programmaticTabTarget = index;
-    unawaited(_completeHomePageAnimation(index));
+    unawaited(_completeHomePageAnimation(index, navigationRevision));
   }
 
-  Future<void> _completeHomePageAnimation(int target) async {
-    await _homePageController.animateToPage(
-      target,
-      duration: const Duration(milliseconds: 320),
-      curve: Curves.easeOutCubic,
-    );
-    if (!mounted || _programmaticTabTarget != target) return;
+  Future<void> _completeHomePageAnimation(
+    int target,
+    int navigationRevision,
+  ) async {
+    try {
+      await _homePageController
+          .animateToPage(
+            target,
+            duration: const Duration(milliseconds: 320),
+            curve: Curves.easeOutCubic,
+          )
+          .timeout(const Duration(milliseconds: 700));
+    } on TimeoutException {
+      if (mounted &&
+          navigationRevision == _homeNavigationRevision &&
+          _homePageController.hasClients) {
+        _homePageController.jumpToPage(target);
+      }
+    } catch (_) {
+      // A newer navigation cancels the old scroll activity. Its revision owns
+      // the final page state, so the superseded animation needs no recovery.
+    }
+    if (!mounted ||
+        navigationRevision != _homeNavigationRevision ||
+        _programmaticTabTarget != target) {
+      return;
+    }
     _programmaticTabTarget = null;
     final settledIndex = (_homePageController.page ?? target.toDouble())
         .round()
@@ -906,6 +1021,10 @@ class _MobileShellState extends State<MobileShell> {
   }
 
   Future<void> _showSortDialog() async {
+    if (_tab == 2 || _tab == 3) {
+      await _showGroupSortDialog(artist: _tab == 2);
+      return;
+    }
     final notifier = context.read<PlaylistContentNotifier>();
     final hasSongs = _tab == 0
         ? notifier.allSongs.isNotEmpty
@@ -918,7 +1037,8 @@ class _MobileShellState extends State<MobileShell> {
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) => const SortDialog(),
+      builder: (_) =>
+          SortDialog(initialPreference: notifier.currentSortPreference),
     );
     if (!mounted || result == null) return;
 
@@ -937,8 +1057,99 @@ class _MobileShellState extends State<MobileShell> {
     }
   }
 
+  Future<void> _showGroupSortDialog({required bool artist}) async {
+    final settings = context.read<SettingsProvider>();
+    var mode = artist
+        ? settings.artistGroupSortMode
+        : settings.albumGroupSortMode;
+    var descending = artist
+        ? settings.artistGroupSortDescending
+        : settings.albumGroupSortDescending;
+    final result =
+        await showDialog<({GroupCollectionSortMode mode, bool descending})>(
+          context: context,
+          builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setDialogState) => AlertDialog(
+              title: Text('排序${artist ? '歌手' : '专辑'}'),
+              content: RadioGroup<GroupCollectionSortMode>(
+                groupValue: mode,
+                onChanged: (value) {
+                  if (value == null) return;
+                  setDialogState(() {
+                    mode = value;
+                    if (value != GroupCollectionSortMode.name) {
+                      descending = true;
+                    }
+                  });
+                },
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const RadioListTile<GroupCollectionSortMode>(
+                      title: Text('按名称'),
+                      value: GroupCollectionSortMode.name,
+                    ),
+                    const RadioListTile<GroupCollectionSortMode>(
+                      title: Text('按歌曲数量'),
+                      value: GroupCollectionSortMode.songCount,
+                    ),
+                    const RadioListTile<GroupCollectionSortMode>(
+                      title: Text('按播放次数'),
+                      value: GroupCollectionSortMode.playCount,
+                    ),
+                    const Divider(),
+                    CheckboxListTile(
+                      title: const Text('倒序排列'),
+                      value: descending,
+                      onChanged: (value) =>
+                          setDialogState(() => descending = value ?? false),
+                    ),
+                  ],
+                ),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(dialogContext),
+                  child: const Text('取消'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(dialogContext, (
+                    mode: mode,
+                    descending: descending,
+                  )),
+                  child: const Text('应用排序'),
+                ),
+              ],
+            ),
+          ),
+        );
+    if (!mounted || result == null) return;
+    if (artist) {
+      await settings.setArtistGroupSort(
+        mode: result.mode,
+        descending: result.descending,
+      );
+    } else {
+      await settings.setAlbumGroupSort(
+        mode: result.mode,
+        descending: result.descending,
+      );
+    }
+  }
+
   Future<void> _showSearch(BuildContext context) async {
     final notifier = context.read<PlaylistContentNotifier>();
+    if (_tab == 2 || _tab == 3) {
+      final kind = _tab == 2 ? '歌手' : '专辑';
+      final groups = kind == '歌手'
+          ? notifier.songsByArtist
+          : notifier.songsByAlbum;
+      await showSearch<void>(
+        context: context,
+        delegate: _GroupSearchDelegate(kind: kind, groups: groups),
+      );
+      return;
+    }
     final scope = _tab == 1
         ? _SongSearchScope.currentPlaylist
         : _SongSearchScope.library;
@@ -959,6 +1170,39 @@ class _MobileShellState extends State<MobileShell> {
     // 退出搜索后恢复原始曲库/歌单界面，搜索只负责定位歌曲。
     if (mounted && _query.isNotEmpty) {
       setState(() => _query = '');
+    }
+  }
+
+  void _toggleGroupViewMode() {
+    if (_tab != 2 && _tab != 3) return;
+    final settings = context.read<SettingsProvider>();
+    final current = _tab == 2
+        ? settings.artistGroupViewMode
+        : settings.albumGroupViewMode;
+    final next = current == GroupViewMode.list
+        ? GroupViewMode.indexedGrid
+        : GroupViewMode.list;
+    if (_tab == 2) {
+      unawaited(settings.setArtistGroupViewMode(next));
+    } else {
+      unawaited(settings.setAlbumGroupViewMode(next));
+    }
+  }
+
+  void _togglePrimaryViewMode() {
+    final settings = context.read<SettingsProvider>();
+    if (_tab == 0) {
+      final next = settings.libraryViewMode == LibraryViewMode.list
+          ? LibraryViewMode.indexed
+          : LibraryViewMode.list;
+      unawaited(settings.setLibraryViewMode(next));
+      return;
+    }
+    if (_tab == 1) {
+      final next = settings.playlistViewMode == PlaylistViewMode.cards
+          ? PlaylistViewMode.split
+          : PlaylistViewMode.cards;
+      unawaited(settings.setPlaylistViewMode(next));
     }
   }
 
@@ -1058,6 +1302,9 @@ class _LibraryTabState extends State<_LibraryTab>
           ),
         );
     final notifier = context.read<PlaylistContentNotifier>();
+    final libraryViewMode = context.select<SettingsProvider, LibraryViewMode>(
+      (settings) => settings.libraryViewMode,
+    );
     final songs = notifier.allSongs;
     final filtered = widget.query.isEmpty
         ? songs
@@ -1073,20 +1320,24 @@ class _LibraryTabState extends State<_LibraryTab>
       return const Center(child: CircularProgressIndicator());
     }
     if (songs.isEmpty) return const _EmptyLibrary();
+    final displayedSongs = widget.query.isEmpty && !widget.selectionMode
+        ? notifier.pinnedFirst(
+            PlaylistContentNotifier.libraryPinScope,
+            filtered,
+          )
+        : filtered;
     return _TopEdgeFade(
       enabled: widget.topEdgeFadeEnabled,
       child: _SongList(
-        songs: filtered,
+        songs: displayedSongs,
+        pinScope: PlaylistContentNotifier.libraryPinScope,
         entranceAnimation: widget.animateEntrance ? _entranceController : null,
         selectionMode: widget.selectionMode,
         selectedPaths: widget.selectedPaths,
         onToggleSelection: widget.onToggleSelection,
-        onPlay: (index) {
-          final notifier = context.read<PlaylistContentNotifier>();
-          return widget.query.isEmpty
-              ? notifier.playSongFromAllSongs(index)
-              : notifier.playAllSongsSearchResult(filtered[index]);
-        },
+        groupByInitial: libraryViewMode == LibraryViewMode.indexed,
+        onPlay: (index) =>
+            notifier.playAllSongsSearchResult(displayedSongs[index]),
       ),
     );
   }
@@ -1094,27 +1345,207 @@ class _LibraryTabState extends State<_LibraryTab>
 
 class _PlaylistsTab extends StatelessWidget {
   const _PlaylistsTab({
+    required this.topEdgeFadeEnabled,
     required this.onCreateFromLibrary,
     required this.onAddFromLibrary,
+    required this.onImportSongs,
   });
 
+  final bool topEdgeFadeEnabled;
   final ValueChanged<String> onCreateFromLibrary;
   final ValueChanged<Playlist> onAddFromLibrary;
+  final Future<void> Function() onImportSongs;
 
   @override
   Widget build(BuildContext context) {
     final view = context
         .select<
           PlaylistContentNotifier,
-          ({int revision, int selectedIndex, List<Song> songs})
+          ({
+            int revision,
+            int selectedIndex,
+            List<Song> songs,
+            bool selecting,
+            Set<String> selectedPaths,
+          })
         >(
           (notifier) => (
             revision: notifier.playlistRevision,
             selectedIndex: notifier.selectedIndex,
             songs: notifier.currentPlaylistSongs,
+            selecting: notifier.isMultiSelectMode,
+            selectedPaths: notifier.selectedSongPaths,
           ),
         );
     final notifier = context.read<PlaylistContentNotifier>();
+    final playlistViewMode = context.select<SettingsProvider, PlaylistViewMode>(
+      (settings) => settings.playlistViewMode,
+    );
+    final hasSelection =
+        view.selectedIndex >= 0 &&
+        view.selectedIndex < notifier.playlists.length;
+    final selectedPlaylist = hasSelection
+        ? notifier.playlists[view.selectedIndex]
+        : null;
+    final pinScope = selectedPlaylist == null
+        ? null
+        : notifier.playlistPinScope(selectedPlaylist.id);
+    final displayedSongs = pinScope == null
+        ? view.songs
+        : notifier.pinnedFirst(pinScope, view.songs);
+
+    Widget buildCurrentSongs() => selectedPlaylist == null
+        ? const Center(child: Text('选择一个歌单开始管理音乐'))
+        : _SongList(
+            songs: displayedSongs,
+            pinScope: pinScope,
+            onPlay: (index) =>
+                notifier.playCurrentPlaylistSearchResult(displayedSongs[index]),
+            showRemove: true,
+            selectionMode: view.selecting,
+            selectedPaths: view.selectedPaths
+                .map((path) => path.toLowerCase())
+                .toSet(),
+            onToggleSelection: (song) {
+              if (!notifier.isMultiSelectMode) {
+                notifier.enterMultiSelectMode();
+              }
+              notifier.toggleSongSelection(song);
+            },
+          );
+
+    if (playlistViewMode == PlaylistViewMode.split) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          final railWidth = (constraints.maxWidth * .29)
+              .clamp(124.0, 180.0)
+              .toDouble();
+
+          Widget railAction({
+            required String label,
+            required IconData icon,
+            required VoidCallback onTap,
+          }) => Expanded(
+            child: Tooltip(
+              message: label,
+              child: Material(
+                color: Theme.of(context).colorScheme.surfaceContainer,
+                borderRadius: BorderRadius.circular(12),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(12),
+                  onTap: onTap,
+                  child: SizedBox(
+                    height: 48,
+                    child: Center(child: Icon(icon, size: 24)),
+                  ),
+                ),
+              ),
+            ),
+          );
+
+          return Row(
+            children: [
+              SizedBox(
+                width: railWidth,
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                  child: Column(
+                    children: [
+                      Row(
+                        children: [
+                          railAction(
+                            label: '新建歌单',
+                            icon: Icons.add,
+                            onTap: () => _newPlaylist(context),
+                          ),
+                          const SizedBox(width: 6),
+                          railAction(
+                            label: '导入文件',
+                            icon: Icons.audio_file_outlined,
+                            onTap: () {
+                              if (selectedPlaylist == null) {
+                                context.read<NotificationService>().warning(
+                                  '请先选择一个歌单',
+                                );
+                                return;
+                              }
+                              unawaited(onImportSongs());
+                            },
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 8),
+                      Expanded(
+                        child: ListView.builder(
+                          itemCount: notifier.playlists.length,
+                          itemBuilder: (context, index) {
+                            final playlist = notifier.playlists[index];
+                            final selected = index == view.selectedIndex;
+                            return Padding(
+                              padding: const EdgeInsets.only(bottom: 7),
+                              child: Material(
+                                color: selected
+                                    ? Theme.of(
+                                        context,
+                                      ).colorScheme.secondaryContainer
+                                    : Theme.of(
+                                        context,
+                                      ).colorScheme.surfaceContainerLow,
+                                borderRadius: BorderRadius.circular(12),
+                                child: InkWell(
+                                  borderRadius: BorderRadius.circular(12),
+                                  onTap: () => notifier.setSelectedIndex(index),
+                                  onLongPress: () => _showPlaylistActions(
+                                    context,
+                                    index: index,
+                                    playlist: playlist,
+                                  ),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 10,
+                                      vertical: 10,
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          playlist.name,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          '${playlist.songFilePaths.length} 首',
+                                          style: Theme.of(
+                                            context,
+                                          ).textTheme.labelSmall,
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              Expanded(
+                child: _TopEdgeFade(
+                  enabled: topEdgeFadeEnabled,
+                  child: buildCurrentSongs(),
+                ),
+              ),
+            ],
+          );
+        },
+      );
+    }
+
     return Column(
       children: [
         SizedBox(
@@ -1147,13 +1578,10 @@ class _PlaylistsTab extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: view.selectedIndex == -1
-              ? const Center(child: Text('选择一个歌单开始管理音乐'))
-              : _SongList(
-                  songs: view.songs,
-                  onPlay: (index) => notifier.playSongAtIndex(index),
-                  showRemove: true,
-                ),
+          child: _TopEdgeFade(
+            enabled: topEdgeFadeEnabled,
+            child: buildCurrentSongs(),
+          ),
         ),
       ],
     );
@@ -1375,9 +1803,9 @@ class _PlaylistsTab extends StatelessWidget {
 }
 
 class _GroupTab extends StatelessWidget {
-  const _GroupTab({required this.kind, required this.topEdgeFadeEnabled});
+  const _GroupTab({required this.kind, required this.useHomeTheme});
   final String kind;
-  final bool topEdgeFadeEnabled;
+  final bool useHomeTheme;
 
   @override
   Widget build(BuildContext context) {
@@ -1388,179 +1816,286 @@ class _GroupTab extends StatelessWidget {
     final groups = kind == '歌手'
         ? notifier.songsByArtist
         : notifier.songsByAlbum;
-    final entries = groups.entries.toList()
-      ..sort((a, b) => a.key.compareTo(b.key));
-    if (entries.isEmpty) return const _EmptyLibrary();
+    if (groups.isEmpty) return const _EmptyLibrary();
     final settings = context.watch<SettingsProvider>();
     final coverOverrides = context.watch<CoverOverrideService>();
     final statistics = context.watch<StatisticsManager>();
     final playCounts = SongGroupPresentation.normalizedPlayCounts(
       statistics.statisticsData.songStats,
     );
-    final gridView = kind == '歌手'
-        ? settings.artistGroupGridView
-        : settings.albumGroupGridView;
-    final representativeSongs = entries
+    final viewMode = kind == '歌手'
+        ? settings.artistGroupViewMode
+        : settings.albumGroupViewMode;
+    final sortMode = kind == '歌手'
+        ? settings.artistGroupSortMode
+        : settings.albumGroupSortMode;
+    final sortDescending = kind == '歌手'
+        ? settings.artistGroupSortDescending
+        : settings.albumGroupSortDescending;
+    final effectiveSortMode = viewMode == GroupViewMode.list
+        ? sortMode
+        : GroupCollectionSortMode.name;
+    final effectiveDescending =
+        viewMode == GroupViewMode.list && sortDescending;
+    final groupPlayCounts =
+        effectiveSortMode == GroupCollectionSortMode.playCount
+        ? <String, int>{
+            for (final entry in groups.entries)
+              entry.key: entry.value.fold(
+                0,
+                (sum, song) =>
+                    sum + SongGroupPresentation.playCount(song, playCounts),
+              ),
+          }
+        : const <String, int>{};
+    final sortedEntries = groups.entries.toList()
+      ..sort((a, b) {
+        final nameResult = SongGroupPresentation.alphabeticSortKey(
+          a.key,
+        ).compareTo(SongGroupPresentation.alphabeticSortKey(b.key));
+        final primaryResult = switch (effectiveSortMode) {
+          GroupCollectionSortMode.name => nameResult,
+          GroupCollectionSortMode.songCount => a.value.length.compareTo(
+            b.value.length,
+          ),
+          GroupCollectionSortMode.playCount =>
+            (groupPlayCounts[a.key] ?? 0).compareTo(
+              groupPlayCounts[b.key] ?? 0,
+            ),
+        };
+        if (primaryResult != 0) {
+          return effectiveDescending ? -primaryResult : primaryResult;
+        }
+        return nameResult;
+      });
+    final orderedNames = notifier.pinnedNamesFirst(
+      kind == '歌手'
+          ? PlaylistContentNotifier.artistsPinScope
+          : PlaylistContentNotifier.albumsPinScope,
+      sortedEntries.map((entry) => entry.key),
+    );
+    final entriesByName = {for (final entry in sortedEntries) entry.key: entry};
+    final entries = orderedNames
+        .map((name) => entriesByName[name]!)
+        .toList(growable: false);
+    final pinScope = kind == '歌手'
+        ? PlaylistContentNotifier.artistsPinScope
+        : PlaylistContentNotifier.albumsPinScope;
+    final indexedPartition = viewMode == GroupViewMode.indexedGrid
+        ? SongGroupPresentation.separatePinned(
+            entries,
+            (entry) => notifier.isPinned(pinScope, entry.key),
+          )
+        : (pinned: <MapEntry<String, List<Song>>>[], regular: entries);
+    final pinnedEntries = indexedPartition.pinned;
+    final regularEntries = indexedPartition.regular;
+    final indexedSections = viewMode == GroupViewMode.indexedGrid
+        ? SongGroupPresentation.groupByInitial(
+            regularEntries,
+            (entry) => entry.key,
+          )
+        : <String, List<MapEntry<String, List<Song>>>>{};
+    final displayedEntries = viewMode == GroupViewMode.indexedGrid
+        ? <MapEntry<String, List<Song>>>[
+            ...pinnedEntries,
+            ...indexedSections.values.expand((section) => section),
+          ]
+        : entries;
+    final representativeSongs = displayedEntries
         .map((item) => _representativeSong(settings, item, playCounts))
         .whereType<Song>()
         .toList(growable: false);
     final scheme = Theme.of(context).colorScheme;
-    final collection = gridView
-        ? GridView.builder(
-            key: ValueKey('$kind-grid-view'),
-            padding: const EdgeInsets.fromLTRB(12, 8, 12, 24),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              mainAxisSpacing: 12,
-              crossAxisSpacing: 12,
-              childAspectRatio: .78,
-            ),
-            itemCount: entries.length,
-            itemBuilder: (context, index) {
-              final item = entries[index];
-              final artwork = _groupArtworkWidget(
-                settings,
-                coverOverrides,
-                item,
-                playCounts,
-                highResolution: true,
-              );
-              return Card(
-                elevation: 0,
-                color: scheme.surfaceContainerLow.withValues(
-                  alpha: topEdgeFadeEnabled ? .62 : 1,
-                ),
-                clipBehavior: Clip.antiAlias,
-                child: InkWell(
-                  onTap: () => _openCollection(context, item),
-                  onLongPress: () => _showCoverPicker(
-                    context,
-                    notifier,
-                    settings,
-                    item,
-                    playCounts,
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Expanded(child: artwork),
-                      Padding(
-                        padding: const EdgeInsets.fromLTRB(12, 10, 12, 12),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              item.key,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: Theme.of(context).textTheme.titleMedium,
-                            ),
-                            const SizedBox(height: 3),
-                            Text(
-                              '${item.value.length} 首歌曲',
-                              maxLines: 1,
-                              style: Theme.of(context).textTheme.bodySmall,
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              );
-            },
-          )
-        : ListView.separated(
-            key: ValueKey('$kind-list-view'),
-            padding: const EdgeInsets.only(bottom: 20),
-            itemCount: entries.length,
-            separatorBuilder: (_, __) => const Divider(height: 1),
-            itemBuilder: (context, index) {
-              final item = entries[index];
-              final artwork = _groupArtworkWidget(
-                settings,
-                coverOverrides,
-                item,
-                playCounts,
-                highResolution: false,
-              );
-              return ListTile(
-                leading: ClipRRect(
-                  borderRadius: BorderRadius.circular(10),
-                  child: SizedBox.square(dimension: 52, child: artwork),
-                ),
-                title: Text(item.key),
-                subtitle: Text('${item.value.length} 首歌曲'),
-                trailing: const Icon(Icons.chevron_right),
-                onTap: () => _openCollection(context, item),
-                onLongPress: () => _showCoverPicker(
-                  context,
-                  notifier,
-                  settings,
-                  item,
-                  playCounts,
-                ),
-              );
-            },
-          );
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 12, 8),
-          child: Row(
+    Widget buildGridCard(
+      MapEntry<String, List<Song>> item, {
+      required bool showSongCount,
+    }) {
+      final isPinned = notifier.isPinned(pinScope, item.key);
+      final artwork = _groupArtworkWidget(
+        settings,
+        coverOverrides,
+        item,
+        playCounts,
+        highResolution: true,
+        displaySize: showSongCount
+            ? ArtworkSize.groupLarge
+            : ArtworkSize.groupCompact,
+      );
+      return Card(
+        elevation: 0,
+        margin: showSongCount ? const EdgeInsets.all(4) : EdgeInsets.zero,
+        color: scheme.surfaceContainerLow.withValues(
+          alpha: useHomeTheme ? .62 : 1,
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: () => _openCollection(context, item),
+          onLongPress: () =>
+              _showGroupActions(context, notifier, settings, item, playCounts),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               Expanded(
-                child: Text(
-                  kind == '歌手'
-                      ? '共 ${entries.length} 位歌手'
-                      : '共 ${entries.length} 张专辑',
-                  style: Theme.of(context).textTheme.bodyMedium,
+                child: Stack(
+                  fit: StackFit.expand,
+                  children: [
+                    artwork,
+                    if (isPinned)
+                      const Positioned(
+                        top: 8,
+                        right: 8,
+                        child: _GroupPinBadge(),
+                      ),
+                  ],
                 ),
               ),
-              SegmentedButton<bool>(
-                showSelectedIcon: false,
-                style: ButtonStyle(
-                  minimumSize: const WidgetStatePropertyAll(Size(62, 44)),
-                  padding: const WidgetStatePropertyAll(
-                    EdgeInsets.symmetric(horizontal: 14),
-                  ),
-                  visualDensity: VisualDensity.standard,
-                  side: WidgetStatePropertyAll(
-                    BorderSide(color: scheme.outlineVariant),
-                  ),
+              Padding(
+                padding: showSongCount
+                    ? const EdgeInsets.fromLTRB(10, 8, 10, 10)
+                    : const EdgeInsets.fromLTRB(6, 5, 6, 6),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      item.key,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: showSongCount
+                          ? Theme.of(context).textTheme.titleMedium
+                          : Theme.of(context).textTheme.bodySmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                    ),
+                    if (showSongCount) ...[
+                      const SizedBox(height: 3),
+                      Text(
+                        '${item.value.length} 首歌曲',
+                        maxLines: 1,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                    ],
+                  ],
                 ),
-                segments: const [
-                  ButtonSegment<bool>(
-                    value: false,
-                    icon: Icon(Icons.view_list_outlined),
-                  ),
-                  ButtonSegment<bool>(
-                    value: true,
-                    icon: Icon(Icons.grid_view_outlined),
-                  ),
-                ],
-                selected: {gridView},
-                onSelectionChanged: (selection) {
-                  final value = selection.first;
-                  if (kind == '歌手') {
-                    settings.setArtistGroupGridView(value);
-                  } else {
-                    settings.setAlbumGroupGridView(value);
-                  }
-                },
               ),
             ],
           ),
         ),
+      );
+    }
+
+    Widget buildIndexedHeader(String label) => SliverToBoxAdapter(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 6),
+        child: Text(
+          label,
+          style: Theme.of(
+            context,
+          ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+
+    Widget buildIndexedGrid(List<MapEntry<String, List<Song>>> items) =>
+        SliverPadding(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          sliver: SliverGrid(
+            gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+              maxCrossAxisExtent: 88,
+              mainAxisSpacing: 8,
+              crossAxisSpacing: 8,
+              childAspectRatio: .76,
+            ),
+            delegate: SliverChildBuilderDelegate(
+              (context, index) =>
+                  buildGridCard(items[index], showSongCount: false),
+              childCount: items.length,
+            ),
+          ),
+        );
+
+    final collection = switch (viewMode) {
+      GroupViewMode.indexedGrid => CustomScrollView(
+        key: ValueKey('$kind-indexed-grid-view'),
+        slivers: [
+          if (pinnedEntries.isNotEmpty) ...[
+            const SliverToBoxAdapter(child: SizedBox(height: 10)),
+            buildIndexedGrid(pinnedEntries),
+          ],
+          for (final section in indexedSections.entries) ...[
+            buildIndexedHeader(section.key),
+            buildIndexedGrid(section.value),
+          ],
+          const SliverToBoxAdapter(child: SizedBox(height: 24)),
+        ],
+      ),
+      GroupViewMode.list => ListView.separated(
+        key: ValueKey('$kind-list-view'),
+        padding: const EdgeInsets.only(bottom: 20),
+        itemCount: entries.length,
+        separatorBuilder: (_, __) => const Divider(height: 1),
+        itemBuilder: (context, index) {
+          final item = entries[index];
+          final isPinned = notifier.isPinned(pinScope, item.key);
+          final artwork = _groupArtworkWidget(
+            settings,
+            coverOverrides,
+            item,
+            playCounts,
+            highResolution: false,
+          );
+          return ListTile(
+            leading: ClipRRect(
+              borderRadius: BorderRadius.circular(10),
+              child: SizedBox.square(dimension: 52, child: artwork),
+            ),
+            title: Text(item.key),
+            subtitle: Text('${item.value.length} 首歌曲'),
+            trailing: isPinned
+                ? const Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(Icons.push_pin, size: 20),
+                      SizedBox(width: 4),
+                      Icon(Icons.chevron_right),
+                    ],
+                  )
+                : const Icon(Icons.chevron_right),
+            onTap: () => _openCollection(context, item),
+            onLongPress: () => _showGroupActions(
+              context,
+              notifier,
+              settings,
+              item,
+              playCounts,
+            ),
+          );
+        },
+      ),
+    };
+    return Column(
+      children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
+          child: Align(
+            alignment: Alignment.centerLeft,
+            child: Text(
+              kind == '歌手'
+                  ? '共 ${entries.length} 位歌手'
+                  : '共 ${entries.length} 张专辑',
+              style: Theme.of(context).textTheme.bodyMedium,
+            ),
+          ),
+        ),
         const Divider(height: 1),
         Expanded(
-          child: _TopEdgeFade(
-            enabled: topEdgeFadeEnabled,
-            child: _ArtworkPrefetchViewport(
-              songs: representativeSongs,
-              itemExtent: gridView ? 190 : 68,
-              child: collection,
-            ),
+          child: _ArtworkPrefetchViewport(
+            songs: representativeSongs,
+            itemExtent: switch (viewMode) {
+              GroupViewMode.list => 68,
+              GroupViewMode.indexedGrid => 112,
+            },
+            child: collection,
           ),
         ),
       ],
@@ -1573,9 +2108,58 @@ class _GroupTab extends StatelessWidget {
   ) {
     Navigator.of(context).push(
       CupertinoPageRoute<void>(
-        builder: (_) => _SongCollectionPage(title: item.key, songs: item.value),
+        builder: (_) => _SongCollectionPage(
+          title: item.key,
+          songs: item.value,
+          pinScope: kind == '歌手'
+              ? context.read<PlaylistContentNotifier>().artistSongsPinScope(
+                  item.key,
+                )
+              : context.read<PlaylistContentNotifier>().albumSongsPinScope(
+                  item.key,
+                ),
+        ),
       ),
     );
+  }
+
+  Future<void> _showGroupActions(
+    BuildContext context,
+    PlaylistContentNotifier notifier,
+    SettingsProvider settings,
+    MapEntry<String, List<Song>> item,
+    Map<String, int> playCounts,
+  ) async {
+    final scope = kind == '歌手'
+        ? PlaylistContentNotifier.artistsPinScope
+        : PlaylistContentNotifier.albumsPinScope;
+    final pinned = notifier.isPinned(scope, item.key);
+    final action = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Wrap(
+          children: [
+            ListTile(
+              leading: Icon(pinned ? Icons.push_pin_outlined : Icons.push_pin),
+              title: Text(pinned ? '取消置顶' : '置顶'),
+              onTap: () => Navigator.pop(sheetContext, 'pin'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: Text('设置$kind封面'),
+              onTap: () => Navigator.pop(sheetContext, 'cover'),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!context.mounted || action == null) return;
+    if (action == 'pin') {
+      await notifier.togglePinned(scope, item.key);
+    } else {
+      await _showCoverPicker(context, notifier, settings, item, playCounts);
+    }
   }
 
   Song? _representativeSong(
@@ -1619,6 +2203,7 @@ class _GroupTab extends StatelessWidget {
     MapEntry<String, List<Song>> item,
     Map<String, int> playCounts, {
     required bool highResolution,
+    ArtworkSize displaySize = ArtworkSize.groupLarge,
   }) {
     final override = coverOverrides.groupCover(
       artist: kind == '歌手',
@@ -1629,6 +2214,7 @@ class _GroupTab extends StatelessWidget {
       overrideArtwork: override,
       fallbackIcon: kind == '歌手' ? Icons.person : Icons.album,
       highResolution: highResolution,
+      displaySize: displaySize,
     );
   }
 
@@ -2002,13 +2588,49 @@ class _TopEdgeFadeState extends State<_TopEdgeFade>
   }
 }
 
-class _SongCollectionPage extends StatelessWidget {
-  const _SongCollectionPage({required this.title, required this.songs});
-  final String title;
-  final List<Song> songs;
+class _GroupPinBadge extends StatelessWidget {
+  const _GroupPinBadge();
 
   @override
   Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return IgnorePointer(
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surface.withValues(alpha: 0.84),
+          shape: BoxShape.circle,
+          boxShadow: const [
+            BoxShadow(
+              color: Colors.black26,
+              blurRadius: 6,
+              offset: Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Padding(
+          padding: const EdgeInsets.all(7),
+          child: Icon(Icons.push_pin, size: 19, color: scheme.primary),
+        ),
+      ),
+    );
+  }
+}
+
+class _SongCollectionPage extends StatelessWidget {
+  const _SongCollectionPage({
+    required this.title,
+    required this.songs,
+    required this.pinScope,
+  });
+  final String title;
+  final List<Song> songs;
+  final String pinScope;
+
+  @override
+  Widget build(BuildContext context) {
+    context.select<PlaylistContentNotifier, int>(
+      (notifier) => notifier.libraryRevision,
+    );
     final backgroundSong = context.select<PlaylistContentNotifier, Song?>(
       (notifier) => notifier.currentSong,
     );
@@ -2017,9 +2639,9 @@ class _SongCollectionPage extends StatelessWidget {
     final playCounts = SongGroupPresentation.normalizedPlayCounts(
       statistics.statisticsData.songStats,
     );
-    final sortedSongs = SongGroupPresentation.sortByPlayCount(
-      songs,
-      playCounts,
+    final sortedSongs = notifier.pinnedFirst(
+      pinScope,
+      SongGroupPresentation.sortByPlayCount(songs, playCounts),
     );
     final settings = context.watch<SettingsProvider>();
     final customBackgroundEnabled =
@@ -2039,9 +2661,27 @@ class _SongCollectionPage extends StatelessWidget {
         title: Text(title),
         backgroundColor: useBackground ? Colors.transparent : null,
         scrolledUnderElevation: useBackground ? 0 : null,
+        actions: [
+          IconButton(
+            tooltip: '在$title中搜索',
+            icon: const Icon(Icons.search),
+            onPressed: () => showSearch<void>(
+              context: context,
+              delegate: _SongSearchDelegate(
+                initialQuery: '',
+                scope: _SongSearchScope.collection,
+                sourceSongs: sortedSongs,
+                onChanged: (_) {},
+                onPlay: (results, index) =>
+                    notifier.playFromDynamicList(results, index),
+              ),
+            ),
+          ),
+        ],
       ),
       body: _SongList(
         songs: sortedSongs,
+        pinScope: pinScope,
         onPlay: (index) => notifier.playFromDynamicList(sortedSongs, index),
       ),
     );
@@ -2069,6 +2709,8 @@ class _SongList extends StatelessWidget {
     this.selectionMode = false,
     this.selectedPaths = const {},
     this.onToggleSelection,
+    this.pinScope,
+    this.groupByInitial = false,
   });
   final List<Song> songs;
   final Future<void> Function(int index) onPlay;
@@ -2077,10 +2719,16 @@ class _SongList extends StatelessWidget {
   final bool selectionMode;
   final Set<String> selectedPaths;
   final ValueChanged<Song>? onToggleSelection;
+  final String? pinScope;
+  final bool groupByInitial;
 
   @override
   Widget build(BuildContext context) {
     if (songs.isEmpty) return const Center(child: Text('没有歌曲'));
+    context.select<PlaylistContentNotifier, (int, int)>(
+      (notifier) => (notifier.libraryRevision, notifier.playlistRevision),
+    );
+    final notifier = context.read<PlaylistContentNotifier>();
     final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
 
     Widget withPrefetch(Widget child, {required double itemExtent}) =>
@@ -2092,6 +2740,8 @@ class _SongList extends StatelessWidget {
 
     Widget buildSongTile(int index, {required bool grid}) {
       final song = songs[index];
+      final isPinned =
+          pinScope != null && notifier.isPinned(pinScope!, song.normalizedPath);
       final selected = selectedPaths.contains(
         song.normalizedPath.toLowerCase(),
       );
@@ -2134,15 +2784,37 @@ class _SongList extends StatelessWidget {
                     value: selected,
                     onChanged: (_) => onToggleSelection?.call(song),
                   )
-                : IconButton(
-                    visualDensity: grid ? VisualDensity.compact : null,
-                    constraints: grid
-                        ? const BoxConstraints(minWidth: 36, minHeight: 36)
-                        : null,
-                    icon: const Icon(Icons.more_vert),
-                    onPressed: () => _songActions(context, song, index),
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (isPinned)
+                        IconButton(
+                          visualDensity: VisualDensity.compact,
+                          constraints: const BoxConstraints(
+                            minWidth: 32,
+                            minHeight: 36,
+                          ),
+                          icon: const Icon(Icons.push_pin, size: 18),
+                          tooltip: '取消置顶',
+                          onPressed: () => notifier.togglePinned(
+                            pinScope!,
+                            song.normalizedPath,
+                          ),
+                        ),
+                      IconButton(
+                        visualDensity: grid ? VisualDensity.compact : null,
+                        constraints: grid
+                            ? const BoxConstraints(minWidth: 36, minHeight: 36)
+                            : null,
+                        icon: const Icon(Icons.more_vert),
+                        tooltip: '更多',
+                        onPressed: () => _songActions(context, song, index),
+                      ),
+                    ],
                   ),
-            onLongPress: () => onToggleSelection?.call(song),
+            onLongPress: () => selectionMode
+                ? onToggleSelection?.call(song)
+                : _songActions(context, song, index),
             onTap: () =>
                 selectionMode ? onToggleSelection?.call(song) : onPlay(index),
           ),
@@ -2182,31 +2854,245 @@ class _SongList extends StatelessWidget {
       );
     }
 
+    final allIndices = List<int>.generate(songs.length, (index) => index);
+    final songPartition = !selectionMode && pinScope != null
+        ? SongGroupPresentation.separatePinned(
+            allIndices,
+            (index) =>
+                notifier.isPinned(pinScope!, songs[index].normalizedPath),
+          )
+        : (pinned: <int>[], regular: allIndices);
+    final pinnedIndices = songPartition.pinned;
+    final regularIndices = songPartition.regular;
+
+    Widget buildPinnedSongsView({
+      required bool grid,
+      SliverGridDelegate? gridDelegate,
+    }) {
+      Widget buildItems(List<int> indices) {
+        if (grid) {
+          return SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            sliver: SliverGrid(
+              gridDelegate: gridDelegate!,
+              delegate: SliverChildBuilderDelegate(
+                (context, index) => buildSongTile(indices[index], grid: true),
+                childCount: indices.length,
+              ),
+            ),
+          );
+        }
+        return SliverList.builder(
+          itemCount: indices.length,
+          itemBuilder: (context, index) =>
+              buildSongTile(indices[index], grid: false),
+        );
+      }
+
+      return CustomScrollView(
+        slivers: [
+          // Pinned songs already occupy their own leading section and expose
+          // their state through the row action. Start the content immediately
+          // so a redundant marker does not leave a large empty header above it.
+          buildItems(pinnedIndices),
+          if (regularIndices.isNotEmpty) ...[
+            const SliverToBoxAdapter(
+              child: Padding(
+                padding: EdgeInsets.only(top: 8),
+                child: Divider(height: 1),
+              ),
+            ),
+            buildItems(regularIndices),
+          ],
+          const SliverToBoxAdapter(child: SizedBox(height: 18)),
+        ],
+      );
+    }
+
+    Widget buildIndexedSongsView() {
+      final sections = SongGroupPresentation.groupByInitial(
+        regularIndices,
+        (index) => songs[index].title,
+      );
+
+      Widget buildCompactSongCard(int songIndex) {
+        final song = songs[songIndex];
+        final selected = selectedPaths.contains(
+          song.normalizedPath.toLowerCase(),
+        );
+        final isPinned =
+            pinScope != null &&
+            notifier.isPinned(pinScope!, song.normalizedPath);
+        final scheme = Theme.of(context).colorScheme;
+        return AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
+          decoration: BoxDecoration(
+            color: selected
+                ? scheme.secondaryContainer
+                : scheme.surfaceContainerLow,
+            borderRadius: BorderRadius.circular(12),
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: () => selectionMode
+                  ? onToggleSelection?.call(song)
+                  : onPlay(songIndex),
+              onLongPress: () => selectionMode
+                  ? onToggleSelection?.call(song)
+                  : _songActions(context, song, songIndex),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Expanded(
+                    child: LayoutBuilder(
+                      builder: (context, constraints) => Stack(
+                        fit: StackFit.expand,
+                        children: [
+                          _Cover(
+                            song: song,
+                            size: constraints.biggest.shortestSide,
+                          ),
+                          if (isPinned)
+                            const Positioned(
+                              top: 5,
+                              right: 5,
+                              child: _GroupPinBadge(),
+                            ),
+                          if (selectionMode)
+                            Positioned(
+                              top: 2,
+                              right: 2,
+                              child: Checkbox(
+                                value: selected,
+                                onChanged: (_) => onToggleSelection?.call(song),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(6, 5, 6, 6),
+                    child: Text(
+                      song.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      }
+
+      Widget buildItems(List<int> indices) => SliverPadding(
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        sliver: SliverGrid(
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 88,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            childAspectRatio: .76,
+          ),
+          delegate: SliverChildBuilderDelegate(
+            (context, index) => buildCompactSongCard(indices[index]),
+            childCount: indices.length,
+          ),
+        ),
+      );
+
+      return CustomScrollView(
+        key: const ValueKey('library-indexed-song-list'),
+        slivers: [
+          if (pinnedIndices.isNotEmpty) ...[
+            const SliverToBoxAdapter(child: SizedBox(height: 8)),
+            buildItems(pinnedIndices),
+          ],
+          for (final section in sections.entries) ...[
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 5),
+                child: Text(
+                  section.key,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+            buildItems(section.value),
+          ],
+          const SliverToBoxAdapter(child: SizedBox(height: 18)),
+        ],
+      );
+    }
+
+    if (groupByInitial) {
+      return LayoutBuilder(
+        builder: (context, constraints) {
+          const horizontalPadding = 20.0;
+          const spacing = 8.0;
+          const maxTileExtent = 88.0;
+          final availableWidth = math.max(
+            maxTileExtent,
+            constraints.maxWidth - horizontalPadding,
+          );
+          final columnCount = math.max(
+            1,
+            ((availableWidth + spacing) / (maxTileExtent + spacing)).ceil(),
+          );
+          final tileWidth =
+              (availableWidth - spacing * (columnCount - 1)) / columnCount;
+          final rowExtent = tileWidth / .76 + spacing;
+          return withPrefetch(
+            buildIndexedSongsView(),
+            itemExtent: rowExtent / columnCount,
+          );
+        },
+      );
+    }
+
     if (isTablet) {
       return LayoutBuilder(
         builder: (context, constraints) {
           if (constraints.maxWidth < 500) {
             return withPrefetch(
-              ListView.builder(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                itemCount: songs.length,
-                itemBuilder: (context, index) =>
-                    buildSongTile(index, grid: false),
-              ),
+              pinnedIndices.isNotEmpty
+                  ? buildPinnedSongsView(grid: false)
+                  : ListView.builder(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 8,
+                        vertical: 6,
+                      ),
+                      itemCount: songs.length,
+                      itemBuilder: (context, index) =>
+                          buildSongTile(index, grid: false),
+                    ),
               itemExtent: 72,
             );
           }
           final columns = (constraints.maxWidth / 360).ceil().clamp(2, 4);
+          const gridDelegate = SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 420,
+            mainAxisExtent: 92,
+          );
           return withPrefetch(
-            GridView.builder(
-              padding: const EdgeInsets.fromLTRB(12, 10, 12, 18),
-              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-                maxCrossAxisExtent: 420,
-                mainAxisExtent: 92,
-              ),
-              itemCount: songs.length,
-              itemBuilder: (context, index) => buildSongTile(index, grid: true),
-            ),
+            pinnedIndices.isNotEmpty
+                ? buildPinnedSongsView(grid: true, gridDelegate: gridDelegate)
+                : GridView.builder(
+                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 18),
+                    gridDelegate: gridDelegate,
+                    itemCount: songs.length,
+                    itemBuilder: (context, index) =>
+                        buildSongTile(index, grid: true),
+                  ),
             itemExtent: 92 / columns,
           );
         },
@@ -2214,63 +3100,108 @@ class _SongList extends StatelessWidget {
     }
 
     return withPrefetch(
-      ListView.builder(
-        itemCount: songs.length,
-        itemBuilder: (context, index) => buildSongTile(index, grid: false),
-      ),
+      pinnedIndices.isNotEmpty
+          ? buildPinnedSongsView(grid: false)
+          : ListView.builder(
+              itemCount: songs.length,
+              itemBuilder: (context, index) =>
+                  buildSongTile(index, grid: false),
+            ),
       itemExtent: 72,
     );
   }
 
-  void _songActions(BuildContext context, Song song, int index) =>
-      showModalBottomSheet<void>(
-        context: context,
-        builder: (sheetContext) => SafeArea(
-          child: Wrap(
-            children: [
-              ListTile(
-                leading: const Icon(Icons.play_arrow),
-                title: const Text('立即播放'),
-                onTap: () {
-                  Navigator.pop(sheetContext);
-                  onPlay(index);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.playlist_add),
-                title: const Text('下一首播放'),
-                onTap: () {
-                  context.read<PlaylistContentNotifier>().addToPlayingQueueNext(
-                    song,
-                  );
-                  Navigator.pop(sheetContext);
-                },
-              ),
-              ListTile(
-                leading: const Icon(Icons.queue),
-                title: const Text('添加到播放队列'),
-                onTap: () {
-                  context.read<PlaylistContentNotifier>().addToPlayingQueue(
-                    song,
-                  );
-                  Navigator.pop(sheetContext);
-                },
-              ),
-              if (showRemove)
-                ListTile(
-                  leading: const Icon(Icons.delete_outline),
-                  title: const Text('从当前歌单移除'),
-                  onTap: () {
-                    context
-                        .read<PlaylistContentNotifier>()
-                        .removeSongFromCurrentPlaylist(index);
-                    Navigator.pop(sheetContext);
-                  },
-                ),
-            ],
+  void _songActions(
+    BuildContext context,
+    Song song,
+    int index,
+  ) => showModalBottomSheet<void>(
+    context: context,
+    builder: (sheetContext) => SafeArea(
+      child: Wrap(
+        children: [
+          ListTile(
+            leading: const Icon(Icons.play_arrow),
+            title: const Text('立即播放'),
+            onTap: () {
+              Navigator.pop(sheetContext);
+              onPlay(index);
+            },
           ),
-        ),
-      );
+          ListTile(
+            leading: const Icon(Icons.playlist_add),
+            title: const Text('下一首播放'),
+            onTap: () {
+              context.read<PlaylistContentNotifier>().addToPlayingQueueNext(
+                song,
+              );
+              Navigator.pop(sheetContext);
+            },
+          ),
+          ListTile(
+            leading: const Icon(Icons.queue),
+            title: const Text('添加到播放队列'),
+            onTap: () {
+              context.read<PlaylistContentNotifier>().addToPlayingQueue(song);
+              Navigator.pop(sheetContext);
+            },
+          ),
+          if (onToggleSelection != null)
+            ListTile(
+              leading: const Icon(Icons.checklist),
+              title: const Text('多选'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                onToggleSelection!(song);
+              },
+            ),
+          if (pinScope != null)
+            ListTile(
+              leading: Icon(
+                context.read<PlaylistContentNotifier>().isPinned(
+                      pinScope!,
+                      song.normalizedPath,
+                    )
+                    ? Icons.push_pin_outlined
+                    : Icons.push_pin,
+              ),
+              title: Text(
+                context.read<PlaylistContentNotifier>().isPinned(
+                      pinScope!,
+                      song.normalizedPath,
+                    )
+                    ? '取消置顶'
+                    : '置顶',
+              ),
+              onTap: () async {
+                Navigator.pop(sheetContext);
+                await context.read<PlaylistContentNotifier>().togglePinned(
+                  pinScope!,
+                  song.normalizedPath,
+                );
+              },
+            ),
+          if (showRemove)
+            ListTile(
+              leading: const Icon(Icons.delete_outline),
+              title: const Text('从当前歌单移除'),
+              onTap: () {
+                final notifier = context.read<PlaylistContentNotifier>();
+                final actualIndex = notifier.currentPlaylistSongs.indexWhere(
+                  (item) =>
+                      item.normalizedPath.toLowerCase() ==
+                      song.normalizedPath.toLowerCase(),
+                );
+                if (actualIndex >= 0) {
+                  notifier.removeSongFromCurrentPlaylist(actualIndex);
+                }
+                Navigator.pop(sheetContext);
+              },
+            ),
+        ],
+      ),
+    ),
+  );
 }
 
 class _ArtworkPrefetchViewport extends StatefulWidget {
@@ -2299,6 +3230,7 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
   double _pendingViewport = 0;
   int _generation = 0;
   bool _initialScheduled = false;
+  int? _lastPrefetchSignature;
 
   bool _onScroll(ScrollNotification notification) {
     final now = _scrollClock.elapsedMicroseconds;
@@ -2320,7 +3252,7 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
           ? const Duration(milliseconds: 90)
           : const Duration(milliseconds: 180),
     );
-    _throttle ??= Timer(const Duration(milliseconds: 64), () {
+    _throttle ??= Timer(const Duration(milliseconds: 32), () {
       _throttle = null;
       _prefetch(
         pixels: _pendingPixels,
@@ -2344,24 +3276,60 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
       itemExtent: widget.itemExtent,
       velocityPixelsPerSecond: velocity,
     );
+    final end = (plan.end - plan.start > 96) ? plan.start + 96 : plan.end;
+    final firstVisible = (pixels / widget.itemExtent).floor().clamp(
+      0,
+      widget.songs.length - 1,
+    );
+    final visibleCount = math.max(1, (viewport / widget.itemExtent).ceil());
+    final lastVisible = math.min(
+      widget.songs.length,
+      firstVisible + visibleCount,
+    );
+    final direction = velocity == 0 ? 0 : velocity.sign.toInt();
+    final signature = Object.hash(
+      plan.start,
+      end,
+      firstVisible,
+      lastVisible,
+      direction,
+      widget.songs[plan.start].normalizedPath,
+      widget.songs[end - 1].normalizedPath,
+      widget.songs[firstVisible].normalizedPath,
+    );
+    if (_lastPrefetchSignature == signature) return;
+    _lastPrefetchSignature = signature;
     final generation = ++_generation;
-    final end = (plan.end - plan.start > 150) ? plan.start + 150 : plan.end;
-    final window = widget.songs.sublist(plan.start, end);
+
     final notifier = context.read<PlaylistContentNotifier>();
     notifier.beginArtworkPrefetchWindow();
-    for (var index = 0; index < window.length; index++) {
-      final song = window[index];
-      final distance = (plan.start + index - plan.predictedIndex).abs();
-      final priority = distance <= 24
-          ? ArtworkRequestPriority.near
-          : ArtworkRequestPriority.far;
-      notifier.ensureSongThumbnail(song.filePath, priority: priority).then((
-        bytes,
-      ) {
-        if (!mounted || generation != _generation || bytes == null) return;
-        precacheImage(CoverMemoryImage(bytes, targetPixels: 192), context);
-      });
+
+    // Only visible rows need completion futures and Flutter image precaching.
+    // Near/far rows are queued in batches below, avoiding dozens of short-lived
+    // completers every time a fast fling advances the viewport.
+    for (var index = firstVisible; index < lastVisible; index++) {
+      final song = widget.songs[index];
+      notifier
+          .ensureSongThumbnail(
+            song.filePath,
+            priority: ArtworkRequestPriority.visible,
+          )
+          .then((bytes) {
+            if (!mounted || generation != _generation || bytes == null) return;
+            precacheImage(CoverMemoryImage(bytes, targetPixels: 192), context);
+          });
     }
+
+    final near = <Song>[];
+    final far = <Song>[];
+    for (var actualIndex = plan.start; actualIndex < end; actualIndex++) {
+      if (actualIndex >= firstVisible && actualIndex < lastVisible) continue;
+      final distance = (actualIndex - plan.predictedIndex).abs();
+      final target = distance <= visibleCount * 2 ? near : far;
+      target.add(widget.songs[actualIndex]);
+    }
+    notifier.prefetchSongCovers(near, priority: ArtworkRequestPriority.near);
+    notifier.prefetchSongCovers(far, priority: ArtworkRequestPriority.far);
   }
 
   @override
@@ -2383,6 +3351,7 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
   @override
   void dispose() {
     _generation++;
+    _lastPrefetchSignature = null;
     _throttle?.cancel();
     super.dispose();
   }
@@ -2538,7 +3507,8 @@ void _openNowPlaying(BuildContext context) {
   final initialCoverHeroReady =
       startsOnCover &&
       song != null &&
-      _warmedNowPlayingArtworkPaths.contains(song.normalizedPath);
+      _isNowPlayingArtworkPrepared(notifier, song);
+  notifier.postponeForegroundArtworkRecovery();
   InteractionPerformanceController.instance.pulse(
     InteractionPhase.transition,
     settleAfter: const Duration(milliseconds: 460),
@@ -2546,7 +3516,11 @@ void _openNowPlaying(BuildContext context) {
   unawaited(
     Navigator.of(context).push(
       CupertinoPageRoute<void>(
-        allowSnapshotting: true,
+        // A route snapshot can preserve placeholder list thumbnails captured
+        // during the push and briefly replay them on pop. The home subtree is a
+        // repaint boundary, so rendering it live keeps the transition accurate
+        // without causing the song list to repaint every frame.
+        allowSnapshotting: false,
         builder: (_) =>
             _NowPlayingPage(initialCoverHeroReady: initialCoverHeroReady),
       ),
@@ -2554,119 +3528,470 @@ void _openNowPlaying(BuildContext context) {
   );
 }
 
-class _NowPlayingArtworkWarmup extends StatefulWidget {
+class _NowPlayingArtworkWarmup extends StatelessWidget {
   const _NowPlayingArtworkWarmup({required this.song, required this.child});
 
   final Song song;
   final Widget child;
 
   @override
-  State<_NowPlayingArtworkWarmup> createState() =>
-      _NowPlayingArtworkWarmupState();
+  Widget build(BuildContext context) => child;
 }
 
-class _NowPlayingArtworkWarmupState extends State<_NowPlayingArtworkWarmup> {
+class _PreparedPlaybackArtwork {
+  const _PreparedPlaybackArtwork({
+    required this.path,
+    required this.bytes,
+    required this.targetPixels,
+    required this.cacheGeneration,
+  });
+
+  final String path;
+  final Uint8List bytes;
+  final int targetPixels;
+  final int cacheGeneration;
+}
+
+/// Immutable background input used while the playback route is moving.
+///
+/// The foreground cover is deliberately not frozen: its decode can complete
+/// at full speed while this lightweight, blurred backdrop remains stable.
+class _PlaybackBackgroundFrame {
+  const _PlaybackBackgroundFrame({
+    required this.path,
+    required this.customImageEnabled,
+    required this.customImageDim,
+    required this.customImageBlur,
+    required this.coverBytes,
+    required this.coverEnabled,
+    required this.coverDim,
+    required this.coverBlur,
+    required this.usePlaybackTheme,
+  });
+
+  final String? path;
+  final bool customImageEnabled;
+  final double customImageDim;
+  final double customImageBlur;
+  final Uint8List? coverBytes;
+  final bool coverEnabled;
+  final double coverDim;
+  final double coverBlur;
+  final bool usePlaybackTheme;
+}
+
+_PreparedPlaybackArtwork? _preparedPlaybackArtwork;
+_PreparedPlaybackArtwork? _previousPreparedPlaybackArtwork;
+String? _playbackArtworkHandoffTargetPath;
+final ValueNotifier<int> _preparedPlaybackArtworkSignal = ValueNotifier(0);
+
+class _PlaybackArtworkPreparationCoordinator extends StatefulWidget {
+  const _PlaybackArtworkPreparationCoordinator({required this.child});
+
+  final Widget child;
+
+  @override
+  State<_PlaybackArtworkPreparationCoordinator> createState() =>
+      _PlaybackArtworkPreparationCoordinatorState();
+}
+
+class _PlaybackArtworkPreparationCoordinatorState
+    extends State<_PlaybackArtworkPreparationCoordinator> {
   PlaylistContentNotifier? _notifier;
-  Timer? _delay;
-  int _generation = 0;
-  String? _requestedPath;
+  ValueListenable<String?>? _targetListenable;
+  ValueListenable<int>? _artworkRecoveryListenable;
+  ValueListenable<int>? _prewarmTargetListenable;
   Listenable? _coverListenable;
+  final Map<String, ({Listenable listenable, VoidCallback callback})>
+  _prewarmCoverListeners = {};
+  final Map<String, int> _prewarmedArtworkKeys = {};
+  int _generation = 0;
+  int _prewarmGeneration = 0;
+  String? _observedPath;
+  bool _decodeInFlight = false;
+  bool _retryAfterDecode = false;
+  bool _prewarmDecodeInFlight = false;
+  bool _retryPrewarmDecode = false;
+  Timer? _handoffExpiryTimer;
+  static const _maximumPreviousCoverHandoff = Duration(milliseconds: 220);
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _notifier ??= context.read<PlaylistContentNotifier>();
-    _syncRequest();
-  }
-
-  @override
-  void didUpdateWidget(covariant _NowPlayingArtworkWarmup oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.song.normalizedPath != widget.song.normalizedPath) {
-      _syncRequest();
+    final notifier = context.read<PlaylistContentNotifier>();
+    if (!identical(_notifier, notifier)) {
+      _targetListenable?.removeListener(_handleTargetChanged);
+      _artworkRecoveryListenable?.removeListener(_handleArtworkRecovery);
+      _prewarmTargetListenable?.removeListener(_handlePrewarmTargetsChanged);
+      _detachPrewarmCoverListeners();
+      _notifier = notifier;
+      _targetListenable = notifier.playbackArtworkTargetListenable
+        ..addListener(_handleTargetChanged);
+      _artworkRecoveryListenable = notifier.artworkRecoveryListenable
+        ..addListener(_handleArtworkRecovery);
+      _prewarmTargetListenable = notifier.playbackArtworkPrewarmListenable
+        ..addListener(_handlePrewarmTargetsChanged);
     }
+    _syncTarget();
+    _syncPrewarmCoverListeners();
   }
 
-  void _syncRequest() {
-    final path = widget.song.filePath;
-    if (_requestedPath == path) {
-      _scheduleWarmup();
+  void _handleTargetChanged() {
+    _generation++;
+    _syncTarget();
+  }
+
+  void _syncTarget() {
+    final path = _targetListenable?.value;
+    if (_observedPath == path) {
+      _schedulePreparation();
       return;
     }
-    _releaseRequest();
-    _requestedPath = path;
+    _coverListenable?.removeListener(_handleCoverChanged);
+    _coverListenable = null;
+    _observedPath = path;
+    _beginArtworkHandoff(path);
+    if (path == null) {
+      if (_preparedPlaybackArtwork != null) {
+        _preparedPlaybackArtwork = null;
+        _previousPreparedPlaybackArtwork = null;
+        _preparedPlaybackArtworkSignal.value++;
+      }
+      return;
+    }
     final notifier = _notifier;
     if (notifier == null) return;
     _coverListenable = notifier.coverListenableForSongPath(path)
       ..addListener(_handleCoverChanged);
-    notifier.requestSongCover(path, fullResolution: true);
-    _scheduleWarmup();
+    _handleCoverChanged();
   }
 
-  void _handleCoverChanged() {
-    _warmedNowPlayingArtworkPaths.remove(widget.song.normalizedPath);
-    _scheduleWarmup();
-  }
-
-  void _scheduleWarmup() {
-    final path = widget.song.normalizedPath;
-    final generation = ++_generation;
-    _delay?.cancel();
-    _delay = Timer(const Duration(milliseconds: 100), () async {
-      await InteractionPerformanceController.instance.waitForIdle(
-        maxWait: const Duration(milliseconds: 350),
-      );
-      if (!mounted || generation != _generation) return;
-      final artwork = _notifier?.displayFullCoverForSong(widget.song);
-      if (artwork == null || artwork.isEmpty) return;
-      final logicalSize = MediaQuery.sizeOf(context).shortestSide >= 600
-          ? 520.0
-          : 360.0;
-      try {
-        await Future.wait([
-          precacheImage(
-            artworkImageProvider(context, artwork, size: ArtworkSize.thumbnail),
-            context,
-          ),
-          precacheImage(
-            artworkImageProvider(
-              context,
-              artwork,
-              size: ArtworkSize.large,
-              logicalSize: logicalSize,
-            ),
-            context,
-          ),
-        ]);
-        if (!mounted || generation != _generation) return;
-        if (_warmedNowPlayingArtworkPaths.length >= 8) {
-          _warmedNowPlayingArtworkPaths.remove(
-            _warmedNowPlayingArtworkPaths.first,
-          );
-        }
-        _warmedNowPlayingArtworkPaths.add(path);
-      } catch (_) {
-        // A missing or temporarily unreadable cover must never make the
-        // mini-player interaction fail. ArtworkImage will retain its normal
-        // placeholder/error behavior when the destination is opened.
+  void _beginArtworkHandoff(String? targetPath) {
+    _handoffExpiryTimer?.cancel();
+    _handoffExpiryTimer = null;
+    _playbackArtworkHandoffTargetPath = null;
+    if (targetPath == null || _preparedPlaybackArtwork?.path == targetPath) {
+      return;
+    }
+    final retained =
+        _preparedPlaybackArtwork ?? _previousPreparedPlaybackArtwork;
+    if (retained == null) return;
+    _playbackArtworkHandoffTargetPath = targetPath;
+    _handoffExpiryTimer = Timer(_maximumPreviousCoverHandoff, () {
+      _handoffExpiryTimer = null;
+      if (!mounted ||
+          _observedPath != targetPath ||
+          _playbackArtworkHandoffTargetPath != targetPath) {
+        return;
       }
+      _playbackArtworkHandoffTargetPath = null;
+      _preparedPlaybackArtworkSignal.value++;
     });
   }
 
-  void _releaseRequest() {
-    final path = _requestedPath;
-    if (path == null) return;
-    _coverListenable?.removeListener(_handleCoverChanged);
-    _coverListenable = null;
-    _notifier?.releaseSongCover(path, fullResolution: true);
-    _requestedPath = null;
+  void _finishArtworkHandoff(String path) {
+    if (_playbackArtworkHandoffTargetPath != path) return;
+    _handoffExpiryTimer?.cancel();
+    _handoffExpiryTimer = null;
+    _playbackArtworkHandoffTargetPath = null;
+  }
+
+  void _clearPreparedArtwork() {
+    if (_preparedPlaybackArtwork == null &&
+        _previousPreparedPlaybackArtwork == null) {
+      return;
+    }
+    _preparedPlaybackArtwork = null;
+    _previousPreparedPlaybackArtwork = null;
+    _finishArtworkHandoff(_observedPath ?? '');
+    _preparedPlaybackArtworkSignal.value++;
+  }
+
+  void _handleCoverChanged() {
+    final notifier = _notifier;
+    final path = _observedPath;
+    if (notifier == null || path == null) return;
+    final artwork = notifier.displayPlaybackCoverForPath(path);
+    if (artwork == null || artwork.isEmpty) {
+      if (notifier.artworkResolutionStateForPath(path) ==
+          ArtworkResolutionState.unavailable) {
+        _clearPreparedArtwork();
+      }
+      return;
+    }
+    _schedulePreparation();
+  }
+
+  void _handleArtworkRecovery() {
+    final notifier = _notifier;
+    if (notifier == null) return;
+    _generation++;
+    _prewarmGeneration++;
+    _prewarmedArtworkKeys.clear();
+    if (notifier.isAppForeground) {
+      _schedulePreparation();
+      _schedulePrewarmPreparation();
+    }
+  }
+
+  void _handlePrewarmTargetsChanged() {
+    _prewarmGeneration++;
+    _syncPrewarmCoverListeners();
+  }
+
+  void _detachPrewarmCoverListeners() {
+    for (final entry in _prewarmCoverListeners.values) {
+      entry.listenable.removeListener(entry.callback);
+    }
+    _prewarmCoverListeners.clear();
+    _prewarmedArtworkKeys.clear();
+  }
+
+  void _syncPrewarmCoverListeners() {
+    final notifier = _notifier;
+    if (notifier == null) return;
+    final desired = notifier.playbackArtworkPrewarmPaths.toSet();
+    for (final path in _prewarmCoverListeners.keys.toSet().difference(
+      desired,
+    )) {
+      final entry = _prewarmCoverListeners.remove(path);
+      if (entry != null) entry.listenable.removeListener(entry.callback);
+      _prewarmedArtworkKeys.remove(path);
+    }
+    for (final path in desired.difference(
+      _prewarmCoverListeners.keys.toSet(),
+    )) {
+      void callback() => _schedulePrewarmPreparation();
+      final listenable = notifier.coverListenableForSongPath(path)
+        ..addListener(callback);
+      _prewarmCoverListeners[path] = (
+        listenable: listenable,
+        callback: callback,
+      );
+    }
+    _schedulePrewarmPreparation();
+  }
+
+  int _targetPixelsForPlaybackArtwork() {
+    final logicalSize = MediaQuery.sizeOf(context).shortestSide >= 600
+        ? 520.0
+        : 360.0;
+    return playbackArtworkTargetPixels(
+      logicalSize: logicalSize,
+      devicePixelRatio: MediaQuery.devicePixelRatioOf(context),
+    );
+  }
+
+  void _schedulePreparation() {
+    final notifier = _notifier;
+    final path = _observedPath;
+    if (notifier == null || path == null || !notifier.isAppForeground) return;
+    final artwork = notifier.displayPlaybackCoverForPath(path);
+    if (artwork == null || artwork.isEmpty) return;
+    final targetPixels = _targetPixelsForPlaybackArtwork();
+    final cacheGeneration = notifier.artworkImageCacheGeneration;
+    final prepared = _preparedPlaybackArtwork;
+    if (prepared != null &&
+        prepared.path == path &&
+        identical(prepared.bytes, artwork) &&
+        prepared.targetPixels == targetPixels &&
+        prepared.cacheGeneration == cacheGeneration) {
+      return;
+    }
+    if (_decodeInFlight) {
+      _retryAfterDecode = true;
+      return;
+    }
+    _decodeInFlight = true;
+    final generation = _generation;
+    unawaited(
+      _prepareArtwork(
+        notifier: notifier,
+        path: path,
+        artwork: artwork,
+        targetPixels: targetPixels,
+        cacheGeneration: cacheGeneration,
+        generation: generation,
+      ),
+    );
+  }
+
+  Future<void> _prepareArtwork({
+    required PlaylistContentNotifier notifier,
+    required String path,
+    required Uint8List artwork,
+    required int targetPixels,
+    required int cacheGeneration,
+    required int generation,
+  }) async {
+    try {
+      // Start on the next frame instead of waiting behind the 280 ms transport
+      // protection window. Flutter performs the codec work asynchronously and
+      // this coordinator still serializes exact decodes, keeping frame cost
+      // bounded while removing the visible old-cover delay.
+      await WidgetsBinding.instance.endOfFrame;
+      if (!mounted ||
+          generation != _generation ||
+          path != _observedPath ||
+          !notifier.isAppForeground ||
+          cacheGeneration != notifier.artworkImageCacheGeneration) {
+        return;
+      }
+      Object? decodeError;
+      StackTrace? decodeStackTrace;
+      await precacheImage(
+        CoverMemoryImage(artwork, targetPixels: targetPixels),
+        context,
+        onError: (error, stackTrace) {
+          decodeError = error;
+          decodeStackTrace = stackTrace;
+        },
+      );
+      if (decodeError != null) {
+        Error.throwWithStackTrace(
+          decodeError!,
+          decodeStackTrace ?? StackTrace.current,
+        );
+      }
+      if (!mounted ||
+          generation != _generation ||
+          path != _observedPath ||
+          cacheGeneration != notifier.artworkImageCacheGeneration) {
+        return;
+      }
+      final previousPrepared = _preparedPlaybackArtwork;
+      if (previousPrepared != null && previousPrepared.path != path) {
+        _previousPreparedPlaybackArtwork = previousPrepared;
+      }
+      _preparedPlaybackArtwork = _PreparedPlaybackArtwork(
+        path: path,
+        bytes: artwork,
+        targetPixels: targetPixels,
+        cacheGeneration: cacheGeneration,
+      );
+      _finishArtworkHandoff(path);
+      _preparedPlaybackArtworkSignal.value++;
+    } catch (_) {
+      if (mounted && generation == _generation && path == _observedPath) {
+        notifier.reportUndecodableCover(path, artwork);
+        if (notifier.artworkResolutionStateForPath(path) ==
+            ArtworkResolutionState.unavailable) {
+          _clearPreparedArtwork();
+        }
+      }
+    } finally {
+      _decodeInFlight = false;
+      final retry = _retryAfterDecode;
+      _retryAfterDecode = false;
+      if (mounted && (retry || generation != _generation)) {
+        _schedulePreparation();
+      }
+      if (mounted) _schedulePrewarmPreparation();
+    }
+  }
+
+  void _schedulePrewarmPreparation() {
+    final notifier = _notifier;
+    if (notifier == null || !notifier.isAppForeground) return;
+    if (_decodeInFlight || _prewarmDecodeInFlight) {
+      _retryPrewarmDecode = true;
+      return;
+    }
+    _prewarmDecodeInFlight = true;
+    final generation = _prewarmGeneration;
+    unawaited(
+      _preparePrewarmedArtwork(notifier: notifier, generation: generation),
+    );
+  }
+
+  Future<void> _preparePrewarmedArtwork({
+    required PlaylistContentNotifier notifier,
+    required int generation,
+  }) async {
+    try {
+      final targetPixels = _targetPixelsForPlaybackArtwork();
+      final cacheGeneration = notifier.artworkImageCacheGeneration;
+      final paths = notifier.playbackArtworkPrewarmPaths;
+      for (final path in paths) {
+        if (!mounted ||
+            generation != _prewarmGeneration ||
+            !notifier.isAppForeground ||
+            !notifier.playbackArtworkPrewarmPaths.contains(path)) {
+          return;
+        }
+        final artwork = notifier.displayPlaybackCoverForPath(path);
+        if (artwork == null || artwork.isEmpty) continue;
+        final preparationKey = Object.hash(
+          identityHashCode(artwork),
+          targetPixels,
+          cacheGeneration,
+        );
+        final imageProvider = CoverMemoryImage(
+          artwork,
+          targetPixels: targetPixels,
+        );
+        final imageCacheStatus = PaintingBinding.instance.imageCache
+            .statusForKey(imageProvider);
+        if (_prewarmedArtworkKeys[path] == preparationKey &&
+            imageCacheStatus.tracked) {
+          continue;
+        }
+
+        final lease = await InteractionPerformanceController.instance
+            .acquireIdleWork(
+              priority: InteractionWorkPriority.background,
+              isStillNeeded: () =>
+                  mounted &&
+                  generation == _prewarmGeneration &&
+                  notifier.isAppForeground &&
+                  notifier.playbackArtworkPrewarmPaths.contains(path),
+            );
+        try {
+          if (!lease.isGranted ||
+              !mounted ||
+              generation != _prewarmGeneration ||
+              cacheGeneration != notifier.artworkImageCacheGeneration ||
+              !notifier.playbackArtworkPrewarmPaths.contains(path)) {
+            continue;
+          }
+          Object? decodeError;
+          await precacheImage(
+            imageProvider,
+            context,
+            onError: (error, _) => decodeError = error,
+          );
+          if (decodeError == null &&
+              mounted &&
+              generation == _prewarmGeneration &&
+              cacheGeneration == notifier.artworkImageCacheGeneration) {
+            _prewarmedArtworkKeys[path] = preparationKey;
+          }
+        } finally {
+          lease.release();
+        }
+      }
+    } finally {
+      _prewarmDecodeInFlight = false;
+      final retry = _retryPrewarmDecode;
+      _retryPrewarmDecode = false;
+      if (mounted && (retry || generation != _prewarmGeneration)) {
+        _schedulePrewarmPreparation();
+      }
+    }
   }
 
   @override
   void dispose() {
     _generation++;
-    _delay?.cancel();
-    _releaseRequest();
+    _handoffExpiryTimer?.cancel();
+    if (_playbackArtworkHandoffTargetPath == _observedPath) {
+      _playbackArtworkHandoffTargetPath = null;
+    }
+    _targetListenable?.removeListener(_handleTargetChanged);
+    _artworkRecoveryListenable?.removeListener(_handleArtworkRecovery);
+    _prewarmTargetListenable?.removeListener(_handlePrewarmTargetsChanged);
+    _coverListenable?.removeListener(_handleCoverChanged);
+    _detachPrewarmCoverListeners();
     super.dispose();
   }
 
@@ -2674,7 +3999,12 @@ class _NowPlayingArtworkWarmupState extends State<_NowPlayingArtworkWarmup> {
   Widget build(BuildContext context) => widget.child;
 }
 
-final Set<String> _warmedNowPlayingArtworkPaths = <String>{};
+bool _isNowPlayingArtworkPrepared(PlaylistContentNotifier notifier, Song song) {
+  final prepared = _preparedPlaybackArtwork;
+  return prepared != null &&
+      prepared.path == song.normalizedPath &&
+      prepared.cacheGeneration == notifier.artworkImageCacheGeneration;
+}
 
 class _NowPlayingPage extends StatefulWidget {
   const _NowPlayingPage({required this.initialCoverHeroReady});
@@ -2696,11 +4026,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   static const _lyricsContentExitDuration = Duration(milliseconds: 100);
 
   bool _showLyrics = false;
+  bool _lyricBrowseTapHandled = false;
   bool _coverLayerBuilt = true;
   bool _lyricsLayerBuilt = false;
+  bool _lyricsRealtimeVisualsEnabled = false;
+  final ValueNotifier<int> _frozenLyricLineIndex = ValueNotifier(0);
   final MobileLyricsListController _lyricsListController =
       MobileLyricsListController();
-  final ValueNotifier<Duration?> _lyricBrowseTarget = ValueNotifier(null);
   late final AnimationController _coverTransitionController;
   late final AnimationController _lyricsContentTransitionController;
   final List<Timer> _visualTransitionTimers = [];
@@ -2720,6 +4052,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   double _edgeSeekEffectiveRate = 2;
   Future<void>? _edgePlaybackSetup;
   String? _lastSongPath;
+  Uint8List? _stablePlaybackCover;
+  String? _stablePlaybackCoverPath;
+  PlaylistContentNotifier? _playbackCoverNotifier;
+  Listenable? _playbackCoverListenable;
+  String? _playbackCoverListenablePath;
   final Map<int, Offset> _lyricPointers = {};
   final Map<int, Offset> _lyricPointerOrigins = {};
   double? _lyricPinchStartDistance;
@@ -2728,10 +4065,16 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   bool _lyricCopyGestureTriggered = false;
   Animation<double>? _routeAnimation;
   bool _routeTransitionComplete = false;
+  bool _routeTransitionActive = true;
+  _PlaybackBackgroundFrame? _renderedPlaybackBackground;
+  _PlaybackBackgroundFrame? _pendingPlaybackBackground;
 
   @override
   void initState() {
     super.initState();
+    _preparedPlaybackArtworkSignal.addListener(
+      _handlePreparedPlaybackArtworkChanged,
+    );
     _coverTransitionController = AnimationController(
       vsync: this,
       duration: _coverExitDuration,
@@ -2745,9 +4088,49 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         PlaybackInitialView.lyrics;
     _coverLayerBuilt = !_showLyrics;
     _lyricsLayerBuilt = _showLyrics;
+    _lyricsRealtimeVisualsEnabled = false;
     final initialVisualValue = _showLyrics ? 1.0 : 0.0;
     _coverTransitionController.value = initialVisualValue;
     _lyricsContentTransitionController.value = initialVisualValue;
+  }
+
+  void _handlePreparedPlaybackArtworkChanged() {
+    // Decoding continues globally during a pop, but there is no value in
+    // invalidating the disappearing route for a frame the user cannot keep.
+    if (mounted && _routeAnimation?.status != AnimationStatus.reverse) {
+      setState(() {});
+    }
+  }
+
+  void _handlePlaybackCoverChanged() {
+    if (mounted && _routeAnimation?.status != AnimationStatus.reverse) {
+      setState(() {});
+    }
+  }
+
+  _PlaybackBackgroundFrame _resolvePlaybackBackground(
+    _PlaybackBackgroundFrame candidate,
+  ) {
+    _pendingPlaybackBackground = candidate;
+    if (_renderedPlaybackBackground == null || !_routeTransitionActive) {
+      _renderedPlaybackBackground = candidate;
+    }
+    return _renderedPlaybackBackground!;
+  }
+
+  void _syncPlaybackCoverListenable(
+    PlaylistContentNotifier notifier,
+    String songPath,
+  ) {
+    if (identical(_playbackCoverNotifier, notifier) &&
+        _playbackCoverListenablePath == songPath) {
+      return;
+    }
+    _playbackCoverListenable?.removeListener(_handlePlaybackCoverChanged);
+    _playbackCoverNotifier = notifier;
+    _playbackCoverListenablePath = songPath;
+    _playbackCoverListenable = notifier.coverListenableForSongPath(songPath)
+      ..addListener(_handlePlaybackCoverChanged);
   }
 
   @override
@@ -2760,21 +4143,53 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _routeTransitionComplete =
         routeAnimation == null ||
         routeAnimation.status == AnimationStatus.completed;
+    _routeTransitionActive = !_routeTransitionComplete;
+    _lyricsRealtimeVisualsEnabled = shouldRunNowPlayingLyricsRealtime(
+      showLyrics: _showLyrics,
+      routeTransitionActive: _routeTransitionActive,
+    );
     routeAnimation?.addStatusListener(_handleRouteAnimationStatus);
   }
 
   void _handleRouteAnimationStatus(AnimationStatus status) {
-    if (status != AnimationStatus.completed || _routeTransitionComplete) {
+    if (status == AnimationStatus.forward ||
+        status == AnimationStatus.reverse) {
+      // Push and pop both render the home and playback routes. Protect the
+      // complete bidirectional animation so queued artwork, palette, lyric and
+      // persistence work cannot start during a reverse transition.
+      InteractionPerformanceController.instance.pulse(
+        InteractionPhase.transition,
+        settleAfter: const Duration(milliseconds: 520),
+      );
+      _routeTransitionActive = true;
+      if (_lyricsRealtimeVisualsEnabled && mounted) {
+        setState(() => _lyricsRealtimeVisualsEnabled = false);
+      }
       return;
     }
+    if (status != AnimationStatus.completed) return;
     if (!mounted) return;
-    setState(() => _routeTransitionComplete = true);
+    final pendingBackground = _pendingPlaybackBackground;
+    setState(() {
+      _routeTransitionComplete = true;
+      _routeTransitionActive = false;
+      if (pendingBackground != null) {
+        _renderedPlaybackBackground = pendingBackground;
+      }
+      _lyricsRealtimeVisualsEnabled = shouldRunNowPlayingLyricsRealtime(
+        showLyrics: _showLyrics,
+        routeTransitionActive: _routeTransitionActive,
+      );
+    });
   }
 
   void _runVisualTransition({required bool showLyrics}) {
     InteractionPerformanceController.instance.pulse(
       InteractionPhase.transition,
-      settleAfter: const Duration(milliseconds: 380),
+      // The longest visual branch is 240 ms (100 ms delay + 140 ms enter).
+      // Release directly afterwards so exact artwork preparation does not wait
+      // through an additional idle window when the user changes songs.
+      settleAfter: const Duration(milliseconds: 250),
     );
     final revision = ++_visualTransitionRevision;
     _cancelVisualTransitionTimers();
@@ -2813,6 +4228,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           curve: Curves.easeOutCubic,
         ),
       );
+      schedule(const Duration(milliseconds: 245), () {
+        if (!_showLyrics || _lyricsRealtimeVisualsEnabled) return;
+        setState(() => _lyricsRealtimeVisualsEnabled = true);
+      });
     } else {
       schedule(
         Duration.zero,
@@ -2864,15 +4283,19 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
 
   @override
   void dispose() {
+    _preparedPlaybackArtworkSignal.removeListener(
+      _handlePreparedPlaybackArtworkChanged,
+    );
     _routeAnimation?.removeStatusListener(_handleRouteAnimationStatus);
     _seekSettleTimer?.cancel();
     _edgeSeekTimer?.cancel();
     _edgeSeekStopwatch?.stop();
     _lyricCopyHoldTimer?.cancel();
+    _playbackCoverListenable?.removeListener(_handlePlaybackCoverChanged);
     _cancelVisualTransitionTimers();
     _coverTransitionController.dispose();
     _lyricsContentTransitionController.dispose();
-    _lyricBrowseTarget.dispose();
+    _frozenLyricLineIndex.dispose();
     _seekPosition.dispose();
     super.dispose();
   }
@@ -2881,10 +4304,32 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     Duration target,
     PlaylistContentNotifier notifier,
   ) async {
-    _lyricBrowseTarget.value = null;
+    final totalMs = notifier.totalDuration.inMilliseconds.toDouble();
+    final targetMs = target.inMilliseconds
+        .toDouble()
+        .clamp(0, totalMs > 0 ? totalMs : target.inMilliseconds.toDouble())
+        .toDouble();
+    final sessionId = ++_seekSessionId;
+    _seekSettleTimer?.cancel();
+    _isDraggingSeek = false;
+    _seekPosition.value = targetMs;
     _lyricsListController.settleOn(target);
-    await notifier.mediaPlayer.seek(target);
+    for (var attempt = 0; attempt < 2; attempt++) {
+      await notifier.mediaPlayer.seek(Duration(milliseconds: targetMs.round()));
+      if (!mounted || sessionId != _seekSessionId) return;
+      if (attempt == 0 && !notifier.isPlaying) {
+        await notifier.play();
+        if (!mounted || sessionId != _seekSessionId) return;
+      }
+      if (attempt > 0) break;
+      await Future<void>.delayed(const Duration(milliseconds: 160));
+      if (!mounted || sessionId != _seekSessionId) return;
+      final actualMs = notifier.currentPosition.inMilliseconds.toDouble();
+      if ((actualMs - targetMs).abs() <= 1000) break;
+    }
     if (!notifier.isPlaying) await notifier.play();
+    if (!mounted || sessionId != _seekSessionId) return;
+    _waitForSeekPosition(notifier, sessionId, targetMs);
   }
 
   void _startEdgeSeek(int direction, PlaylistContentNotifier notifier) {
@@ -3019,6 +4464,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _isDraggingSeek = false;
     _seekPosition.value = value;
 
+    if (_showLyrics && notifier.currentLyrics.isNotEmpty) {
+      _lyricsListController.settleOn(Duration(milliseconds: value.round()));
+    }
+
     await notifier.mediaPlayer.seek(Duration(milliseconds: value.round()));
     if (!mounted || sessionId != _seekSessionId) return;
     _waitForSeekPosition(notifier, sessionId, value);
@@ -3047,7 +4496,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   }
 
   void _resetSeekTracking({bool deferPositionReset = false}) {
-    _seekSessionId++;
+    final sessionId = ++_seekSessionId;
     _seekSettleTimer?.cancel();
     _edgeSeekTimer?.cancel();
     _edgeSeekStopwatch?.stop();
@@ -3057,7 +4506,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _isDraggingSeek = false;
     if (deferPositionReset && _seekPosition.value != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _seekPosition.value = null;
+        if (mounted && sessionId == _seekSessionId) {
+          _seekPosition.value = null;
+        }
       });
     } else {
       _seekPosition.value = null;
@@ -3128,23 +4579,37 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     if (song == null) {
       return const Scaffold(body: Center(child: Text('尚未播放歌曲')));
     }
-    final currentAlbumArt = playback.cover;
+    _syncPlaybackCoverListenable(notifier, song.normalizedPath);
+    final currentAlbumArt = _stabilizePlaybackCover(
+      notifier: notifier,
+      songPath: song.normalizedPath,
+      currentCover: playback.cover,
+      retainedCover: _retainedPlaybackArtworkFor(song.normalizedPath),
+    );
     final useAlbumArtOnPlayback =
         settings.followAlbumArtOnPlayback && currentAlbumArt != null;
     final usePlaybackTheme = useCustomPlaybackTheme || useAlbumArtOnPlayback;
+    final playbackBackground = _resolvePlaybackBackground(
+      _PlaybackBackgroundFrame(
+        path: settings.playbackThemeImagePath,
+        customImageEnabled: useCustomPlaybackTheme,
+        customImageDim: settings.playbackThemeImageDim,
+        customImageBlur: settings.playbackThemeImageBlur,
+        coverBytes: currentAlbumArt,
+        coverEnabled: useAlbumArtOnPlayback,
+        coverDim: settings.playbackAlbumArtBackgroundDim,
+        coverBlur: settings.playbackAlbumArtBackgroundBlur,
+        usePlaybackTheme: usePlaybackTheme,
+      ),
+    );
+    final renderedPlaybackTheme = playbackBackground.usePlaybackTheme;
     if (_lastSongPath != song.filePath) {
-      final hadPreviousSong = _lastSongPath != null;
       _lastSongPath = song.filePath;
       _lyricsEntryRevision++;
       _resetSeekTracking(deferPositionReset: true);
       // The setting is read once when this route is created. Previous/next
       // inside the route keeps the user's current cover/lyrics choice. Once
       // the route is popped, a new state reads the configured default again.
-      if (hadPreviousSong && _showLyrics) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted && _showLyrics) _lyricsListController.recenter();
-        });
-      }
     }
 
     final totalMs = playback.totalDuration.inMilliseconds.toDouble();
@@ -3159,10 +4624,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       song: song,
       lyrics: playback.lyrics,
       lyricFontFamily: lyricFontFamily,
-      usePlaybackTheme: usePlaybackTheme,
-      deferLargeArtwork:
-          !_routeTransitionComplete &&
-          !_warmedNowPlayingArtworkPaths.contains(song.normalizedPath),
+      usePlaybackTheme: renderedPlaybackTheme,
       maxCoverSize: useSplitLayout
           ? 520
           : isTablet
@@ -3176,15 +4638,19 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       song: song,
       totalMs: totalMs,
       tablet: isTablet,
-      usePlaybackTheme: usePlaybackTheme,
+      usePlaybackTheme: renderedPlaybackTheme,
     );
 
     final scaffold = Scaffold(
-      backgroundColor: usePlaybackTheme ? Colors.transparent : null,
+      backgroundColor: renderedPlaybackTheme ? Colors.transparent : null,
       appBar: AppBar(
-        backgroundColor: usePlaybackTheme ? Colors.transparent : null,
-        scrolledUnderElevation: usePlaybackTheme ? 0 : null,
-        title: Text(song.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        backgroundColor: renderedPlaybackTheme ? Colors.transparent : null,
+        scrolledUnderElevation: renderedPlaybackTheme ? 0 : null,
+        title: PlaybackProgressHeader(
+          positionListenable: notifier.positionListenable,
+          previewPositionListenable: _seekPosition,
+          totalDuration: playback.totalDuration,
+        ),
         actions: [
           IconButton(
             tooltip: '歌曲详情',
@@ -3221,7 +4687,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                                     .colorScheme
                                     .surfaceContainerLow
                                     .withValues(
-                                      alpha: usePlaybackTheme ? 0.10 : 1,
+                                      alpha: renderedPlaybackTheme ? 0.10 : 1,
                                     ),
                                 child: Padding(
                                   padding: const EdgeInsets.all(24),
@@ -3246,7 +4712,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                                   .colorScheme
                                   .surfaceContainerLow
                                   .withValues(
-                                    alpha: usePlaybackTheme ? 0.10 : 1,
+                                    alpha: renderedPlaybackTheme ? 0.10 : 1,
                                   ),
                               child: Padding(
                                 padding: const EdgeInsets.all(20),
@@ -3264,17 +4730,54 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       ),
     );
     return CustomThemeBackground(
-      path: settings.playbackThemeImagePath,
-      enabled: useCustomPlaybackTheme,
-      dim: settings.playbackThemeImageDim,
-      blurSigma: settings.playbackThemeImageBlur,
-      coverBytes: currentAlbumArt,
-      coverEnabled: useAlbumArtOnPlayback,
-      coverDim: settings.playbackAlbumArtBackgroundDim,
-      coverBlurSigma: settings.playbackAlbumArtBackgroundBlur,
-      brightnessOverride: usePlaybackTheme ? Brightness.dark : null,
+      path: playbackBackground.path,
+      enabled: playbackBackground.customImageEnabled,
+      dim: playbackBackground.customImageDim,
+      blurSigma: playbackBackground.customImageBlur,
+      coverBytes: playbackBackground.coverBytes,
+      coverEnabled: playbackBackground.coverEnabled,
+      coverDim: playbackBackground.coverDim,
+      coverBlurSigma: playbackBackground.coverBlur,
+      brightnessOverride: renderedPlaybackTheme ? Brightness.dark : null,
       child: scaffold,
     );
+  }
+
+  Uint8List? _stabilizePlaybackCover({
+    required PlaylistContentNotifier notifier,
+    required String songPath,
+    required Uint8List? currentCover,
+    required Uint8List? retainedCover,
+  }) {
+    if (currentCover != null && currentCover.isNotEmpty) {
+      _stablePlaybackCover = currentCover;
+      _stablePlaybackCoverPath = songPath;
+      return currentCover;
+    }
+
+    if (notifier.artworkResolutionStateForPath(songPath) ==
+        ArtworkResolutionState.unavailable) {
+      _stablePlaybackCover = null;
+      _stablePlaybackCoverPath = null;
+      return null;
+    }
+
+    // Retain the last complete frame only while the new cover is unresolved.
+    // It must not be marked as the new song's stable cover, otherwise a failed
+    // or delayed load can leave the previous song's background on screen.
+    if (_stablePlaybackCoverPath == songPath) return _stablePlaybackCover;
+    return retainedCover;
+  }
+
+  Uint8List? _retainedPlaybackArtworkFor(String songPath) {
+    final current = _preparedPlaybackArtwork;
+    if (current?.path == songPath) return current!.bytes;
+    final previous = _previousPreparedPlaybackArtwork;
+    if (previous?.path == songPath) return previous!.bytes;
+    if (_playbackArtworkHandoffTargetPath != songPath) return null;
+    // A newly-created route may bridge one already-decoded frame, but only
+    // while the coordinator's bounded handoff still targets this song.
+    return current?.bytes ?? previous?.bytes;
   }
 
   Widget _buildNowPlayingVisual(
@@ -3285,16 +4788,56 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required List<LyricLine> lyrics,
     required String? lyricFontFamily,
     required bool usePlaybackTheme,
-    required bool deferLargeArtwork,
     required double maxCoverSize,
   }) {
+    final activeLyricColor = context.watch<ThemeProvider>().currentSeedColor;
+    Widget buildLyricsList(int activeLyric) => MobileLyricsList(
+      controller: _lyricsListController,
+      lines: lyrics,
+      active: activeLyric,
+      contentIdentity: song.normalizedPath,
+      activeColor: activeLyricColor,
+      position: notifier.currentPosition,
+      positionListenable: _lyricsRealtimeVisualsEnabled
+          ? notifier.positionListenable
+          : null,
+      fontSize: settings.fontSize,
+      fontFamily: lyricFontFamily,
+      fontWeight: settings.lyricFontWeight,
+      textAlign: settings.lyricAlignment,
+      elasticScrollEnabled: settings.enableLyricElasticScroll,
+      lineBlurEnabled: settings.enableLyricBlur,
+      highlightActiveLine: settings.highlightActiveLyric,
+      isPlaying: _lyricsRealtimeVisualsEnabled && notifier.isPlaying,
+      edgeFadeEnabled: true,
+      glowEnabled: settings.playbackLyricGlowEnabled,
+      glowRadius: settings.playbackLyricGlowRadius,
+      brightForeground: usePlaybackTheme,
+      onBrowseTargetSelected: (target) =>
+          unawaited(_seekToBrowsedLyric(target, notifier)),
+    );
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
+      onTapDown: (details) {
+        _lyricBrowseTapHandled =
+            _showLyrics &&
+            _lyricsListController.isBrowseTargetAtGlobalPosition(
+              details.globalPosition,
+            );
+      },
+      onTapCancel: () => _lyricBrowseTapHandled = false,
       onTap: () {
+        if (_lyricBrowseTapHandled) {
+          _lyricBrowseTapHandled = false;
+          _lyricsListController.selectBrowseTarget();
+          return;
+        }
         final showLyrics = !_showLyrics;
         final entryRevision = ++_lyricsEntryRevision;
+        _frozenLyricLineIndex.value = notifier.lyricLineIndexListenable.value;
         setState(() {
           _showLyrics = showLyrics;
+          _lyricsRealtimeVisualsEnabled = false;
           if (showLyrics) {
             _lyricsLayerBuilt = true;
           } else {
@@ -3325,10 +4868,38 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         } else {
           _runVisualTransition(showLyrics: false);
         }
-        if (showLyrics && notifier.currentLyrics.isEmpty) {
-          unawaited(notifier.refreshCurrentLyricsIfEmpty());
+        if (showLyrics) {
+          if (!settings.preferExternalLyrics && settings.enableOnlineLyrics) {
+            unawaited(notifier.refreshCurrentNetworkLyrics());
+          } else if (notifier.currentLyrics.isEmpty) {
+            unawaited(notifier.refreshCurrentLyricsIfEmpty());
+          }
         }
       },
+      onLongPressStart: !_showLyrics
+          ? null
+          : (details) {
+              if (_lyricPointers.length > 1 || _lyricCopyGestureTriggered) {
+                return;
+              }
+              final visualWidth = MediaQuery.sizeOf(context).width;
+              final edgeWidth = (visualWidth * .16)
+                  .clamp(58.0, 108.0)
+                  .toDouble();
+              if (details.localPosition.dx <= edgeWidth) {
+                _startEdgeSeek(-1, notifier);
+              } else if (details.localPosition.dx >= visualWidth - edgeWidth) {
+                _startEdgeSeek(1, notifier);
+              } else {
+                _showLyricsFontSizeSheet(context, settings);
+              }
+            },
+      onLongPressEnd: !_showLyrics
+          ? null
+          : (_) => unawaited(_stopEdgeSeek(notifier)),
+      onLongPressCancel: !_showLyrics
+          ? null
+          : () => unawaited(_stopEdgeSeek(notifier)),
       child: Listener(
         onPointerDown: _showLyrics ? _onLyricPointerDown : null,
         onPointerMove: _showLyrics ? _onLyricPointerMove : null,
@@ -3382,14 +4953,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                                   initialCoverHeroReady:
                                       widget.initialCoverHeroReady,
                                 ),
-                                child: _Cover(
-                                  song: song,
+                                child: _AtomicNowPlayingCover(
+                                  songPath: song.normalizedPath,
                                   size: size,
-                                  artworkSize:
-                                      deferLargeArtwork &&
-                                          !widget.initialCoverHeroReady
-                                      ? ArtworkSize.thumbnail
-                                      : ArtworkSize.large,
                                 ),
                               ),
                             ),
@@ -3418,34 +4984,33 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                         ),
                       );
                     },
-                    child: RepaintBoundary(
-                      child: ClipRRect(
-                        borderRadius: BorderRadius.circular(12),
-                        child: ValueListenableBuilder<int>(
-                          valueListenable: notifier.lyricLineIndexListenable,
-                          builder: (context, activeLyric, _) =>
-                              MobileLyricsList(
-                                controller: _lyricsListController,
-                                lines: lyrics,
-                                active: activeLyric,
-                                positionListenable: notifier.positionListenable,
-                                fontSize: settings.fontSize,
-                                fontFamily: lyricFontFamily,
-                                edgeFadeEnabled: true,
-                                glowEnabled: settings.playbackLyricGlowEnabled,
-                                glowRadius: settings.playbackLyricGlowRadius,
-                                brightForeground: usePlaybackTheme,
-                                onBrowseTargetChanged: (target) {
-                                  _lyricBrowseTarget.value = target;
-                                },
-                              ),
+                    child: TickerMode(
+                      enabled: _lyricsRealtimeVisualsEnabled,
+                      child: RepaintBoundary(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(12),
+                          // Keep one stable bridge around the lyric list. A
+                          // conditional wrapper used to replace the complete
+                          // list subtree when realtime visuals were paused,
+                          // forcing every highlighted line and cached glyph
+                          // layer to be recreated inside the page transition.
+                          child: ValueListenableBuilder<int>(
+                            key: const ValueKey(
+                              'now_playing_lyric_index_bridge',
+                            ),
+                            valueListenable: _lyricsRealtimeVisualsEnabled
+                                ? notifier.lyricLineIndexListenable
+                                : _frozenLyricLineIndex,
+                            builder: (context, activeLyric, _) =>
+                                buildLyricsList(activeLyric),
+                          ),
                         ),
                       ),
                     ),
                   ),
                 ),
               ),
-            if (_showLyrics)
+            if (_showLyrics && _edgeSeekDirection != 0)
               LayoutBuilder(
                 builder: (context, constraints) {
                   final edgeWidth = (constraints.maxWidth * .16)
@@ -3453,21 +5018,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                       .toDouble();
                   return Stack(
                     children: [
-                      Positioned(
-                        top: 0,
-                        bottom: 0,
-                        left: edgeWidth,
-                        right: edgeWidth,
-                        child: GestureDetector(
-                          behavior: HitTestBehavior.translucent,
-                          onLongPress: () {
-                            if (_lyricPointers.length <= 1 &&
-                                !_lyricCopyGestureTriggered) {
-                              _showLyricsFontSizeSheet(context, settings);
-                            }
-                          },
-                        ),
-                      ),
                       _buildLyricsEdgeSeekZone(
                         context,
                         notifier: notifier,
@@ -3479,77 +5029,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                         notifier: notifier,
                         direction: 1,
                         width: edgeWidth,
-                      ),
-                    ],
-                  );
-                },
-              ),
-            if (_showLyrics)
-              ValueListenableBuilder<Duration?>(
-                valueListenable: _lyricBrowseTarget,
-                builder: (context, target, _) {
-                  if (target == null) return const SizedBox.shrink();
-                  final contentColor = Theme.of(
-                    context,
-                  ).colorScheme.onSurface.withValues(alpha: .50);
-                  final lineColor = Theme.of(
-                    context,
-                  ).colorScheme.onSurface.withValues(alpha: .50);
-                  return Stack(
-                    key: const ValueKey('mobile_lyrics_progress_guide'),
-                    children: [
-                      Positioned.fill(
-                        child: IgnorePointer(
-                          child: Center(
-                            child: Padding(
-                              padding: const EdgeInsets.only(left: 2),
-                              child: Row(
-                                children: [
-                                  SizedBox(
-                                    width: 52,
-                                    child: Text(
-                                      _duration(target),
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .labelLarge
-                                          ?.copyWith(
-                                            color: contentColor,
-                                            fontWeight: FontWeight.w600,
-                                          ),
-                                    ),
-                                  ),
-                                  Expanded(
-                                    child: Container(
-                                      height: 1,
-                                      color: lineColor,
-                                    ),
-                                  ),
-                                  const SizedBox(width: 52),
-                                ],
-                              ),
-                            ),
-                          ),
-                        ),
-                      ),
-                      Positioned.fill(
-                        child: Align(
-                          alignment: Alignment.centerRight,
-                          child: IconButton(
-                            key: const ValueKey('mobile_lyrics_progress_seek'),
-                            tooltip: '从此处播放',
-                            color: contentColor,
-                            padding: EdgeInsets.zero,
-                            constraints: const BoxConstraints.tightFor(
-                              width: 48,
-                              height: 48,
-                            ),
-                            iconSize: 34,
-                            icon: const Icon(Icons.play_arrow_rounded),
-                            onPressed: () => unawaited(
-                              _seekToBrowsedLyric(target, notifier),
-                            ),
-                          ),
-                        ),
                       ),
                     ],
                   );
@@ -3575,15 +5054,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       left: direction < 0 ? 0 : null,
       right: direction > 0 ? 0 : null,
       width: width,
-      child: GestureDetector(
-        behavior: HitTestBehavior.translucent,
-        onLongPressStart: (_) {
-          if (_lyricPointers.length <= 1 && !_lyricCopyGestureTriggered) {
-            _startEdgeSeek(direction, notifier);
-          }
-        },
-        onLongPressEnd: (_) => unawaited(_stopEdgeSeek(notifier)),
-        onLongPressCancel: () => unawaited(_stopEdgeSeek(notifier)),
+      child: IgnorePointer(
         child: AnimatedContainer(
           duration: const Duration(milliseconds: 140),
           curve: Curves.easeOut,
@@ -3978,60 +5449,67 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     double currentSize = settings.fontSize;
     await showModalBottomSheet<void>(
       context: context,
+      isScrollControlled: true,
       showDragHandle: !usePlaybackTheme,
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
       builder: (sheetContext) {
         final content = SafeArea(
-          child: StatefulBuilder(
-            builder: (context, setSheetState) => Padding(
-              padding: EdgeInsets.fromLTRB(
-                24,
-                usePlaybackTheme ? 16 : 4,
-                24,
-                20,
-              ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          '歌词字体大小',
-                          style: Theme.of(context).textTheme.titleLarge,
+          child: SingleChildScrollView(
+            child: StatefulBuilder(
+              builder: (context, setSheetState) => Padding(
+                padding: EdgeInsets.fromLTRB(
+                  24,
+                  usePlaybackTheme ? 16 : 4,
+                  24,
+                  20,
+                ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '歌词字体大小',
+                            style: Theme.of(context).textTheme.titleLarge,
+                          ),
                         ),
-                      ),
-                      IconButton(
-                        tooltip: '恢复默认大小',
-                        icon: const Icon(Icons.restart_alt),
-                        onPressed: () {
-                          const value = SettingsProvider.defaultLyricFontSize;
-                          setSheetState(() => currentSize = value);
-                          settings.setFontSize(value);
-                        },
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  Slider(
-                    value: currentSize,
-                    min: 12,
-                    max: 32,
-                    divisions: 20,
-                    label: currentSize.toStringAsFixed(0),
-                    onChanged: (value) {
-                      setSheetState(() => currentSize = value);
-                      settings.setFontSize(value);
-                    },
-                  ),
-                  Text(
-                    '当前大小: ${currentSize.toStringAsFixed(1)}',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                ],
+                        IconButton(
+                          tooltip: '恢复默认大小',
+                          icon: const Icon(Icons.restart_alt),
+                          onPressed: () {
+                            const value = SettingsProvider.defaultLyricFontSize;
+                            setSheetState(() => currentSize = value);
+                            settings.setFontSize(value);
+                          },
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                    Slider(
+                      value: currentSize,
+                      min: 12,
+                      max: 32,
+                      divisions: 20,
+                      label: currentSize.toStringAsFixed(0),
+                      onChanged: (value) {
+                        setSheetState(() => currentSize = value);
+                        settings.setFontSize(value);
+                      },
+                    ),
+                    Text(
+                      '当前大小: ${currentSize.toStringAsFixed(1)}',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const Divider(height: 32),
+                    _SleepTimerSection(
+                      notifier: context.read<PlaylistContentNotifier>(),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),
@@ -4334,87 +5812,17 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     );
     showModalBottomSheet<void>(
       context: context,
+      showDragHandle: false,
+      isScrollControlled: true,
+      isDismissible: true,
+      enableDrag: true,
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
       builder: (sheetContext) {
-        final content = SafeArea(
-          child: Consumer<SettingsProvider>(
-            builder: (context, settings, _) => Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('歌词源设置', style: Theme.of(context).textTheme.titleLarge),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('从网络获取歌词'),
-                    value: settings.enableOnlineLyrics,
-                    onChanged: settings.setEnableOnlineLyrics,
-                  ),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('翻译'),
-                    subtitle: const Text('显示网络歌词中的翻译内容'),
-                    value: settings.enableLyricTranslation,
-                    onChanged: (value) async {
-                      await settings.setEnableLyricTranslation(value);
-                      if (!context.mounted || !settings.enableOnlineLyrics) {
-                        return;
-                      }
-                      await context
-                          .read<PlaylistContentNotifier>()
-                          .reloadCurrentLyrics();
-                    },
-                  ),
-                  SwitchListTile(
-                    contentPadding: EdgeInsets.zero,
-                    title: const Text('歌词源自动回退'),
-                    value: settings.enableLyricSourceFallback,
-                    onChanged: (value) async {
-                      await settings.setEnableLyricSourceFallback(value);
-                      if (!context.mounted || !settings.enableOnlineLyrics) {
-                        return;
-                      }
-                      await context
-                          .read<PlaylistContentNotifier>()
-                          .reloadCurrentLyrics();
-                    },
-                  ),
-                  const SizedBox(height: 10),
-                  SegmentedButton<String>(
-                    style: usePlaybackTheme
-                        ? ButtonStyle(
-                            backgroundColor: WidgetStateProperty.all(
-                              Colors.transparent,
-                            ),
-                            side: WidgetStateProperty.all(
-                              BorderSide(
-                                color: Theme.of(context).colorScheme.outline,
-                              ),
-                            ),
-                          )
-                        : null,
-                    segments: const [
-                      ButtonSegment(value: 'netease', label: Text('网抑')),
-                      ButtonSegment(value: 'qq', label: Text('企鹅')),
-                      ButtonSegment(value: 'kugou', label: Text('库狗')),
-                    ],
-                    selected: {settings.primaryLyricSource},
-                    onSelectionChanged: (selection) {
-                      if (selection.isEmpty) return;
-                      final primary = selection.first;
-                      settings.setPrimaryLyricSource(primary);
-                      settings.setSecondaryLyricSource(
-                        networkLyricSourceOrder(primary)[1],
-                      );
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
+        final content = FractionallySizedBox(
+          heightFactor: .62,
+          child: _LyricSettingsSheet(transparentBackground: usePlaybackTheme),
         );
         return usePlaybackTheme
             ? _playbackThemeSheetSurface(sheetContext, child: content)
@@ -4569,37 +5977,44 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     final currentArtwork = notifier.displayCoverForSong(song);
     final action = await showModalBottomSheet<String>(
       context: context,
+      isScrollControlled: true,
       showDragHandle: true,
       builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.queue_music),
-              title: const Text('从歌曲列表选取'),
-              onTap: () => Navigator.pop(sheetContext, 'songs'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.photo_library_outlined),
-              title: const Text('从相册选取并裁剪'),
-              onTap: () => Navigator.pop(sheetContext, 'gallery'),
-            ),
-            ListTile(
-              leading: const Icon(Icons.download_outlined),
-              title: const Text('下载当前封面'),
-              enabled: currentArtwork != null && currentArtwork.isNotEmpty,
-              onTap: currentArtwork == null || currentArtwork.isEmpty
-                  ? null
-                  : () => Navigator.pop(sheetContext, 'download'),
-            ),
-            if (overrides.hasSongCover(song.filePath))
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               ListTile(
-                leading: const Icon(Icons.restore),
-                title: const Text('重置播放器内封面'),
-                onTap: () => Navigator.pop(sheetContext, 'reset'),
+                leading: const Icon(Icons.queue_music),
+                title: const Text('从歌曲列表选取'),
+                onTap: () => Navigator.pop(sheetContext, 'songs'),
               ),
-            const SizedBox(height: 8),
-          ],
+              ListTile(
+                leading: const Icon(Icons.photo_library_outlined),
+                title: const Text('从相册选取并裁剪'),
+                onTap: () => Navigator.pop(sheetContext, 'gallery'),
+              ),
+              ListTile(
+                leading: const Icon(Icons.download_outlined),
+                title: const Text('下载当前封面'),
+                enabled: currentArtwork != null && currentArtwork.isNotEmpty,
+                onTap: currentArtwork == null || currentArtwork.isEmpty
+                    ? null
+                    : () => Navigator.pop(sheetContext, 'download'),
+              ),
+              if (overrides.hasSongCover(song.filePath))
+                ListTile(
+                  leading: const Icon(Icons.restore),
+                  title: const Text('重置播放器内封面'),
+                  onTap: () => Navigator.pop(sheetContext, 'reset'),
+                ),
+              const Divider(height: 24),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
+                child: _SleepTimerSection(notifier: notifier),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -4804,6 +6219,478 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             ? _playbackThemeSheetSurface(sheetContext, child: content)
             : content;
       },
+    );
+  }
+}
+
+const _playbackSleepPresets = <(String, Duration)>[
+  ('5分钟', Duration(minutes: 5)),
+  ('10分钟', Duration(minutes: 10)),
+  ('15分钟', Duration(minutes: 15)),
+  ('30分钟', Duration(minutes: 30)),
+  ('60分钟', Duration(hours: 1)),
+  ('2小时', Duration(hours: 2)),
+];
+
+String _sleepTimerRemainingLabel(Duration remaining) {
+  final seconds = remaining.inSeconds.clamp(0, 3599999);
+  final hours = seconds ~/ 3600;
+  final minutes = (seconds % 3600) ~/ 60;
+  final trailingSeconds = seconds % 60;
+  if (hours > 0) {
+    return '$hours小时${minutes.toString().padLeft(2, '0')}分'
+        '${trailingSeconds.toString().padLeft(2, '0')}秒';
+  }
+  return '$minutes分${trailingSeconds.toString().padLeft(2, '0')}秒';
+}
+
+Future<Duration?> _showCustomSleepTimerDialog(
+  BuildContext context,
+  Duration? current,
+) async {
+  final roundedMinutes = current == null
+      ? 30
+      : ((current.inSeconds + 59) ~/ 60).clamp(1, 59999);
+  final hoursController = TextEditingController(
+    text: '${roundedMinutes ~/ 60}',
+  );
+  final minutesController = TextEditingController(
+    text: '${roundedMinutes % 60}',
+  );
+  String? error;
+  final result = await showDialog<Duration>(
+    context: context,
+    builder: (dialogContext) => StatefulBuilder(
+      builder: (context, setDialogState) => AlertDialog(
+        title: const Text('自定义播放定时'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('到达设定时长后自动暂停播放'),
+            const SizedBox(height: 16),
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('sleep-timer-hours'),
+                    controller: hoursController,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    decoration: const InputDecoration(
+                      labelText: '小时',
+                      suffixText: '时',
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('sleep-timer-minutes'),
+                    controller: minutesController,
+                    keyboardType: TextInputType.number,
+                    inputFormatters: [
+                      FilteringTextInputFormatter.digitsOnly,
+                      LengthLimitingTextInputFormatter(2),
+                    ],
+                    decoration: const InputDecoration(
+                      labelText: '分钟',
+                      suffixText: '分',
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            if (error != null) ...[
+              const SizedBox(height: 10),
+              Text(
+                error!,
+                style: TextStyle(color: Theme.of(context).colorScheme.error),
+              ),
+            ],
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () {
+              final hours = int.tryParse(hoursController.text) ?? 0;
+              final minutes = int.tryParse(minutesController.text) ?? 0;
+              if (minutes > 59 || (hours == 0 && minutes == 0)) {
+                setDialogState(() {
+                  error = minutes > 59 ? '分钟请输入 0–59' : '定时时长必须大于 0';
+                });
+                return;
+              }
+              Navigator.pop(
+                dialogContext,
+                Duration(hours: hours, minutes: minutes),
+              );
+            },
+            child: const Text('开始定时'),
+          ),
+        ],
+      ),
+    ),
+  );
+  hoursController.dispose();
+  minutesController.dispose();
+  return result;
+}
+
+class _SleepTimerSection extends StatefulWidget {
+  const _SleepTimerSection({required this.notifier});
+
+  final PlaylistContentNotifier notifier;
+
+  @override
+  State<_SleepTimerSection> createState() => _SleepTimerSectionState();
+}
+
+class _SleepTimerSectionState extends State<_SleepTimerSection> {
+  late final Timer _clock;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.notifier.addListener(_handleTimerChanged);
+    _clock = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && widget.notifier.playbackSleepTimerDeadline != null) {
+        setState(() {});
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(_SleepTimerSection oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.notifier == widget.notifier) return;
+    oldWidget.notifier.removeListener(_handleTimerChanged);
+    widget.notifier.addListener(_handleTimerChanged);
+  }
+
+  void _handleTimerChanged() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _clock.cancel();
+    widget.notifier.removeListener(_handleTimerChanged);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final remaining = widget.notifier.playbackSleepTimerRemaining;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            const Icon(Icons.bedtime_outlined),
+            const SizedBox(width: 10),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('播放定时', style: Theme.of(context).textTheme.titleMedium),
+                  Text(
+                    remaining == null
+                        ? '未设置，到时自动暂停播放'
+                        : '剩余 ${_sleepTimerRemainingLabel(remaining)}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+            ),
+            if (remaining != null)
+              TextButton(
+                onPressed: widget.notifier.cancelPlaybackSleepTimer,
+                child: const Text('取消定时'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 10),
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            for (final preset in _playbackSleepPresets)
+              ActionChip(
+                label: Text(preset.$1),
+                onPressed: () =>
+                    widget.notifier.setPlaybackSleepTimer(preset.$2),
+              ),
+            ActionChip(
+              avatar: const Icon(Icons.tune, size: 18),
+              label: const Text('自定义'),
+              onPressed: () async {
+                final duration = await _showCustomSleepTimerDialog(
+                  context,
+                  widget.notifier.playbackSleepTimerRemaining,
+                );
+                if (duration != null && mounted) {
+                  widget.notifier.setPlaybackSleepTimer(duration);
+                }
+              },
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _LyricSettingsSheet extends StatefulWidget {
+  const _LyricSettingsSheet({required this.transparentBackground});
+
+  final bool transparentBackground;
+
+  @override
+  State<_LyricSettingsSheet> createState() => _LyricSettingsSheetState();
+}
+
+class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
+  int _section = 0;
+
+  static const _sections = [
+    (icon: Icons.lyrics_outlined, label: '歌词设置'),
+    (icon: Icons.source_outlined, label: '歌词源'),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    final settings = context.watch<SettingsProvider>();
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            width: 68,
+            padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 8),
+            decoration: BoxDecoration(
+              color: widget.transparentBackground
+                  ? Colors.transparent
+                  : scheme.surfaceContainer,
+              border: Border(right: BorderSide(color: scheme.outlineVariant)),
+            ),
+            child: Column(
+              children: [
+                for (var index = 0; index < _sections.length; index++) ...[
+                  Tooltip(
+                    message: _sections[index].label,
+                    child: IconButton.filledTonal(
+                      key: ValueKey('lyric-settings-section-$index'),
+                      isSelected: _section == index,
+                      style: widget.transparentBackground
+                          ? IconButton.styleFrom(
+                              backgroundColor: Colors.transparent,
+                              side: BorderSide(color: scheme.outlineVariant),
+                            )
+                          : null,
+                      selectedIcon: Icon(_sections[index].icon),
+                      icon: Icon(_sections[index].icon),
+                      onPressed: () => setState(() => _section = index),
+                    ),
+                  ),
+                  const SizedBox(height: 6),
+                ],
+              ],
+            ),
+          ),
+          Expanded(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
+                  child: Align(
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      _sections[_section].label,
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ),
+                ),
+                const Divider(height: 1),
+                Expanded(
+                  child: IndexedStack(
+                    index: _section,
+                    children: [
+                      _lyricDisplayPage(context, settings),
+                      _lyricSourcePage(context, settings),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _lyricDisplayPage(BuildContext context, SettingsProvider settings) {
+    return ListView(
+      key: const ValueKey('lyric-settings-display-page'),
+      padding: const EdgeInsets.fromLTRB(16, 14, 16, 28),
+      children: [
+        SizedBox(
+          width: double.infinity,
+          child: SegmentedButton<TextAlign>(
+            expandedInsets: EdgeInsets.zero,
+            showSelectedIcon: false,
+            segments: const [
+              ButtonSegment(
+                value: TextAlign.left,
+                icon: Icon(Icons.format_align_left),
+                tooltip: '左对齐',
+              ),
+              ButtonSegment(
+                value: TextAlign.center,
+                icon: Icon(Icons.format_align_center),
+                tooltip: '居中',
+              ),
+              ButtonSegment(
+                value: TextAlign.right,
+                icon: Icon(Icons.format_align_right),
+                tooltip: '右对齐',
+              ),
+            ],
+            selected: {settings.lyricAlignment},
+            onSelectionChanged: (selection) {
+              if (selection.isNotEmpty) {
+                settings.setLyricAlignment(selection.first);
+              }
+            },
+          ),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('歌词弹性滚动'),
+          value: settings.enableLyricElasticScroll,
+          onChanged: settings.setEnableLyricElasticScroll,
+        ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          leading: const Icon(Icons.format_bold_rounded),
+          title: Text('歌词字体粗细：w${(settings.lyricFontWeightIndex + 1) * 100}'),
+          subtitle: Slider(
+            value: settings.lyricFontWeightIndex.toDouble(),
+            min: 0,
+            max: 8,
+            divisions: 8,
+            label: 'w${(settings.lyricFontWeightIndex + 1) * 100}',
+            onChanged: (value) =>
+                settings.setLyricFontWeightIndex(value.round()),
+          ),
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('歌词行模糊'),
+          value: settings.enableLyricBlur,
+          onChanged: settings.setEnableLyricBlur,
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('高亮歌词'),
+          value: settings.highlightActiveLyric,
+          onChanged: settings.setHighlightActiveLyric,
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Row(
+            children: [
+              Text('歌词外发光'),
+              SizedBox(width: 4),
+              InfoIcon('为播放页歌词添加柔和外发光。发光颜色与透明度会跟随每行歌词，默认关闭。'),
+            ],
+          ),
+          subtitle: const Text('开启后可能会造成卡顿'),
+          value: settings.playbackLyricGlowEnabled,
+          onChanged: settings.setPlaybackLyricGlowEnabled,
+        ),
+        if (settings.playbackLyricGlowEnabled)
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(
+              '发光范围：${settings.playbackLyricGlowRadius.toStringAsFixed(0)}',
+            ),
+            subtitle: Slider(
+              value: settings.playbackLyricGlowRadius,
+              min: 2,
+              max: 20,
+              divisions: 18,
+              label: settings.playbackLyricGlowRadius.toStringAsFixed(0),
+              onChanged: settings.setPlaybackLyricGlowRadius,
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _lyricSourcePage(BuildContext context, SettingsProvider settings) {
+    return ListView(
+      key: const ValueKey('lyric-settings-source-page'),
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 28),
+      children: [
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('从网络获取歌词'),
+          value: settings.enableOnlineLyrics,
+          onChanged: settings.setEnableOnlineLyrics,
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('翻译'),
+          value: settings.enableLyricTranslation,
+          onChanged: (value) async {
+            await settings.setEnableLyricTranslation(value);
+            if (!context.mounted || !settings.enableOnlineLyrics) return;
+            await context.read<PlaylistContentNotifier>().reloadCurrentLyrics();
+          },
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('歌词源自动回退'),
+          value: settings.enableLyricSourceFallback,
+          onChanged: (value) async {
+            await settings.setEnableLyricSourceFallback(value);
+            if (!context.mounted || !settings.enableOnlineLyrics) return;
+            await context.read<PlaylistContentNotifier>().reloadCurrentLyrics();
+          },
+        ),
+        const SizedBox(height: 12),
+        SegmentedButton<String>(
+          expandedInsets: EdgeInsets.zero,
+          style: widget.transparentBackground
+              ? ButtonStyle(
+                  backgroundColor: WidgetStateProperty.all(Colors.transparent),
+                  side: WidgetStateProperty.all(
+                    BorderSide(color: Theme.of(context).colorScheme.outline),
+                  ),
+                )
+              : null,
+          segments: const [
+            ButtonSegment(value: 'netease', label: Text('网抑')),
+            ButtonSegment(value: 'qq', label: Text('企鹅')),
+            ButtonSegment(value: 'kugou', label: Text('库狗')),
+          ],
+          selected: {settings.primaryLyricSource},
+          onSelectionChanged: (selection) {
+            if (selection.isEmpty) return;
+            final primary = selection.first;
+            settings.setPrimaryLyricSource(primary);
+            settings.setSecondaryLyricSource(
+              networkLyricSourceOrder(primary)[1],
+            );
+          },
+        ),
+      ],
     );
   }
 }
@@ -5210,12 +7097,14 @@ class _RequestedGroupArtwork extends StatefulWidget {
     required this.overrideArtwork,
     required this.fallbackIcon,
     required this.highResolution,
+    required this.displaySize,
   });
 
   final Song? song;
   final Uint8List? overrideArtwork;
   final IconData fallbackIcon;
   final bool highResolution;
+  final ArtworkSize displaySize;
 
   @override
   State<_RequestedGroupArtwork> createState() => _RequestedGroupArtworkState();
@@ -5342,7 +7231,7 @@ class _RequestedGroupArtworkState extends State<_RequestedGroupArtwork> {
       return LayoutBuilder(
         builder: (context, constraints) => ArtworkImage(
           bytes: artwork,
-          size: ArtworkSize.groupLarge,
+          size: widget.displaySize,
           width: double.infinity,
           height: double.infinity,
           fit: BoxFit.cover,
@@ -5361,15 +7250,69 @@ class _RequestedGroupArtworkState extends State<_RequestedGroupArtwork> {
   }
 }
 
+class _AtomicNowPlayingCover extends StatelessWidget {
+  const _AtomicNowPlayingCover({required this.songPath, required this.size});
+
+  final String songPath;
+  final double size;
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedBuilder(
+      animation: _preparedPlaybackArtworkSignal,
+      builder: (context, _) {
+        final currentPrepared = _preparedPlaybackArtwork;
+        final previousPrepared = _previousPreparedPlaybackArtwork;
+        final exactPrepared = currentPrepared?.path == songPath
+            ? currentPrepared
+            : previousPrepared?.path == songPath
+            ? previousPrepared
+            : null;
+        final retainedPrepared = currentPrepared ?? previousPrepared;
+        final prepared =
+            exactPrepared ??
+            (shouldRetainPreviousNowPlayingArtwork(
+                  songPath: songPath,
+                  preparedPath: retainedPrepared?.path,
+                  handoffTargetPath: _playbackArtworkHandoffTargetPath,
+                )
+                ? retainedPrepared
+                : null);
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(8),
+          child: SizedBox.square(
+            dimension: size,
+            child: prepared == null
+                ? ColoredBox(
+                    color: Theme.of(context).colorScheme.secondaryContainer,
+                    child: Icon(Icons.music_note, size: size * .5),
+                  )
+                : Image(
+                    image: CoverMemoryImage(
+                      prepared.bytes,
+                      targetPixels: prepared.targetPixels,
+                    ),
+                    width: size,
+                    height: size,
+                    fit: BoxFit.cover,
+                    filterQuality: FilterQuality.medium,
+                    gaplessPlayback: true,
+                    errorBuilder: (context, error, stackTrace) => ColoredBox(
+                      color: Theme.of(context).colorScheme.secondaryContainer,
+                      child: Icon(Icons.music_note, size: size * .5),
+                    ),
+                  ),
+          ),
+        );
+      },
+    );
+  }
+}
+
 class _Cover extends StatefulWidget {
-  const _Cover({
-    required this.song,
-    this.size = 48,
-    this.artworkSize = ArtworkSize.thumbnail,
-  });
+  const _Cover({required this.song, this.size = 48});
   final Song song;
   final double size;
-  final ArtworkSize artworkSize;
 
   @override
   State<_Cover> createState() => _CoverState();
@@ -5386,24 +7329,22 @@ class _CoverState extends State<_Cover> {
   void didChangeDependencies() {
     super.didChangeDependencies();
     _notifier ??= context.read<PlaylistContentNotifier>();
-    _requestCover(
-      widget.song.filePath,
-      fullResolution: widget.artworkSize != ArtworkSize.thumbnail,
-    );
+    _requestCover(widget.song.filePath, fullResolution: false);
   }
 
   @override
   void didUpdateWidget(covariant _Cover oldWidget) {
     super.didUpdateWidget(oldWidget);
-    final fullResolution = widget.artworkSize != ArtworkSize.thumbnail;
-    final requestQualityChanged =
-        (oldWidget.artworkSize != ArtworkSize.thumbnail) != fullResolution;
-    if (oldWidget.song.filePath != widget.song.filePath ||
-        requestQualityChanged) {
+    if (oldWidget.song.filePath != widget.song.filePath) {
       _releaseCover();
-      _requestCover(widget.song.filePath, fullResolution: fullResolution);
+      _requestCover(widget.song.filePath, fullResolution: false);
     }
   }
+
+  Uint8List? _artFor(Song song, {required bool fullResolution}) =>
+      fullResolution
+      ? _notifier?.displayFullCoverForSong(song)
+      : _notifier?.displayThumbnailForSong(song);
 
   void _requestCover(String filePath, {required bool fullResolution}) {
     if (_requestedPath == filePath &&
@@ -5462,10 +7403,13 @@ class _CoverState extends State<_Cover> {
 
   @override
   Widget build(BuildContext context) {
-    final art = widget.artworkSize == ArtworkSize.thumbnail
-        ? _notifier?.displayThumbnailForSong(widget.song)
-        : _notifier?.displayCoverForSong(widget.song);
-    if (art == null || art.isEmpty) _scheduleRecovery();
+    final art = _artFor(widget.song, fullResolution: false);
+    final thumbnailUnavailable =
+        _notifier?.artworkResolutionStateForPath(widget.song.filePath) ==
+        ArtworkResolutionState.unavailable;
+    if ((art == null || art.isEmpty) && !thumbnailUnavailable) {
+      _scheduleRecovery();
+    }
     return ClipRRect(
       borderRadius: BorderRadius.circular(8),
       child: SizedBox(
@@ -5478,11 +7422,11 @@ class _CoverState extends State<_Cover> {
               )
             : ArtworkImage(
                 bytes: art,
-                size: widget.artworkSize,
+                size: ArtworkSize.thumbnail,
                 logicalSize: widget.size,
                 fit: BoxFit.cover,
                 gaplessPlayback: true,
-                progressive: widget.artworkSize == ArtworkSize.large,
+                progressive: false,
                 filterQuality: FilterQuality.medium,
                 errorBuilder: (context, error, stackTrace) => ColoredBox(
                   color: Theme.of(context).colorScheme.secondaryContainer,
@@ -5547,7 +7491,7 @@ class _PlaylistCard extends StatelessWidget {
   }
 }
 
-enum _SongSearchScope { library, currentPlaylist }
+enum _SongSearchScope { library, currentPlaylist, collection }
 
 class _SongSearchDelegate extends SearchDelegate<void> {
   _SongSearchDelegate({
@@ -5555,9 +7499,12 @@ class _SongSearchDelegate extends SearchDelegate<void> {
     required this.onChanged,
     required this.scope,
     required this.sourceSongs,
+    this.onPlay,
   }) : super(
          searchFieldLabel: scope == _SongSearchScope.currentPlaylist
              ? '在当前歌单中搜索'
+             : scope == _SongSearchScope.collection
+             ? '在当前歌手/专辑中搜索'
              : '搜索音乐库',
        ) {
     query = initialQuery;
@@ -5566,6 +7513,7 @@ class _SongSearchDelegate extends SearchDelegate<void> {
   final ValueChanged<String> onChanged;
   final _SongSearchScope scope;
   final List<Song> sourceSongs;
+  final Future<void> Function(List<Song> songs, int index)? onPlay;
 
   @override
   List<Widget> buildActions(BuildContext context) => [
@@ -5604,7 +7552,9 @@ class _SongSearchDelegate extends SearchDelegate<void> {
       onPlay: (index) async {
         final notifier = context.read<PlaylistContentNotifier>();
         final song = songs[index];
-        if (scope == _SongSearchScope.currentPlaylist) {
+        if (onPlay != null) {
+          await onPlay!(songs, index);
+        } else if (scope == _SongSearchScope.currentPlaylist) {
           await notifier.playCurrentPlaylistSearchResult(song);
         } else {
           await notifier.playAllSongsSearchResult(song);
@@ -5612,6 +7562,73 @@ class _SongSearchDelegate extends SearchDelegate<void> {
         if (context.mounted) {
           close(context, null);
         }
+      },
+    );
+  }
+}
+
+class _GroupSearchDelegate extends SearchDelegate<void> {
+  _GroupSearchDelegate({required this.kind, required this.groups})
+    : super(searchFieldLabel: '搜索$kind');
+
+  final String kind;
+  final Map<String, List<Song>> groups;
+
+  @override
+  List<Widget> buildActions(BuildContext context) => [
+    if (query.isNotEmpty)
+      IconButton(icon: const Icon(Icons.clear), onPressed: () => query = ''),
+  ];
+
+  @override
+  Widget buildLeading(BuildContext context) => IconButton(
+    icon: const Icon(Icons.arrow_back),
+    onPressed: () => close(context, null),
+  );
+
+  @override
+  Widget buildResults(BuildContext context) => _results(context);
+
+  @override
+  Widget buildSuggestions(BuildContext context) => _results(context);
+
+  Widget _results(BuildContext context) {
+    final normalizedQuery = query.trim().toLowerCase();
+    final entries =
+        groups.entries
+            .where(
+              (entry) =>
+                  normalizedQuery.isEmpty ||
+                  entry.key.toLowerCase().contains(normalizedQuery),
+            )
+            .toList(growable: false)
+          ..sort((first, second) => first.key.compareTo(second.key));
+    if (entries.isEmpty) return Center(child: Text('没有匹配的$kind'));
+    return ListView.separated(
+      itemCount: entries.length,
+      separatorBuilder: (_, __) => const Divider(height: 1),
+      itemBuilder: (context, index) {
+        final entry = entries[index];
+        return ListTile(
+          leading: Icon(kind == '歌手' ? Icons.person : Icons.album),
+          title: Text(entry.key),
+          subtitle: Text('${entry.value.length} 首歌曲'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () {
+            final notifier = context.read<PlaylistContentNotifier>();
+            Navigator.of(context).push(
+              CupertinoPageRoute<void>(
+                builder: (_) => _SongCollectionPage(
+                  title: entry.key,
+                  songs: entry.value,
+                  pinScope: kind == '歌手'
+                      ? notifier.artistSongsPinScope(entry.key)
+                      : notifier.albumSongsPinScope(entry.key),
+                ),
+              ),
+            );
+          },
+        );
       },
     );
   }

@@ -1,8 +1,32 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../theme/theme_provider.dart';
 import 'settings_provider.dart';
+
+Color? parseThemeColorHex(String input) {
+  var normalized = input.trim();
+  if (normalized.startsWith('#')) normalized = normalized.substring(1);
+  if (normalized.toLowerCase().startsWith('0x')) {
+    normalized = normalized.substring(2);
+  }
+  if (normalized.length == 3) {
+    normalized = normalized.split('').map((digit) => '$digit$digit').join();
+  }
+  if (normalized.length != 6 ||
+      !RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(normalized)) {
+    return null;
+  }
+  return Color(0xFF000000 | int.parse(normalized, radix: 16));
+}
+
+String formatThemeColorHex(Color color) => color
+    .toARGB32()
+    .toRadixString(16)
+    .padLeft(8, '0')
+    .substring(2)
+    .toUpperCase();
 
 class ThemeSelectionScreen extends StatelessWidget {
   const ThemeSelectionScreen({super.key});
@@ -45,7 +69,7 @@ class ThemeSelectionScreen extends StatelessWidget {
                 onPressed: () async {
                   final color = await showDialog<Color>(
                     context: context,
-                    builder: (_) => _AdobeColorPickerDialog(initial: selected),
+                    builder: (_) => AdobeColorPickerDialog(initial: selected),
                   );
                   if (color != null && context.mounted) {
                     await _applyColor(context, color);
@@ -96,44 +120,79 @@ class ThemeSelectionScreen extends StatelessWidget {
   }
 }
 
-class _AdobeColorPickerDialog extends StatefulWidget {
-  const _AdobeColorPickerDialog({required this.initial});
+class AdobeColorPickerDialog extends StatefulWidget {
+  const AdobeColorPickerDialog({
+    super.key,
+    required this.initial,
+    this.title = '自定义主题颜色',
+  });
 
   final Color initial;
+  final String title;
 
   @override
-  State<_AdobeColorPickerDialog> createState() =>
-      _AdobeColorPickerDialogState();
+  State<AdobeColorPickerDialog> createState() => _AdobeColorPickerDialogState();
 }
 
-class _AdobeColorPickerDialogState extends State<_AdobeColorPickerDialog> {
+class _AdobeColorPickerDialogState extends State<AdobeColorPickerDialog> {
   late HSVColor _hsv;
+  late final TextEditingController _hexController;
+  bool _hexInvalid = false;
 
   @override
   void initState() {
     super.initState();
     _hsv = HSVColor.fromColor(widget.initial);
+    _hexController = TextEditingController(
+      text: formatThemeColorHex(widget.initial),
+    );
+  }
+
+  @override
+  void dispose() {
+    _hexController.dispose();
+    super.dispose();
+  }
+
+  void _setHsv(HSVColor value, {bool syncHex = true}) {
+    setState(() {
+      _hsv = value;
+      _hexInvalid = false;
+    });
+    if (!syncHex) return;
+    final text = formatThemeColorHex(value.toColor());
+    _hexController.value = TextEditingValue(
+      text: text,
+      selection: TextSelection.collapsed(offset: text.length),
+    );
+  }
+
+  void _updateFromHex(String value) {
+    final color = parseThemeColorHex(value);
+    if (color == null) {
+      setState(() => _hexInvalid = value.length == 6);
+      return;
+    }
+    _setHsv(HSVColor.fromColor(color), syncHex: false);
   }
 
   void _updateSaturationValue(Offset point, Size size) {
-    setState(() {
-      _hsv = _hsv
+    _setHsv(
+      _hsv
           .withSaturation((point.dx / size.width).clamp(0.0, 1.0))
-          .withValue((1 - point.dy / size.height).clamp(0.0, 1.0));
-    });
+          .withValue((1 - point.dy / size.height).clamp(0.0, 1.0)),
+    );
   }
 
   void _updateHue(Offset point, Size size) {
-    setState(() {
-      _hsv = _hsv.withHue((point.dy / size.height * 360).clamp(0.0, 360.0));
-    });
+    _setHsv(_hsv.withHue((point.dy / size.height * 360).clamp(0.0, 360.0)));
   }
 
   @override
   Widget build(BuildContext context) {
     final color = _hsv.toColor();
     return AlertDialog(
-      title: const Text('自定义主题颜色'),
+      title: Text(widget.title),
       contentPadding: const EdgeInsets.fromLTRB(20, 16, 20, 4),
       content: SizedBox(
         width: 360,
@@ -208,9 +267,25 @@ class _AdobeColorPickerDialogState extends State<_AdobeColorPickerDialog> {
                     ),
                     const SizedBox(width: 12),
                     Expanded(
-                      child: Text(
-                        '#${color.toARGB32().toRadixString(16).substring(2).toUpperCase()}',
-                        style: Theme.of(context).textTheme.titleMedium,
+                      child: TextField(
+                        key: const ValueKey('custom-theme-hex-field'),
+                        controller: _hexController,
+                        textCapitalization: TextCapitalization.characters,
+                        keyboardType: TextInputType.text,
+                        inputFormatters: [
+                          FilteringTextInputFormatter.allow(
+                            RegExp(r'[0-9a-fA-F]'),
+                          ),
+                          LengthLimitingTextInputFormatter(6),
+                        ],
+                        decoration: InputDecoration(
+                          labelText: '色号',
+                          prefixText: '#',
+                          helperText: '输入 6 位色号可定位颜色',
+                          errorText: _hexInvalid ? '请输入有效的 6 位色号' : null,
+                        ),
+                        onChanged: _updateFromHex,
+                        onSubmitted: _updateFromHex,
                       ),
                     ),
                   ],

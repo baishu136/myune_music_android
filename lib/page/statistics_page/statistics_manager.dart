@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'package:flutter/material.dart' show ChangeNotifier;
 import 'package:path_provider/path_provider.dart';
@@ -13,6 +14,7 @@ class StatisticsManager with ChangeNotifier {
   StatisticsData get statisticsData => _statisticsData;
 
   late String _statisticsFilePath;
+  Timer? _saveTimer;
 
   // 初始化统计管理器
   Future<void> init() async {
@@ -34,7 +36,10 @@ class StatisticsManager with ChangeNotifier {
         final newData = StatisticsData.fromJson(jsonString);
 
         // 将加载的数据复制到当前实例
-        _statisticsData.updateStats(newData.songStats);
+        _statisticsData.updateStats(
+          newData.songStats,
+          totalPlaybackDuration: newData.totalPlaybackDuration,
+        );
       }
     } catch (e) {
       //
@@ -60,6 +65,20 @@ class StatisticsManager with ChangeNotifier {
     _saveStatistics();
   }
 
+  void recordPlaybackDuration(Duration duration) {
+    if (duration <= Duration.zero) return;
+    _statisticsData.addPlaybackDuration(duration);
+    notifyListeners();
+    _saveTimer?.cancel();
+    _saveTimer = Timer(const Duration(seconds: 5), _saveStatistics);
+  }
+
+  Future<void> flushPendingSave() async {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    await _saveStatistics();
+  }
+
   // 获取歌曲播放排行榜
   List<SongPlayStat> getTopPlayedSongs([int limit = 5]) {
     return _statisticsData.getTopPlayedSongs(limit);
@@ -83,9 +102,12 @@ class StatisticsManager with ChangeNotifier {
 
   // 总播放次数
   int get totalPlays => _statisticsData.totalPlays;
+  Duration get totalPlaybackDuration => _statisticsData.totalPlaybackDuration;
 
   // 清空所有统计数据
   Future<void> clearAllStats() async {
+    _saveTimer?.cancel();
+    _saveTimer = null;
     _statisticsData.clearStats();
     notifyListeners();
     await _saveStatistics();

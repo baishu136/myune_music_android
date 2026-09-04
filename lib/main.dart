@@ -205,11 +205,7 @@ void main() async {
   );
 
   WidgetsBinding.instance.addPostFrameCallback((_) {
-    unawaited(
-      FaultLogService.instance.markStartup(
-        'BOOT_09 first frame',
-      ),
-    );
+    unawaited(FaultLogService.instance.markStartup('BOOT_09 first frame'));
   });
 
   if (isDesktop) {
@@ -508,8 +504,10 @@ class _MyAppState extends State<MyApp> with TrayListener {
           title: 'Myune music for Android',
           theme: themeProvider.lightThemeData,
           darkTheme: themeProvider.darkThemeData,
-          themeMode: themeProvider.themeMode,
-          themeAnimationDuration: ThemeMotion.transitionDuration,
+          themeMode: themeProvider.effectiveThemeMode,
+          themeAnimationDuration: themeProvider.animateThemeChanges
+              ? ThemeMotion.transitionDuration
+              : Duration.zero,
           themeAnimationCurve: ThemeMotion.transitionCurve,
           builder: (context, materialAppChild) => Platform.isAndroid
               ? GlobalNoticeOverlay(child: materialAppChild!)

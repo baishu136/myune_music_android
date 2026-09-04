@@ -14,30 +14,25 @@ class CustomThemeSettingsSection extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.wallpaper,
-                color: Theme.of(context).colorScheme.primary,
-              ),
-              const SizedBox(width: 10),
-              Text('自定义图片主题', style: Theme.of(context).textTheme.titleLarge),
-            ],
-          ),
-          const SizedBox(height: 4),
-          Text(
-            '导入图片后可双指缩放、拖动裁剪。主界面与播放页使用独立背景。',
-            style: Theme.of(context).textTheme.bodyMedium,
-          ),
-          const SizedBox(height: 12),
-          const _AlbumArtFollowCard(),
-          const SizedBox(height: 10),
-          const _ThemeImageCard(surface: CustomThemeSurface.home),
-          const SizedBox(height: 10),
-          const _ThemeImageCard(surface: CustomThemeSurface.playback),
+      child: ExpansionTile(
+        key: const PageStorageKey<String>('custom-theme-settings-expansion'),
+        initiallyExpanded: false,
+        backgroundColor: Colors.transparent,
+        collapsedBackgroundColor: Colors.transparent,
+        shape: const Border(),
+        collapsedShape: const Border(),
+        leading: Icon(
+          Icons.wallpaper,
+          color: Theme.of(context).colorScheme.primary,
+        ),
+        title: Text('自定义图片主题', style: Theme.of(context).textTheme.titleLarge),
+        childrenPadding: const EdgeInsets.fromLTRB(12, 0, 12, 12),
+        children: const [
+          _AlbumArtFollowCard(),
+          SizedBox(height: 10),
+          _ThemeImageCard(surface: CustomThemeSurface.home),
+          SizedBox(height: 10),
+          _ThemeImageCard(surface: CustomThemeSurface.playback),
         ],
       ),
     );

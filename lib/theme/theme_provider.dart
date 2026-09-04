@@ -1,3 +1,4 @@
+import 'dart:collection';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -184,11 +185,13 @@ class ThemeProvider with ChangeNotifier {
     _defaultSeedColorValue,
   ); // 用户最后一次手动选择的种子色，用于在关闭动态配色时恢复
   Color? _dynamicSourceColor;
+  bool _animateThemeChanges = true;
 
   ThemeMode _themeMode = ThemeMode.system;
   ThemeMode get themeMode => _themeMode;
-  bool get isDarkMode => _themeMode == ThemeMode.dark;
-  Brightness get resolvedBrightness => switch (_themeMode) {
+  ThemeMode get effectiveThemeMode => _themeMode;
+  bool get isDarkMode => effectiveThemeMode == ThemeMode.dark;
+  Brightness get resolvedBrightness => switch (effectiveThemeMode) {
     ThemeMode.light => Brightness.light,
     ThemeMode.dark => Brightness.dark,
     ThemeMode.system =>
@@ -206,6 +209,9 @@ class ThemeProvider with ChangeNotifier {
 
   late ThemeData _lightThemeData;
   late ThemeData _darkThemeData;
+  final LinkedHashMap<String, ({ThemeData light, ThemeData dark})>
+  _themeDataCache = LinkedHashMap();
+  static const _maximumThemeDataCacheEntries = 12;
 
   ThemeProvider() {
     _rebuildThemeData();
@@ -213,6 +219,10 @@ class ThemeProvider with ChangeNotifier {
   }
 
   Color get currentSeedColor => _currentSeedColor;
+
+  /// Dynamic cover colors must be visible on the song-change frame. Manual
+  /// theme changes retain the configured Material transition.
+  bool get animateThemeChanges => _animateThemeChanges;
 
   Color get lastManualSeedColor => _lastManualSeedColor;
 
@@ -231,37 +241,67 @@ class ThemeProvider with ChangeNotifier {
 
   ThemeData get darkThemeData => _darkThemeData;
 
-  ColorScheme _buildColorScheme(Brightness brightness) {
+  ColorScheme _buildColorScheme(Brightness brightness, {Color? seedColor}) {
+    final seed = seedColor ?? _currentSeedColor;
     final generated = ColorScheme.fromSeed(
-      seedColor: _currentSeedColor,
+      seedColor: seed,
       brightness: brightness,
       dynamicSchemeVariant: DynamicSchemeVariant.fidelity,
     );
-    final onSeed = _currentSeedColor.computeLuminance() > .45
-        ? Colors.black
-        : Colors.white;
+    final onSeed = seed.computeLuminance() > .45 ? Colors.black : Colors.white;
     return generated.copyWith(
-      primary: _currentSeedColor,
+      primary: seed,
       onPrimary: onSeed,
-      surfaceTint: _currentSeedColor,
+      surfaceTint: seed,
     );
   }
 
-  ThemeData _buildThemeData(Brightness brightness) => ThemeData(
-    useMaterial3: true,
-    colorScheme: _buildColorScheme(brightness),
-    fontFamily: _interfaceFontFamily,
-    textTheme: misansTextTheme,
-  ).makeMouseClickable();
+  ThemeData _buildThemeData(Brightness brightness, Color seedColor) {
+    final scheme = _buildColorScheme(brightness, seedColor: seedColor);
+    return ThemeData(
+      useMaterial3: true,
+      colorScheme: scheme,
+      fontFamily: _interfaceFontFamily,
+      textTheme: misansTextTheme,
+    ).makeMouseClickable();
+  }
+
+  ({ThemeData light, ThemeData dark}) _themePairFor(Color seedColor) {
+    final key = '${seedColor.toARGB32()}:$_interfaceFontFamily';
+    final cached = _themeDataCache.remove(key);
+    if (cached != null) {
+      _themeDataCache[key] = cached;
+      return cached;
+    }
+    final pair = (
+      light: _buildThemeData(Brightness.light, seedColor),
+      dark: _buildThemeData(Brightness.dark, seedColor),
+    );
+    _themeDataCache[key] = pair;
+    while (_themeDataCache.length > _maximumThemeDataCacheEntries) {
+      _themeDataCache.remove(_themeDataCache.keys.first);
+    }
+    return pair;
+  }
 
   void _rebuildThemeData() {
-    _lightThemeData = _buildThemeData(Brightness.light);
-    _darkThemeData = _buildThemeData(Brightness.dark);
+    final pair = _themePairFor(_currentSeedColor);
+    _lightThemeData = pair.light;
+    _darkThemeData = pair.dark;
+  }
+
+  void prewarmDynamicSeedColor(Color sourceColor) {
+    final adjusted = adaptDynamicSeedColor(sourceColor, resolvedBrightness);
+    _themePairFor(adjusted);
   }
 
   Future<void> setSeedColor(Color newColor, {bool isManual = false}) async {
-    if (isManual) _dynamicSourceColor = null;
-    if (_currentSeedColor != newColor) {
+    _animateThemeChanges = true;
+    final seedChanged = _currentSeedColor != newColor;
+    if (isManual) {
+      _dynamicSourceColor = null;
+    }
+    if (seedChanged) {
       _currentSeedColor = newColor;
       _rebuildThemeData();
       notifyListeners();
@@ -274,6 +314,7 @@ class ThemeProvider with ChangeNotifier {
   }
 
   Future<void> setDynamicSeedColor(Color sourceColor) async {
+    _animateThemeChanges = false;
     _dynamicSourceColor = sourceColor;
     final adjusted = adaptDynamicSeedColor(sourceColor, resolvedBrightness);
     if (_currentSeedColor == adjusted) return;
@@ -310,13 +351,15 @@ class ThemeProvider with ChangeNotifier {
   }
 
   Future<void> restoreLastManualColor() async {
+    _animateThemeChanges = true;
     _dynamicSourceColor = null;
     final prefs = await SharedPreferences.getInstance();
     final int? savedColorValue = prefs.getInt(_lastManualSeedColorKey);
     final color = savedColorValue != null
         ? Color(savedColorValue)
         : Color(_defaultSeedColorValue);
-    if (_currentSeedColor != color) {
+    final seedChanged = _currentSeedColor != color;
+    if (seedChanged) {
       _currentSeedColor = color;
       _rebuildThemeData();
       notifyListeners();

@@ -24,7 +24,8 @@ class ArtistDetailView extends StatelessWidget {
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => const SortDialog(),
+      builder: (context) =>
+          SortDialog(initialPreference: notifier.currentSortPreference),
     );
 
     if (result != null && context.mounted) {

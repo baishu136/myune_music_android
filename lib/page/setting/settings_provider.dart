@@ -7,6 +7,27 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 
 enum PlaybackInitialView { cover, lyrics }
 
+enum LibraryViewMode { list, indexed }
+
+enum PlaylistViewMode { cards, split }
+
+enum GroupViewMode { list, indexedGrid }
+
+enum GroupCollectionSortMode { name, songCount, playCount }
+
+GroupViewMode _decodeGroupViewMode(
+  String? storedValue, {
+  required bool legacyGrid,
+}) {
+  // The former two-column card grid was removed. Migrate both its persisted
+  // name and the older boolean preference to the compact indexed view.
+  if (storedValue == 'grid') return GroupViewMode.indexedGrid;
+  for (final mode in GroupViewMode.values) {
+    if (mode.name == storedValue) return mode;
+  }
+  return legacyGrid ? GroupViewMode.indexedGrid : GroupViewMode.list;
+}
+
 class SettingsProvider with ChangeNotifier {
   static const double defaultLyricFontSize = 20.0;
   static const _enableGlobalHotkeysKey = 'enableGlobalHotkeys';
@@ -38,7 +59,9 @@ class SettingsProvider with ChangeNotifier {
   static const _artistSeparatorsKey = 'artistSeparators'; // 艺术家分隔符设置的 key
   static const _minimizeToTrayKey = 'minimizeToTray'; // 最小化到托盘设置的 key
   static const _enableLyricBlurKey = 'enableLyricBlur'; // 歌词模糊效果设置的 key
-  static const _lyricBlurStrengthKey = 'lyricBlurStrength'; // 歌词模糊强度设置的 key
+  static const _enableLyricElasticScrollKey = 'enableLyricElasticScroll';
+  static const _highlightActiveLyricKey = 'highlightActiveLyric';
+  static const _lyricFontWeightKey = 'lyricFontWeight';
   static const _playbackLyricGlowEnabledKey = 'playbackLyricGlowEnabled';
   static const _playbackLyricGlowRadiusKey = 'playbackLyricGlowRadius';
   static const _playbackInitialViewKey = 'playbackInitialView';
@@ -76,14 +99,27 @@ class SettingsProvider with ChangeNotifier {
       'playbackAlbumArtBackgroundBlur';
   static const _followAlbumArtOnHomeKey = 'followAlbumArtOnHome';
   static const _followAlbumArtOnPlaybackKey = 'followAlbumArtOnPlayback';
+  static const _libraryViewModeKey = 'libraryViewMode';
+  static const _playlistViewModeKey = 'playlistViewMode';
   static const _artistGroupGridViewKey = 'artistGroupGridView';
   static const _albumGroupGridViewKey = 'albumGroupGridView';
+  static const _artistGroupViewModeKey = 'artistGroupViewMode';
+  static const _albumGroupViewModeKey = 'albumGroupViewMode';
+  static const _artistGroupSortModeKey = 'artistGroupSortMode';
+  static const _albumGroupSortModeKey = 'albumGroupSortMode';
+  static const _artistGroupSortDescendingKey = 'artistGroupSortDescending';
+  static const _albumGroupSortDescendingKey = 'albumGroupSortDescending';
   static const _artistGroupCoverPathsKey = 'artistGroupCoverPaths';
   static const _albumGroupCoverPathsKey = 'albumGroupCoverPaths';
   static const _desktopLyricsEnabledKey = 'desktopLyricsEnabled';
   static const _desktopLyricsLockedKey = 'desktopLyricsLocked';
   static const _desktopLyricsColorKey = 'desktopLyricsColor';
+  static const _desktopLyricsCustomColorsKey = 'desktopLyricsCustomColors';
   static const _desktopLyricsFontSizeKey = 'desktopLyricsFontSize';
+  static const _desktopLyricsOutlineEnabledKey = 'desktopLyricsOutlineEnabled';
+  static const _desktopLyricsOutlineWidthKey = 'desktopLyricsOutlineWidth';
+  static const _desktopLyricsOutlineColorKey = 'desktopLyricsOutlineColor';
+  static const _desktopLyricsOutlineOpacityKey = 'desktopLyricsOutlineOpacity';
 
   int _maxLinesPerLyric = 2;
   double _fontSize = defaultLyricFontSize;
@@ -95,8 +131,10 @@ class SettingsProvider with ChangeNotifier {
   double _lyricVerticalSpacing = 6.0; // 默认歌词垂直间距为6.0
   bool _addLyricPadding = true; // 默认启用歌词上下补位
   bool _minimizeToTray = false; // 默认不启用最小化到托盘
-  bool _enableLyricBlur = false; // Android 版已移除歌词模糊效果
-  double _lyricBlurStrength = 2.5; // 歌词模糊强度，范围 1.0~4.0
+  bool _enableLyricBlur = false;
+  bool _enableLyricElasticScroll = false;
+  bool _highlightActiveLyric = false;
+  int _lyricFontWeightIndex = 5;
   bool _playbackLyricGlowEnabled = false;
   double _playbackLyricGlowRadius = 8.0;
   PlaybackInitialView _playbackInitialView = PlaybackInitialView.cover;
@@ -128,14 +166,25 @@ class SettingsProvider with ChangeNotifier {
   double _playbackAlbumArtBackgroundBlur = 40.0;
   bool _followAlbumArtOnHome = false;
   bool _followAlbumArtOnPlayback = false;
-  bool _artistGroupGridView = false;
-  bool _albumGroupGridView = false;
+  LibraryViewMode _libraryViewMode = LibraryViewMode.list;
+  PlaylistViewMode _playlistViewMode = PlaylistViewMode.cards;
+  GroupViewMode _artistGroupViewMode = GroupViewMode.list;
+  GroupViewMode _albumGroupViewMode = GroupViewMode.list;
+  GroupCollectionSortMode _artistGroupSortMode = GroupCollectionSortMode.name;
+  GroupCollectionSortMode _albumGroupSortMode = GroupCollectionSortMode.name;
+  bool _artistGroupSortDescending = false;
+  bool _albumGroupSortDescending = false;
   Map<String, String> _artistGroupCoverPaths = {};
   Map<String, String> _albumGroupCoverPaths = {};
   bool _desktopLyricsEnabled = false;
   bool _desktopLyricsLocked = false;
   int _desktopLyricsColor = 0xFF00A9D6;
+  List<int> _desktopLyricsCustomColors = <int>[];
   double _desktopLyricsFontSize = 22.0;
+  bool _desktopLyricsOutlineEnabled = false;
+  double _desktopLyricsOutlineWidth = 1.15;
+  int _desktopLyricsOutlineColor = 0xFFFFFFFF;
+  double _desktopLyricsOutlineOpacity = 1.0;
 
   bool _enableGlobalHotkeys = true;
   HotKey? _playPauseHotKey;
@@ -168,7 +217,10 @@ class SettingsProvider with ChangeNotifier {
   bool get addLyricPadding => _addLyricPadding; // 获取歌词上下补位设置
   bool get minimizeToTray => _minimizeToTray; // 获取最小化到托盘设置
   bool get enableLyricBlur => _enableLyricBlur; // 获取歌词模糊效果设置
-  double get lyricBlurStrength => _lyricBlurStrength; // 获取歌词模糊强度设置
+  bool get highlightActiveLyric => _highlightActiveLyric;
+  double get lyricBlurStrength => 4.0;
+  int get lyricFontWeightIndex => _lyricFontWeightIndex;
+  FontWeight get lyricFontWeight => FontWeight.values[_lyricFontWeightIndex];
   bool get playbackLyricGlowEnabled => _playbackLyricGlowEnabled;
   double get playbackLyricGlowRadius => _playbackLyricGlowRadius;
   PlaybackInitialView get playbackInitialView => _playbackInitialView;
@@ -194,9 +246,7 @@ class SettingsProvider with ChangeNotifier {
 
   bool get preferExternalLyrics => _preferExternalLyrics; // 获取优先读取外置LRC歌词设置
   bool get autoAdjustLyricLayout => _autoAdjustLyricLayout; // 获取是否自动调节歌词布局
-  // Retained for the legacy desktop lyric widget; Android no longer exposes
-  // or enables the experimental elastic scrolling implementation.
-  bool get enableLyricElasticScroll => false;
+  bool get enableLyricElasticScroll => _enableLyricElasticScroll;
   bool get enableLoudness => _enableLoudness;
   bool get enableReplayGain => _enableReplayGain;
   bool get enableGaplessPlayback => _enableGaplessPlayback;
@@ -215,8 +265,16 @@ class SettingsProvider with ChangeNotifier {
   double get playbackAlbumArtBackgroundBlur => _playbackAlbumArtBackgroundBlur;
   bool get followAlbumArtOnHome => _followAlbumArtOnHome;
   bool get followAlbumArtOnPlayback => _followAlbumArtOnPlayback;
-  bool get artistGroupGridView => _artistGroupGridView;
-  bool get albumGroupGridView => _albumGroupGridView;
+  LibraryViewMode get libraryViewMode => _libraryViewMode;
+  PlaylistViewMode get playlistViewMode => _playlistViewMode;
+  GroupViewMode get artistGroupViewMode => _artistGroupViewMode;
+  GroupViewMode get albumGroupViewMode => _albumGroupViewMode;
+  GroupCollectionSortMode get artistGroupSortMode => _artistGroupSortMode;
+  GroupCollectionSortMode get albumGroupSortMode => _albumGroupSortMode;
+  bool get artistGroupSortDescending => _artistGroupSortDescending;
+  bool get albumGroupSortDescending => _albumGroupSortDescending;
+  bool get artistGroupGridView => _artistGroupViewMode != GroupViewMode.list;
+  bool get albumGroupGridView => _albumGroupViewMode != GroupViewMode.list;
   Map<String, String> get artistGroupCoverPaths =>
       Map.unmodifiable(_artistGroupCoverPaths);
   Map<String, String> get albumGroupCoverPaths =>
@@ -224,7 +282,13 @@ class SettingsProvider with ChangeNotifier {
   bool get desktopLyricsEnabled => _desktopLyricsEnabled;
   bool get desktopLyricsLocked => _desktopLyricsLocked;
   int get desktopLyricsColor => _desktopLyricsColor;
+  List<int> get desktopLyricsCustomColors =>
+      List<int>.unmodifiable(_desktopLyricsCustomColors);
   double get desktopLyricsFontSize => _desktopLyricsFontSize;
+  bool get desktopLyricsOutlineEnabled => _desktopLyricsOutlineEnabled;
+  double get desktopLyricsOutlineWidth => _desktopLyricsOutlineWidth;
+  int get desktopLyricsOutlineColor => _desktopLyricsOutlineColor;
+  double get desktopLyricsOutlineOpacity => _desktopLyricsOutlineOpacity;
 
   bool get enableGlobalHotkeys => _enableGlobalHotkeys;
   HotKey? get playPauseHotKey => _playPauseHotKey;
@@ -284,10 +348,18 @@ class SettingsProvider with ChangeNotifier {
         _readPreference<bool>(prefs, _addLyricPaddingKey) ?? true; // 加载歌词上下补位设置
     _minimizeToTray =
         _readPreference<bool>(prefs, _minimizeToTrayKey) ?? false; // 加载最小化到托盘设置
-    _enableLyricBlur = false;
-    _lyricBlurStrength =
-        _readDoublePreference(prefs, _lyricBlurStrengthKey) ??
-        2.5; // 加载歌词模糊强度设置
+    _enableLyricBlur =
+        _readPreference<bool>(prefs, _enableLyricBlurKey) ?? false;
+    _enableLyricElasticScroll =
+        _readPreference<bool>(prefs, _enableLyricElasticScrollKey) ?? false;
+    _highlightActiveLyric =
+        _readPreference<bool>(prefs, _highlightActiveLyricKey) ?? false;
+    _lyricFontWeightIndex =
+        (_readPreference<int>(prefs, _lyricFontWeightKey) ?? 5)
+            .clamp(0, 8)
+            .toInt();
+    await prefs.remove('duetLyricLayout');
+    await prefs.remove('lyricBlurStrength');
     _playbackLyricGlowEnabled =
         _readPreference<bool>(prefs, _playbackLyricGlowEnabledKey) ?? false;
     _playbackLyricGlowRadius =
@@ -320,10 +392,8 @@ class SettingsProvider with ChangeNotifier {
     _preferExternalLyrics =
         _readPreference<bool>(prefs, _preferExternalLyricsKey) ?? false;
     _autoAdjustLyricLayout = false;
-    await prefs.remove(_enableLyricBlurKey);
     await prefs.remove(_enableDynamicBackgroundKey);
     await prefs.remove(_autoAdjustLyricLayoutKey);
-    await prefs.remove('enableLyricElasticScroll');
     _enableLoudness = _readPreference<bool>(prefs, _enableLoudnessKey) ?? false;
     _enableReplayGain =
         _readPreference<bool>(prefs, _enableReplayGainKey) ?? false;
@@ -402,10 +472,39 @@ class SettingsProvider with ChangeNotifier {
         _readPreference<bool>(prefs, _followAlbumArtOnHomeKey) ?? false;
     _followAlbumArtOnPlayback =
         _readPreference<bool>(prefs, _followAlbumArtOnPlaybackKey) ?? false;
-    _artistGroupGridView =
-        _readPreference<bool>(prefs, _artistGroupGridViewKey) ?? false;
-    _albumGroupGridView =
-        _readPreference<bool>(prefs, _albumGroupGridViewKey) ?? false;
+    _libraryViewMode =
+        _readPreference<String>(prefs, _libraryViewModeKey) ==
+            LibraryViewMode.indexed.name
+        ? LibraryViewMode.indexed
+        : LibraryViewMode.list;
+    _playlistViewMode =
+        _readPreference<String>(prefs, _playlistViewModeKey) ==
+            PlaylistViewMode.split.name
+        ? PlaylistViewMode.split
+        : PlaylistViewMode.cards;
+    _artistGroupViewMode = _decodeGroupViewMode(
+      _readPreference<String>(prefs, _artistGroupViewModeKey),
+      legacyGrid:
+          _readPreference<bool>(prefs, _artistGroupGridViewKey) ?? false,
+    );
+    _albumGroupViewMode = _decodeGroupViewMode(
+      _readPreference<String>(prefs, _albumGroupViewModeKey),
+      legacyGrid: _readPreference<bool>(prefs, _albumGroupGridViewKey) ?? false,
+    );
+    _artistGroupSortMode = GroupCollectionSortMode.values.firstWhere(
+      (mode) =>
+          mode.name == _readPreference<String>(prefs, _artistGroupSortModeKey),
+      orElse: () => GroupCollectionSortMode.name,
+    );
+    _albumGroupSortMode = GroupCollectionSortMode.values.firstWhere(
+      (mode) =>
+          mode.name == _readPreference<String>(prefs, _albumGroupSortModeKey),
+      orElse: () => GroupCollectionSortMode.name,
+    );
+    _artistGroupSortDescending =
+        _readPreference<bool>(prefs, _artistGroupSortDescendingKey) ?? false;
+    _albumGroupSortDescending =
+        _readPreference<bool>(prefs, _albumGroupSortDescendingKey) ?? false;
     _artistGroupCoverPaths = _decodeStringMap(
       _readPreference<String>(prefs, _artistGroupCoverPathsKey),
     );
@@ -418,8 +517,26 @@ class SettingsProvider with ChangeNotifier {
         _readPreference<bool>(prefs, _desktopLyricsLockedKey) ?? false;
     _desktopLyricsColor =
         _readPreference<int>(prefs, _desktopLyricsColorKey) ?? 0xFF00A9D6;
+    _desktopLyricsCustomColors =
+        (_readPreference<List<String>>(prefs, _desktopLyricsCustomColorsKey) ??
+                const <String>[])
+            .map((value) => int.tryParse(value, radix: 16))
+            .whereType<int>()
+            .take(5)
+            .toList(growable: true);
     _desktopLyricsFontSize =
         _readDoublePreference(prefs, _desktopLyricsFontSizeKey) ?? 22.0;
+    _desktopLyricsOutlineEnabled =
+        _readPreference<bool>(prefs, _desktopLyricsOutlineEnabledKey) ?? false;
+    _desktopLyricsOutlineWidth =
+        (_readDoublePreference(prefs, _desktopLyricsOutlineWidthKey) ?? 1.15)
+            .clamp(0.5, 4.0);
+    _desktopLyricsOutlineColor =
+        _readPreference<int>(prefs, _desktopLyricsOutlineColorKey) ??
+        0xFFFFFFFF;
+    _desktopLyricsOutlineOpacity =
+        (_readDoublePreference(prefs, _desktopLyricsOutlineOpacityKey) ?? 1.0)
+            .clamp(0.1, 1.0);
     if (_enableLoudness && _enableReplayGain) {
       _enableReplayGain = false;
       await prefs.setBool(_enableReplayGainKey, false);
@@ -615,14 +732,29 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setBool(_enableLyricBlurKey, value);
   }
 
-  void setLyricBlurStrength(double value) async {
-    final clampedValue = value.clamp(1.0, 4.0);
-    if (_lyricBlurStrength == clampedValue) return;
-
-    _lyricBlurStrength = clampedValue;
+  void setEnableLyricElasticScroll(bool value) async {
+    if (_enableLyricElasticScroll == value) return;
+    _enableLyricElasticScroll = value;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setDouble(_lyricBlurStrengthKey, clampedValue);
+    await prefs.setBool(_enableLyricElasticScrollKey, value);
+  }
+
+  Future<void> setHighlightActiveLyric(bool value) async {
+    if (_highlightActiveLyric == value) return;
+    _highlightActiveLyric = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_highlightActiveLyricKey, value);
+  }
+
+  void setLyricFontWeightIndex(int value) async {
+    final next = value.clamp(0, 8).toInt();
+    if (_lyricFontWeightIndex == next) return;
+    _lyricFontWeightIndex = next;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_lyricFontWeightKey, next);
   }
 
   void setShowTaskbarProgress(bool value) async {
@@ -897,20 +1029,82 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setBool(_followAlbumArtOnPlaybackKey, value);
   }
 
-  Future<void> setArtistGroupGridView(bool value) async {
-    if (_artistGroupGridView == value) return;
-    _artistGroupGridView = value;
+  Future<void> setLibraryViewMode(LibraryViewMode value) async {
+    if (_libraryViewMode == value) return;
+    _libraryViewMode = value;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_artistGroupGridViewKey, value);
+    await prefs.setString(_libraryViewModeKey, value.name);
+  }
+
+  Future<void> setPlaylistViewMode(PlaylistViewMode value) async {
+    if (_playlistViewMode == value) return;
+    _playlistViewMode = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_playlistViewModeKey, value.name);
+  }
+
+  Future<void> setArtistGroupGridView(bool value) async {
+    await setArtistGroupViewMode(
+      value ? GroupViewMode.indexedGrid : GroupViewMode.list,
+    );
   }
 
   Future<void> setAlbumGroupGridView(bool value) async {
-    if (_albumGroupGridView == value) return;
-    _albumGroupGridView = value;
+    await setAlbumGroupViewMode(
+      value ? GroupViewMode.indexedGrid : GroupViewMode.list,
+    );
+  }
+
+  Future<void> setArtistGroupViewMode(GroupViewMode value) async {
+    if (_artistGroupViewMode == value) return;
+    _artistGroupViewMode = value;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_albumGroupGridViewKey, value);
+    await prefs.setString(_artistGroupViewModeKey, value.name);
+    await prefs.setBool(_artistGroupGridViewKey, value != GroupViewMode.list);
+  }
+
+  Future<void> setAlbumGroupViewMode(GroupViewMode value) async {
+    if (_albumGroupViewMode == value) return;
+    _albumGroupViewMode = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_albumGroupViewModeKey, value.name);
+    await prefs.setBool(_albumGroupGridViewKey, value != GroupViewMode.list);
+  }
+
+  Future<void> setArtistGroupSort({
+    required GroupCollectionSortMode mode,
+    required bool descending,
+  }) async {
+    if (_artistGroupSortMode == mode &&
+        _artistGroupSortDescending == descending) {
+      return;
+    }
+    _artistGroupSortMode = mode;
+    _artistGroupSortDescending = descending;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_artistGroupSortModeKey, mode.name);
+    await prefs.setBool(_artistGroupSortDescendingKey, descending);
+  }
+
+  Future<void> setAlbumGroupSort({
+    required GroupCollectionSortMode mode,
+    required bool descending,
+  }) async {
+    if (_albumGroupSortMode == mode &&
+        _albumGroupSortDescending == descending) {
+      return;
+    }
+    _albumGroupSortMode = mode;
+    _albumGroupSortDescending = descending;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_albumGroupSortModeKey, mode.name);
+    await prefs.setBool(_albumGroupSortDescendingKey, descending);
   }
 
   Future<void> setGroupCoverPath({
@@ -978,6 +1172,26 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setInt(_desktopLyricsColorKey, value);
   }
 
+  Future<void> rememberDesktopLyricsCustomColor(int value) async {
+    _desktopLyricsCustomColors
+      ..remove(value)
+      ..insert(0, value);
+    if (_desktopLyricsCustomColors.length > 5) {
+      _desktopLyricsCustomColors.removeRange(
+        5,
+        _desktopLyricsCustomColors.length,
+      );
+    }
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setStringList(
+      _desktopLyricsCustomColorsKey,
+      _desktopLyricsCustomColors
+          .map((color) => color.toRadixString(16).padLeft(8, '0'))
+          .toList(growable: false),
+    );
+  }
+
   Future<void> setDesktopLyricsFontSize(double value) async {
     final next = value.clamp(16.0, 38.0);
     if ((_desktopLyricsFontSize - next).abs() < 0.01) return;
@@ -985,6 +1199,40 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_desktopLyricsFontSizeKey, next);
+  }
+
+  Future<void> setDesktopLyricsOutlineEnabled(bool value) async {
+    if (_desktopLyricsOutlineEnabled == value) return;
+    _desktopLyricsOutlineEnabled = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_desktopLyricsOutlineEnabledKey, value);
+  }
+
+  Future<void> setDesktopLyricsOutlineWidth(double value) async {
+    final next = value.clamp(0.5, 4.0);
+    if ((_desktopLyricsOutlineWidth - next).abs() < 0.01) return;
+    _desktopLyricsOutlineWidth = next;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_desktopLyricsOutlineWidthKey, next);
+  }
+
+  Future<void> setDesktopLyricsOutlineColor(int value) async {
+    if (_desktopLyricsOutlineColor == value) return;
+    _desktopLyricsOutlineColor = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_desktopLyricsOutlineColorKey, value);
+  }
+
+  Future<void> setDesktopLyricsOutlineOpacity(double value) async {
+    final next = value.clamp(0.1, 1.0);
+    if ((_desktopLyricsOutlineOpacity - next).abs() < 0.01) return;
+    _desktopLyricsOutlineOpacity = next;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_desktopLyricsOutlineOpacityKey, next);
   }
 
   HotKey? _parseHotKey(String? jsonStr, String type) {

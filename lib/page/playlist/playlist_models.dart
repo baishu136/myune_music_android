@@ -40,7 +40,7 @@ class SongMetadataCacheEntry {
   // Bump this whenever metadata decoding changes. Older entries may contain
   // already-decoded mojibake and therefore cannot be repaired reliably from
   // their cached strings alone; they must be read again from the audio file.
-  static const int currentDecoderVersion = 2;
+  static const int currentDecoderVersion = 3;
 
   final String title;
   final String artist;

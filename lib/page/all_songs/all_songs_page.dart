@@ -32,7 +32,8 @@ class _AllSongsPageState extends State<AllSongsPage> {
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (context) => const SortDialog(),
+      builder: (context) =>
+          SortDialog(initialPreference: notifier.currentSortPreference),
     );
 
     if (result != null && context.mounted) {
@@ -119,7 +120,10 @@ class _AllSongsPageState extends State<AllSongsPage> {
                         // 根据是否在搜索，决定使用哪个列表
                         return notifier.isSearching
                             ? notifier.filteredSongs
-                            : notifier.allSongs;
+                            : notifier.pinnedFirst(
+                                PlaylistContentNotifier.libraryPinScope,
+                                notifier.allSongs,
+                              );
                       },
                       builder: (context, songs, _) {
                         // 检查是否仍在加载全部歌曲
@@ -167,24 +171,23 @@ class _AllSongsPageState extends State<AllSongsPage> {
                                         index: index,
                                         contextPlaylist:
                                             notifier.allSongsVirtualPlaylist,
-                                        enableContextMenu: false,
+                                        enableContextMenu: true,
                                         onTap: () {
-                                          if (notifier.isSearching) {
-                                            // 搜索只定位歌曲，播放上下文仍使用完整曲库。
-                                            notifier.playAllSongsSearchResult(
-                                              songs[index],
-                                            );
-                                          } else {
-                                            notifier.playSongFromAllSongs(
-                                              index,
-                                            );
-                                          }
+                                          notifier.playAllSongsSearchResult(
+                                            songs[index],
+                                          );
                                         },
                                       );
                                     },
                                     onReorderItem: (oldIndex, newIndex) {
                                       // 在搜索时，不执行排序操作
-                                      if (isSearching) return;
+                                      if (isSearching ||
+                                          notifier.hasPins(
+                                            PlaylistContentNotifier
+                                                .libraryPinScope,
+                                          )) {
+                                        return;
+                                      }
                                       notifier.reorderAllSongs(
                                         oldIndex,
                                         newIndex,

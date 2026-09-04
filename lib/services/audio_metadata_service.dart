@@ -35,15 +35,25 @@ Future<rust_audio.AudioInfo> readAudioInfoWithDart({
       getImage: options.needCover,
     );
     final riffInfo = _readRiffInfoTags(File(path));
+    final riffId3 = _readRiffId3TextTags(File(path));
     final cover = options.needCover
         ? _selectEmbeddedCover(metadata.pictures) ??
               _readRiffId3Cover(File(path))
         : null;
 
     return rust_audio.AudioInfo(
-      title: riffInfo?.title ?? _repairLegacyMetadataText(metadata.title),
-      artist: riffInfo?.artist ?? _repairLegacyMetadataText(metadata.artist),
-      album: riffInfo?.album ?? _repairLegacyMetadataText(metadata.album),
+      title: _selectPreferredMetadataText(
+        riffInfo?.title,
+        riffId3?.title ?? metadata.title,
+      ),
+      artist: _selectPreferredMetadataText(
+        riffInfo?.artist,
+        riffId3?.artist ?? metadata.artist,
+      ),
+      album: _selectPreferredMetadataText(
+        riffInfo?.album,
+        riffId3?.album ?? metadata.album,
+      ),
       cover: cover,
       lyrics: options.needLyrics ? metadata.lyrics : null,
       durationMs: options.needAudioProps && metadata.duration != null
@@ -230,10 +240,187 @@ String? _repairLegacyMetadataText(String? value) {
   return cleaned;
 }
 
+/// Chooses between RIFF/INFO and the regular tagged metadata without letting a
+/// lossy INFO field override a valid Unicode ID3 field.
+///
+/// Some WAV writers store the low byte of every UTF-16 code unit in LIST/INFO.
+/// Arabic U+0623, for example, becomes ASCII `#` (0x23), producing titles such
+/// as `#F4H/) ...`. Matching the bytes against the tagged value is deliberately
+/// stricter than a general "mojibake" heuristic, so legitimate ASCII INFO and
+/// GBK INFO values continue to take precedence.
+String? _selectPreferredMetadataText(String? riffValue, String? taggedValue) {
+  final riff = _repairLegacyMetadataText(riffValue);
+  final tagged = _repairLegacyMetadataText(taggedValue);
+  if (riff == null) return tagged;
+  if (tagged == null) return riff;
+  return _isLowByteTruncationOf(riff, tagged) ? tagged : riff;
+}
+
+bool _isLowByteTruncationOf(String lossy, String unicode) {
+  final lossyUnits = lossy.codeUnits;
+  final unicodeUnits = unicode.codeUnits;
+  if (lossyUnits.length != unicodeUnits.length || lossyUnits.isEmpty) {
+    return false;
+  }
+
+  var nonLatinUnits = 0;
+  for (var index = 0; index < unicodeUnits.length; index++) {
+    final source = unicodeUnits[index];
+    if (source > 0xff) nonLatinUnits++;
+    if (lossyUnits[index] != (source & 0xff)) return false;
+  }
+  return nonLatinUnits >= 2;
+}
+
 bool _containsCjk(String value) => value.runes.any(
   (rune) =>
       (rune >= 0x3400 && rune <= 0x4dbf) || (rune >= 0x4e00 && rune <= 0x9fff),
 );
+
+/// Reads common ID3 text frames from an ID3 chunk embedded in RIFF/WAVE.
+/// The package reader lets LIST/INFO override these frames, even when INFO is
+/// only a lossy low-byte copy of the real Unicode value.
+_RiffInfoTags? _readRiffId3TextTags(File file) {
+  RandomAccessFile? reader;
+  try {
+    reader = file.openSync();
+    final fileLength = reader.lengthSync();
+    if (fileLength < 12) return null;
+    final header = reader.readSync(12);
+    if (_fourCc(header, 0) != 'RIFF' || _fourCc(header, 8) != 'WAVE') {
+      return null;
+    }
+
+    var offset = 12;
+    while (offset + 8 <= fileLength) {
+      reader.setPositionSync(offset);
+      final chunkHeader = reader.readSync(8);
+      if (chunkHeader.length < 8) return null;
+      final chunkId = _fourCc(chunkHeader, 0);
+      final chunkSize = ByteData.sublistView(
+        chunkHeader,
+        4,
+        8,
+      ).getUint32(0, Endian.little);
+      final dataOffset = offset + 8;
+      final chunkEnd = dataOffset + chunkSize;
+      if (chunkEnd > fileLength) return null;
+
+      if ((chunkId == 'ID3 ' || chunkId == 'id3 ' || chunkId == 'ID32') &&
+          chunkSize >= 10 &&
+          chunkSize <= 4 * 1024 * 1024) {
+        reader.setPositionSync(dataOffset);
+        return _parseId3TextTags(reader.readSync(chunkSize));
+      }
+
+      final nextOffset = chunkEnd + (chunkSize.isOdd ? 1 : 0);
+      if (nextOffset <= offset || nextOffset > fileLength) return null;
+      offset = nextOffset;
+    }
+  } catch (_) {
+    return null;
+  } finally {
+    reader?.closeSync();
+  }
+  return null;
+}
+
+_RiffInfoTags? _parseId3TextTags(Uint8List bytes) {
+  if (bytes.length < 10 || _fourCc(bytes, 0).substring(0, 3) != 'ID3') {
+    return null;
+  }
+  final majorVersion = bytes[3];
+  if (majorVersion != 3 && majorVersion != 4) return null;
+  final declaredSize =
+      ((bytes[6] & 0x7f) << 21) |
+      ((bytes[7] & 0x7f) << 14) |
+      ((bytes[8] & 0x7f) << 7) |
+      (bytes[9] & 0x7f);
+  final tagEnd = (10 + declaredSize).clamp(10, bytes.length);
+
+  String? title;
+  String? artist;
+  String? album;
+  var offset = 10;
+  while (offset + 10 <= tagEnd) {
+    final frameId = _fourCc(bytes, offset);
+    if (frameId.codeUnits.every((unit) => unit == 0)) break;
+    final frameSize = majorVersion == 4
+        ? ((bytes[offset + 4] & 0x7f) << 21) |
+              ((bytes[offset + 5] & 0x7f) << 14) |
+              ((bytes[offset + 6] & 0x7f) << 7) |
+              (bytes[offset + 7] & 0x7f)
+        : ByteData.sublistView(
+            bytes,
+            offset + 4,
+            offset + 8,
+          ).getUint32(0, Endian.big);
+    final valueOffset = offset + 10;
+    final valueEnd = valueOffset + frameSize;
+    if (frameSize <= 0 || valueEnd > tagEnd) break;
+
+    if (frameId == 'TIT2' || frameId == 'TPE1' || frameId == 'TALB') {
+      final value = _decodeId3Text(bytes.sublist(valueOffset, valueEnd));
+      switch (frameId) {
+        case 'TIT2':
+          title ??= value;
+          break;
+        case 'TPE1':
+          artist ??= value;
+          break;
+        case 'TALB':
+          album ??= value;
+          break;
+      }
+    }
+    offset = valueEnd;
+  }
+
+  final tags = _RiffInfoTags(title: title, artist: artist, album: album);
+  return tags.isEmpty ? null : tags;
+}
+
+String? _decodeId3Text(Uint8List payload) {
+  if (payload.length < 2) return null;
+  final encoding = payload.first;
+  final data = payload.sublist(1);
+  String value;
+  switch (encoding) {
+    case 0:
+      value = latin1.decode(data);
+      break;
+    case 1:
+      var endian = Endian.big;
+      var offset = 0;
+      if (data.length >= 2 && data[0] == 0xff && data[1] == 0xfe) {
+        endian = Endian.little;
+        offset = 2;
+      } else if (data.length >= 2 && data[0] == 0xfe && data[1] == 0xff) {
+        offset = 2;
+      }
+      value = _decodeUtf16(data, offset, endian);
+      break;
+    case 2:
+      value = _decodeUtf16(data, 0, Endian.big);
+      break;
+    case 3:
+      value = utf8.decode(data, allowMalformed: true);
+      break;
+    default:
+      return null;
+  }
+  final cleaned = value.replaceAll('\u0000', '').trim();
+  return cleaned.isEmpty ? null : cleaned;
+}
+
+String _decodeUtf16(Uint8List bytes, int offset, Endian endian) {
+  final units = <int>[];
+  final data = ByteData.sublistView(bytes);
+  for (var index = offset; index + 1 < bytes.length; index += 2) {
+    units.add(data.getUint16(index, endian));
+  }
+  return String.fromCharCodes(units);
+}
 
 /// Reads APIC artwork from an ID3 chunk embedded in a RIFF/WAVE container.
 ///

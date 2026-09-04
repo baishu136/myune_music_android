@@ -214,6 +214,10 @@ class _AlbumListState extends State<AlbumList> {
 
                           // 拼音排序
                           sortAlbums(albumNames);
+                          albumNames = notifier.pinnedNamesFirst(
+                            PlaylistContentNotifier.albumsPinScope,
+                            albumNames,
+                          );
 
                           if (albumNames.isEmpty) {
                             return Center(
@@ -228,90 +232,125 @@ class _AlbumListState extends State<AlbumList> {
                             silkyScrollDuration: ScrollConfig.duration,
                             scrollSpeed: ScrollConfig.speed,
                             animationCurve: ScrollConfig.curve,
-                            builder: (context, controller, physics, _) =>
-                                GridView.builder(
-                                  controller: controller,
-                                  physics: physics,
-                                  padding: const EdgeInsets.fromLTRB(
-                                    16,
-                                    0,
-                                    16,
-                                    8,
+                            builder: (context, controller, physics, _) => GridView.builder(
+                              controller: controller,
+                              physics: physics,
+                              padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                              gridDelegate:
+                                  const SliverGridDelegateWithMaxCrossAxisExtent(
+                                    maxCrossAxisExtent: 200,
+                                    childAspectRatio: 0.8,
+                                    crossAxisSpacing: 16,
+                                    mainAxisSpacing: 16,
                                   ),
-                                  gridDelegate:
-                                      const SliverGridDelegateWithMaxCrossAxisExtent(
-                                        maxCrossAxisExtent: 200,
-                                        childAspectRatio: 0.8,
-                                        crossAxisSpacing: 16,
-                                        mainAxisSpacing: 16,
-                                      ),
-                                  itemCount: albumNames.length,
-                                  itemBuilder: (context, index) {
-                                    final albumName = albumNames[index];
-                                    final songs = albums[albumName]!;
-                                    final representativeSong = songs.firstWhere(
-                                      (s) => s.albumArt != null,
-                                      orElse: () => songs.first,
-                                    );
-                                    final albumArt =
-                                        representativeSong.albumArt;
+                              itemCount: albumNames.length,
+                              itemBuilder: (context, index) {
+                                final albumName = albumNames[index];
+                                final isPinned = notifier.isPinned(
+                                  PlaylistContentNotifier.albumsPinScope,
+                                  albumName,
+                                );
+                                final songs = albums[albumName]!;
+                                final representativeSong = songs.firstWhere(
+                                  (s) => s.albumArt != null,
+                                  orElse: () => songs.first,
+                                );
+                                final albumArt = representativeSong.albumArt;
 
-                                    return InkWell(
-                                      onTap: () {
-                                        if (_scrollController.hasClients) {
-                                          _savedScrollOffset =
-                                              _scrollController.offset;
-                                        }
-                                        notifier.setActiveAlbumView(albumName);
-                                      },
-                                      borderRadius: BorderRadius.circular(12.0),
-                                      child: Card(
-                                        clipBehavior: Clip.antiAlias,
-                                        child: Column(
-                                          crossAxisAlignment:
-                                              CrossAxisAlignment.start,
-                                          children: [
-                                            Expanded(
-                                              child: _AlbumCoverTile(
+                                return InkWell(
+                                  onTap: () {
+                                    if (_scrollController.hasClients) {
+                                      _savedScrollOffset =
+                                          _scrollController.offset;
+                                    }
+                                    notifier.setActiveAlbumView(albumName);
+                                  },
+                                  borderRadius: BorderRadius.circular(12.0),
+                                  onLongPress: () => _toggleAlbumPin(
+                                    context,
+                                    notifier,
+                                    albumName,
+                                  ),
+                                  child: Card(
+                                    clipBehavior: Clip.antiAlias,
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Expanded(
+                                          child: Stack(
+                                            fit: StackFit.expand,
+                                            children: [
+                                              _AlbumCoverTile(
                                                 filePath:
                                                     representativeSong.filePath,
                                                 albumArt: albumArt,
                                               ),
-                                            ),
-                                            Padding(
-                                              padding: const EdgeInsets.all(
-                                                8.0,
-                                              ),
-                                              child: Text(
-                                                albumName,
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.titleMedium,
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                              ),
-                                            ),
-                                            Padding(
-                                              padding:
-                                                  const EdgeInsets.symmetric(
-                                                    horizontal: 8.0,
+                                              if (isPinned)
+                                                Positioned(
+                                                  top: 8,
+                                                  right: 8,
+                                                  child: IgnorePointer(
+                                                    child: DecoratedBox(
+                                                      decoration: BoxDecoration(
+                                                        color: Theme.of(context)
+                                                            .colorScheme
+                                                            .surface
+                                                            .withValues(
+                                                              alpha: 0.84,
+                                                            ),
+                                                        shape: BoxShape.circle,
+                                                      ),
+                                                      child: Padding(
+                                                        padding:
+                                                            const EdgeInsets.all(
+                                                              7,
+                                                            ),
+                                                        child: Icon(
+                                                          Icons.push_pin,
+                                                          size: 19,
+                                                          color: Theme.of(
+                                                            context,
+                                                          ).colorScheme.primary,
+                                                        ),
+                                                      ),
+                                                    ),
                                                   ),
-                                              child: Text(
-                                                '共 ${songs.length} 首歌曲',
-                                                maxLines: 1,
-                                                overflow: TextOverflow.ellipsis,
-                                                style: Theme.of(
-                                                  context,
-                                                ).textTheme.bodySmall,
-                                              ),
-                                            ),
-                                            const SizedBox(height: 8),
-                                          ],
+                                                ),
+                                            ],
+                                          ),
                                         ),
-                                      ),
-                                    );
-                                  },
-                                ),
+                                        Padding(
+                                          padding: const EdgeInsets.all(8.0),
+                                          child: Text(
+                                            albumName,
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.titleMedium,
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                          ),
+                                        ),
+                                        Padding(
+                                          padding: const EdgeInsets.symmetric(
+                                            horizontal: 8.0,
+                                          ),
+                                          child: Text(
+                                            '共 ${songs.length} 首歌曲',
+                                            maxLines: 1,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.bodySmall,
+                                          ),
+                                        ),
+                                        const SizedBox(height: 8),
+                                      ],
+                                    ),
+                                  ),
+                                );
+                              },
+                            ),
                           );
                         },
                       ),
@@ -321,6 +360,34 @@ class _AlbumListState extends State<AlbumList> {
               ],
             ),
     );
+  }
+
+  Future<void> _toggleAlbumPin(
+    BuildContext context,
+    PlaylistContentNotifier notifier,
+    String album,
+  ) async {
+    final pinned = notifier.isPinned(
+      PlaylistContentNotifier.albumsPinScope,
+      album,
+    );
+    final action = await showModalBottomSheet<bool>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: ListTile(
+          leading: Icon(pinned ? Icons.push_pin_outlined : Icons.push_pin),
+          title: Text(pinned ? '取消置顶' : '置顶专辑'),
+          onTap: () => Navigator.pop(sheetContext, true),
+        ),
+      ),
+    );
+    if (action == true) {
+      await notifier.togglePinned(
+        PlaylistContentNotifier.albumsPinScope,
+        album,
+      );
+    }
   }
 }
 

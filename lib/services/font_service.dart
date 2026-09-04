@@ -9,6 +9,13 @@ import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_fonts/system_fonts.dart';
 
+class FontFileReference {
+  const FontFileReference({required this.path, required this.collectionIndex});
+
+  final String path;
+  final int collectionIndex;
+}
+
 /// 字体元数据类，用于存储单个字体的基本信息
 class FontMeta {
   /// 字体文件名
@@ -22,6 +29,9 @@ class FontMeta {
 
   /// 字体文件在系统中的完整路径
   final String filePath;
+
+  /// Index inside a TrueType Collection. Standalone TTF/OTF fonts use zero.
+  final int collectionIndex;
 
   /// 标记字体是否已被加载到内存中
   bool isLoaded;
@@ -38,6 +48,7 @@ class FontMeta {
     required this.fontFamily,
     required this.displayName,
     required this.filePath,
+    this.collectionIndex = 0,
     this.isLoaded = false,
   });
 
@@ -47,6 +58,7 @@ class FontMeta {
     'fontFamily': fontFamily,
     'displayName': displayName,
     'filePath': filePath,
+    'collectionIndex': collectionIndex,
   };
 
   /// 将JSON对象转换回FontMeta实例，用于从缓存恢复
@@ -55,6 +67,7 @@ class FontMeta {
     fontFamily: json['fontFamily'] as String,
     displayName: json['displayName'] as String,
     filePath: json['filePath'] as String,
+    collectionIndex: (json['collectionIndex'] as num?)?.toInt() ?? 0,
   );
 }
 
@@ -81,7 +94,7 @@ class FontService {
   static const _cacheVersionKey = 'font_meta_cache_version';
 
   /// 当前缓存版本号，用于缓存失效管理
-  static const _cacheVersion = 4;
+  static const _cacheVersion = 5;
 
   /// 系统字体库实例，用于访问系统字体
   final SystemFonts _systemFonts = SystemFonts();
@@ -290,6 +303,23 @@ class FontService {
     return meta.isLoaded;
   }
 
+  /// Returns the concrete font file used by Flutter so Android's native
+  /// desktop-lyrics overlay can render with the same custom typeface.
+  Future<FontFileReference?> resolveFontFile(String fontName) async {
+    if (fontName == 'Misans') return null;
+    final fonts = await scanFonts();
+    for (final font in fonts) {
+      if (font.fileName != fontName || font.filePath.isEmpty) continue;
+      if (await File(font.filePath).exists()) {
+        return FontFileReference(
+          path: font.filePath,
+          collectionIndex: font.collectionIndex,
+        );
+      }
+    }
+    return null;
+  }
+
   /// 分批处理字体文件并生成元数据
   ///
   /// [entries] 字体文件名到路径的映射条目列表
@@ -331,6 +361,7 @@ class FontService {
                   fontFamily: familyName,
                   displayName: _buildDisplayName(familyName, familyName),
                   filePath: filePath,
+                  collectionIndex: idx,
                 );
               }
             }
