@@ -202,6 +202,3 @@ Windows 也可直接执行 `powershell -ExecutionPolicy Bypass -File tool/build_
 * 相关许可协议请查阅：[MiSans 字体知识产权使用许可协议](https://hyperos.mi.com/font-download/MiSans%E5%AD%97%E4%BD%93%E7%9F%A5%E8%AF%86%E4%BA%A7%E6%9D%83%E8%AE%B8%E5%8F%AF%E5%8D%8F%E8%AE%AE.pdf)
 * MiSans 官网：[https://hyperos.mi.com/font/](https://hyperos.mi.com/font/)
 
-## Star History Chart
-
-[![Star History Chart](https://api.star-history.com/svg?repos=xiaobaimc/myune_music&type=Date)](https://star-history.com/#xiaobaimc/myune_music&Date)
