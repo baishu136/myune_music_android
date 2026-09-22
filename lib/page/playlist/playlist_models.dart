@@ -106,11 +106,12 @@ class Playlist {
     this.isDefault = false,
     List<String>? songFilePaths,
     this.currentPlayingIndex,
-    this.songs,
+    songs,
     this.isFolderBased = false,
     List<String>? folderPaths,
   }) : id = id ?? const Uuid().v4(),
        songFilePaths = songFilePaths ?? [],
+       songs = songs == null ? null : List<Song>.from(songs),
        folderPaths = folderPaths ?? [];
 
   Map<String, dynamic> toJson() {
