@@ -1,8 +1,30 @@
-import 'package:flutter_test/flutter_test.dart';
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/widgets/now_playing_cover_hero.dart';
 
 void main() {
+  test('playback entry uses the requested transition duration', () {
+    expect(
+      nowPlayingRouteTransitionDuration,
+      const Duration(milliseconds: 620),
+    );
+  });
+
+  test('available cover remains visible before prepared artwork arrives', () {
+    final fallback = Uint8List.fromList([1, 2, 3]);
+    final prepared = Uint8List.fromList([4, 5, 6]);
+    expect(
+      chooseNowPlayingArtwork(prepared: null, fallback: fallback),
+      same(fallback),
+    );
+    expect(
+      chooseNowPlayingArtwork(prepared: prepared, fallback: fallback),
+      same(prepared),
+    );
+  });
+
   test('cover Hero is disabled whenever lyrics are visible', () {
     expect(
       shouldEnableNowPlayingCoverHero(

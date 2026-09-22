@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
+import '../../../models/fluid_background_state.dart';
 import '../../../services/custom_theme_image_service.dart';
 import '../custom_theme_background_page.dart';
 import '../settings_provider.dart';
@@ -85,7 +86,72 @@ class _AlbumArtFollowCard extends StatelessWidget {
             value: settings.followAlbumArtOnPlayback,
             onChanged: settings.setFollowAlbumArtOnPlayback,
           ),
-          if (settings.followAlbumArtOnPlayback)
+          if (settings.followAlbumArtOnPlayback) ...[
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 8),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '播放页背景样式',
+                    style: Theme.of(context).textTheme.labelLarge,
+                  ),
+                  const SizedBox(height: 8),
+                  SegmentedButton<PlaybackArtworkBackgroundStyle>(
+                    segments: const [
+                      ButtonSegment(
+                        value: PlaybackArtworkBackgroundStyle.blurred,
+                        label: Text('模糊封面'),
+                        icon: Icon(Icons.blur_on_outlined),
+                      ),
+                      ButtonSegment(
+                        value: PlaybackArtworkBackgroundStyle.fluid,
+                        label: Text('流体色彩'),
+                        icon: Icon(Icons.gradient_outlined),
+                      ),
+                    ],
+                    selected: {settings.playbackArtworkBackgroundStyle},
+                    onSelectionChanged: (selection) => settings
+                        .setPlaybackArtworkBackgroundStyle(selection.first),
+                  ),
+                  if (settings.playbackArtworkBackgroundStyle ==
+                      PlaybackArtworkBackgroundStyle.fluid) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      '从封面提取色彩缓慢流动；减少动态效果、页面切换或应用进入后台时自动静止。',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const SizedBox(height: 10),
+                    DropdownButtonFormField<FluidBackgroundQuality>(
+                      initialValue: settings.fluidBackgroundQuality,
+                      decoration: const InputDecoration(
+                        labelText: '流体背景质量',
+                        border: OutlineInputBorder(),
+                      ),
+                      items: const [
+                        DropdownMenuItem(
+                          value: FluidBackgroundQuality.automatic,
+                          child: Text('自动（推荐）'),
+                        ),
+                        DropdownMenuItem(
+                          value: FluidBackgroundQuality.powerSaving,
+                          child: Text('省电'),
+                        ),
+                        DropdownMenuItem(
+                          value: FluidBackgroundQuality.smooth,
+                          child: Text('流畅'),
+                        ),
+                      ],
+                      onChanged: (value) {
+                        if (value != null) {
+                          settings.setFluidBackgroundQuality(value);
+                        }
+                      },
+                    ),
+                  ],
+                ],
+              ),
+            ),
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
               child: _BackgroundTuningControls(
@@ -93,8 +159,12 @@ class _AlbumArtFollowCard extends StatelessWidget {
                 blur: settings.playbackAlbumArtBackgroundBlur,
                 onDimChanged: settings.setPlaybackAlbumArtBackgroundDim,
                 onBlurChanged: settings.setPlaybackAlbumArtBackgroundBlur,
+                showBlur:
+                    settings.playbackArtworkBackgroundStyle !=
+                    PlaybackArtworkBackgroundStyle.fluid,
               ),
             ),
+          ],
         ],
       ),
     );
@@ -107,38 +177,44 @@ class _BackgroundTuningControls extends StatelessWidget {
     required this.blur,
     required this.onDimChanged,
     required this.onBlurChanged,
+    this.showBlur = true,
   });
 
   final double dim;
   final double blur;
   final ValueChanged<double> onDimChanged;
   final ValueChanged<double> onBlurChanged;
+  final bool showBlur;
 
   @override
   Widget build(BuildContext context) {
     return Column(
       children: [
-        Row(
-          children: [
-            const Icon(Icons.contrast, size: 20),
-            const SizedBox(width: 8),
-            const Text('遮罩强度'),
-            Expanded(
-              child: Slider(
-                value: dim,
-                min: 0.2,
-                max: 0.9,
-                divisions: 14,
-                label: '${(dim * 100).round()}%',
-                onChanged: onDimChanged,
+        if (showBlur)
+          Row(
+            children: [
+              const Icon(Icons.contrast, size: 20),
+              const SizedBox(width: 8),
+              const Text('遮罩强度'),
+              Expanded(
+                child: Slider(
+                  value: dim,
+                  min: 0.2,
+                  max: 0.9,
+                  divisions: 14,
+                  label: '${(dim * 100).round()}%',
+                  onChanged: onDimChanged,
+                ),
               ),
-            ),
-            SizedBox(
-              width: 40,
-              child: Text('${(dim * 100).round()}%', textAlign: TextAlign.end),
-            ),
-          ],
-        ),
+              SizedBox(
+                width: 40,
+                child: Text(
+                  '${(dim * 100).round()}%',
+                  textAlign: TextAlign.end,
+                ),
+              ),
+            ],
+          ),
         Row(
           children: [
             const Icon(Icons.blur_on_outlined, size: 20),

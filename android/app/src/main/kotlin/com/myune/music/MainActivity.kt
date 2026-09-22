@@ -3,6 +3,7 @@ package com.myune.music
 import android.app.Activity
 import android.Manifest
 import android.content.ContentValues
+import android.content.ComponentCallbacks2
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -365,6 +366,20 @@ class MainActivity : FlutterActivity() {
             target.delete()
             throw error
         }
+    }
+
+    override fun onTrimMemory(level: Int) {
+        // UI_HIDDEN reports visibility, not memory scarcity. Flutter treats
+        // every level >= RUNNING_LOW as pressure and discards decoded artwork.
+        // Preserve bounded caches on an ordinary app switch, but forward every
+        // real pressure level unchanged (including RUNNING_LOW/CRITICAL).
+        super.onTrimMemory(
+            if (level == ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+                ComponentCallbacks2.TRIM_MEMORY_RUNNING_MODERATE
+            } else {
+                level
+            },
+        )
     }
 
     override fun onResume() {

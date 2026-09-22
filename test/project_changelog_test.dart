@@ -7,7 +7,7 @@ void main() {
   test(
     'changelog covers the first Android release through the current build',
     () {
-      expect(projectChangelogEntries.first.version, '0.99（0.9.9-android.244）');
+      expect(projectChangelogEntries.first.version, '0.9.9-android.325');
       expect(projectChangelogEntries.last.version, '0.9.2-android.1—3');
       expect(projectChangelogEntries.last.date, '2026-08-08');
       expect(projectReleaseCount, 16);
@@ -32,7 +32,9 @@ void main() {
   test(
     '0.99 contains every post-129 change under the three allowed groups',
     () {
-      final current = projectChangelogEntries.first;
+      final current = projectChangelogEntries.firstWhere(
+        (entry) => entry.version == '0.99（0.9.9-android.244）',
+      );
       expect(current.features, isNotEmpty);
       expect(current.fixes, isNotEmpty);
       expect(current.optimizations, isNotEmpty);
@@ -51,6 +53,12 @@ void main() {
       multiLine: true,
     ).allMatches(notes).length;
     expect(headings, ['新功能', '修复', '优化']);
-    expect(bulletCount, projectChangelogEntries.first.allItems.length);
+    expect(
+      bulletCount,
+      projectChangelogEntries
+          .firstWhere((entry) => entry.version == '0.99（0.9.9-android.244）')
+          .allItems
+          .length,
+    );
   });
 }

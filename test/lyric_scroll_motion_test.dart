@@ -39,4 +39,19 @@ void main() {
     expect(motion.offset, closeTo(900, .4));
     expect(motion.velocity, closeTo(0, 4));
   });
+
+  test('motion dynamics can slow large typography without resetting state', () {
+    final motion = LyricScrollMotion()..sync(40, viewportExtent: 300);
+    motion.retarget(180);
+    motion.advance(1 / 60);
+    final offset = motion.offset;
+    final velocity = motion.velocity;
+
+    motion.updateDynamics(frequency: 7.2);
+
+    expect(motion.offset, offset);
+    expect(motion.velocity, velocity);
+    expect(motion.target, 180);
+    expect(motion.frequency, 7.2);
+  });
 }

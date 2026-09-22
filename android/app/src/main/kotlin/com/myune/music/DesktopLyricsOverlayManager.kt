@@ -109,6 +109,8 @@ class DesktopLyricsOverlayManager(
     private var hasContent = false
     private var lyricColor = Color.rgb(0, 169, 214)
     private var lyricSize = 22f
+    private var lyricOpacity = 1f
+    private var lyricFontWeight = 600
     private var lyricFontPath = ""
     private var lyricFontCollectionIndex = 0
     private var lyricTypeface: Typeface = Typeface.DEFAULT
@@ -116,6 +118,8 @@ class DesktopLyricsOverlayManager(
     private var outlineWidth = 1.15f
     private var outlineColor = Color.WHITE
     private var outlineOpacity = 1f
+    private var visibilityGeneration = 0
+    private var closing = false
 
     private val expandedBackgroundColor = Color.argb(128, 48, 48, 48)
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -128,6 +132,9 @@ class DesktopLyricsOverlayManager(
 
     fun showOrUpdate(values: Map<String, Any?>) {
         if (!Settings.canDrawOverlays(context)) return
+        // A final Flutter sync can arrive after the close event has started.
+        // Never let that stale update reattach a window that is fading out.
+        if (closing) return
         if (root == null) createOverlay()
         hasContent = true
         update(values)
@@ -143,6 +150,10 @@ class DesktopLyricsOverlayManager(
         values["isLocked"]?.let { locked = it as? Boolean ?: locked }
         (values["color"] as? Number)?.let { lyricColor = it.toInt() }
         (values["fontSize"] as? Number)?.let { lyricSize = it.toFloat().coerceIn(16f, 38f) }
+        (values["opacity"] as? Number)?.let { lyricOpacity = it.toFloat().coerceIn(0.2f, 1f) }
+        (values["fontWeight"] as? Number)?.let {
+            lyricFontWeight = ((it.toInt().coerceIn(300, 900) + 50) / 100) * 100
+        }
         val incomingFontPath = values["fontPath"]?.toString() ?: lyricFontPath
         val incomingFontIndex =
             (values["fontCollectionIndex"] as? Number)?.toInt()?.coerceAtLeast(0)
@@ -159,10 +170,18 @@ class DesktopLyricsOverlayManager(
         applyVisualState(refreshWindow = wasLocked != locked)
     }
 
-    fun hide() {
+    fun hide(onHidden: (() -> Unit)? = null) {
+        closing = true
         hasContent = false
         cancelAutoCollapse()
-        detach()
+        detach(animated = true, onDetached = onHidden)
+    }
+
+    fun dispose() {
+        closing = true
+        hasContent = false
+        cancelAutoCollapse()
+        detach(animated = false)
     }
 
     fun setSuppressed(value: Boolean) {
@@ -170,7 +189,7 @@ class DesktopLyricsOverlayManager(
         suppressed = value
         if (value) {
             collapseToLyricsOnly()
-            detach()
+            detach(animated = true)
         } else {
             attachIfAllowed()
         }
@@ -203,15 +222,63 @@ class DesktopLyricsOverlayManager(
 
     private fun attachIfAllowed() {
         val view = root ?: return
-        if (suppressed || !hasContent || view.parent != null || !Settings.canDrawOverlays(context)) {
+        if (suppressed || !hasContent || !Settings.canDrawOverlays(context)) {
             return
         }
-        windowManager.addView(view, params)
+        val generation = ++visibilityGeneration
+        view.animate().cancel()
+        params?.flags = windowFlags()
+        if (view.parent == null) {
+            view.visibility = View.VISIBLE
+            view.alpha = 0f
+            windowManager.addView(view, params)
+        } else {
+            view.visibility = View.VISIBLE
+            refreshLayout()
+        }
+        view.animate()
+            .alpha(1f)
+            .setDuration(FADE_IN_DURATION_MS)
+            .withEndAction {
+                if (generation == visibilityGeneration) view.alpha = 1f
+            }
+            .start()
     }
 
-    private fun detach() {
-        val view = root ?: return
-        if (view.parent != null) windowManager.removeView(view)
+    private fun detach(animated: Boolean, onDetached: (() -> Unit)? = null) {
+        val view = root
+        if (view == null) {
+            onDetached?.invoke()
+            return
+        }
+        val generation = ++visibilityGeneration
+        view.animate().cancel()
+        params?.flags = windowFlags()
+        refreshLayout()
+        if (view.parent == null) {
+            onDetached?.invoke()
+            return
+        }
+        fun remove() {
+            if (generation != visibilityGeneration) return
+            // Hide the view before detaching its Surface. Some Android skins
+            // can otherwise composite the last opaque buffer for one frame.
+            view.visibility = View.INVISIBLE
+            if (view.parent != null) windowManager.removeViewImmediate(view)
+            // Keep the detached view transparent. Restoring alpha immediately
+            // after removeView can race WindowManager's surface removal and
+            // expose one fully opaque frame before the window disappears.
+            onDetached?.invoke()
+        }
+        if (!animated) {
+            remove()
+            return
+        }
+        view.animate()
+            .alpha(0f)
+            .setDuration(FADE_OUT_DURATION_MS)
+            .withEndAction { remove() }
+            .start()
     }
 
     private fun createOverlay() {
@@ -390,22 +457,27 @@ class DesktopLyricsOverlayManager(
             lyricView?.setAutoSizeTextTypeWithDefaults(TextView.AUTO_SIZE_TEXT_TYPE_NONE)
         }
         lyricView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, lyricSize)
-        lyricView?.typeface = lyricTypeface
+        lyricView?.alpha = lyricOpacity
+        lyricView?.typeface = weightedTypeface(lyricTypeface, lyricFontWeight)
         playButton?.setImageResource(
             if (playing) R.drawable.ic_desktop_lyrics_pause else R.drawable.ic_desktop_lyrics_play,
         )
         root?.background = if (expanded) roundedBackground(expandedBackgroundColor) else null
-        params?.let { lp ->
-            val base = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-            var flags = if (locked) {
-                base or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-            } else {
-                base
-            }
-            lp.flags = flags
-        }
+        params?.flags = windowFlags()
         if (refreshWindow) refreshLayout()
+    }
+
+    private fun windowFlags(): Int {
+        val base = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
+        // FLAG_NOT_TOUCHABLE passes every pointer event to the application
+        // below the overlay. It applies while locked and during fade-out so a
+        // disappearing lyric never leaves a temporary invisible hit target.
+        return if (locked || suppressed || !hasContent) {
+            base or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
+        } else {
+            base
+        }
     }
 
     private fun loadLyricTypeface(path: String, collectionIndex: Int): Typeface {
@@ -425,6 +497,13 @@ class DesktopLyricsOverlayManager(
             Typeface.DEFAULT
         }
     }
+
+    private fun weightedTypeface(base: Typeface, weight: Int): Typeface =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            Typeface.create(base, weight.coerceIn(300, 900), false)
+        } else {
+            Typeface.create(base, if (weight >= 600) Typeface.BOLD else Typeface.NORMAL)
+        }
 
     private fun refreshLayout() {
         val view = root ?: return
@@ -483,5 +562,7 @@ class DesktopLyricsOverlayManager(
 
     private companion object {
         const val AUTO_COLLAPSE_DELAY_MS = 6_000L
+        const val FADE_IN_DURATION_MS = 180L
+        const val FADE_OUT_DURATION_MS = 160L
     }
 }

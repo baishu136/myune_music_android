@@ -18,11 +18,16 @@ void main() {
 
       expect(settings.lyricAlignment, TextAlign.center);
       expect(settings.enableLyricElasticScroll, isFalse);
+      expect(settings.enableKaraokeLyrics, isTrue);
+      expect(settings.karaokeLyricsMode, KaraokeLyricsMode.timedOnly);
+      expect(settings.sleepTimerFinishCurrentTrack, isFalse);
       expect(settings.enableLyricBlur, isFalse);
       expect(settings.highlightActiveLyric, isFalse);
       expect(settings.lyricFontWeightIndex, 5);
       expect(settings.lyricFontWeight, FontWeight.w600);
       expect(settings.desktopLyricsOutlineEnabled, isFalse);
+      expect(settings.desktopLyricsOpacity, 1.0);
+      expect(settings.desktopLyricsFontWeight, 600);
       expect(settings.desktopLyricsOutlineWidth, 1.15);
       expect(settings.desktopLyricsOutlineColor, 0xFFFFFFFF);
       expect(settings.desktopLyricsOutlineOpacity, 1.0);
@@ -34,12 +39,17 @@ void main() {
     SharedPreferences.setMockInitialValues({
       'lyricAlignment': TextAlign.right.toString(),
       'enableLyricElasticScroll': true,
+      'enableKaraokeLyrics': false,
+      'karaokeLyricsMode': 'all',
+      'sleepTimerFinishCurrentTrack': true,
       'enableLyricBlur': true,
       'highlightActiveLyric': true,
       'lyricFontWeight': 7,
       'duetLyricLayout': true,
       'lyricBlurStrength': 3.5,
       'desktopLyricsOutlineEnabled': true,
+      'desktopLyricsOpacity': 0.55,
+      'desktopLyricsFontWeight': 800,
       'desktopLyricsOutlineWidth': 2.4,
       'desktopLyricsOutlineColor': 0xFF00AAFF,
       'desktopLyricsOutlineOpacity': 0.6,
@@ -50,11 +60,16 @@ void main() {
 
     expect(settings.lyricAlignment, TextAlign.right);
     expect(settings.enableLyricElasticScroll, isTrue);
+    expect(settings.enableKaraokeLyrics, isFalse);
+    expect(settings.karaokeLyricsMode, KaraokeLyricsMode.all);
+    expect(settings.sleepTimerFinishCurrentTrack, isTrue);
     expect(settings.enableLyricBlur, isTrue);
     expect(settings.highlightActiveLyric, isTrue);
     expect(settings.lyricFontWeightIndex, 7);
     expect(settings.lyricFontWeight, FontWeight.w800);
     expect(settings.desktopLyricsOutlineEnabled, isTrue);
+    expect(settings.desktopLyricsOpacity, 0.55);
+    expect(settings.desktopLyricsFontWeight, 800);
     expect(settings.desktopLyricsOutlineWidth, 2.4);
     expect(settings.desktopLyricsOutlineColor, 0xFF00AAFF);
     expect(settings.desktopLyricsOutlineOpacity, 0.6);
@@ -65,6 +80,21 @@ void main() {
     final prefs = await SharedPreferences.getInstance();
     expect(prefs.containsKey('duetLyricLayout'), isFalse);
     expect(prefs.containsKey('lyricBlurStrength'), isFalse);
+  });
+
+  test('karaoke and sleep timer preferences are persisted', () async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = SettingsProvider();
+    await settings.initializationFuture;
+
+    await settings.setEnableKaraokeLyrics(false);
+    await settings.setKaraokeLyricsMode(KaraokeLyricsMode.all);
+    await settings.setSleepTimerFinishCurrentTrack(true);
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getBool('enableKaraokeLyrics'), isFalse);
+    expect(prefs.getString('karaokeLyricsMode'), 'all');
+    expect(prefs.getBool('sleepTimerFinishCurrentTrack'), isTrue);
   });
 
   test('desktop lyric custom colors keep five newest unique colors', () async {
@@ -99,5 +129,20 @@ void main() {
       'ff000004',
       'ff000002',
     ]);
+  });
+
+  test('desktop lyric opacity and weight are clamped and persisted', () async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = SettingsProvider();
+    await settings.initializationFuture;
+
+    await settings.setDesktopLyricsOpacity(0.05);
+    await settings.setDesktopLyricsFontWeight(765);
+
+    expect(settings.desktopLyricsOpacity, 0.2);
+    expect(settings.desktopLyricsFontWeight, 800);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getDouble('desktopLyricsOpacity'), 0.2);
+    expect(prefs.getInt('desktopLyricsFontWeight'), 800);
   });
 }

@@ -33,6 +33,7 @@ import '../../services/artwork_thumbnail_service.dart';
 import '../../services/cover_override_service.dart';
 import '../../services/global_hotkey_manager.dart';
 import '../../services/interaction_performance_controller.dart';
+import '../../services/foreground_lifecycle.dart';
 import '../../services/search_service.dart';
 import '../../widgets/artwork_image.dart';
 
@@ -46,6 +47,12 @@ double playbackSleepFadeFactor(
       .clamp(0.0, 1.0)
       .toDouble();
 }
+
+bool shouldDelayPlaybackSleepUntilTrackEnd({
+  required bool enabled,
+  required bool hasPlaybackIntent,
+  required bool hasCurrentSong,
+}) => enabled && hasPlaybackIntent && hasCurrentSong;
 
 enum SortCriterion {
   title,
@@ -752,8 +759,12 @@ class PlaylistContentNotifier extends ChangeNotifier
   Duration _playbackSleepFadeWindow = const Duration(seconds: 30);
   double _playbackSleepFadeFactor = 1;
   int _playbackSleepTimerGeneration = 0;
+  bool _playbackSleepWaitingForTrackEnd = false;
 
   DateTime? get playbackSleepTimerDeadline => _playbackSleepTimerDeadline;
+  bool get playbackSleepWaitingForTrackEnd => _playbackSleepWaitingForTrackEnd;
+  bool get hasPlaybackSleepTimer =>
+      _playbackSleepTimerDeadline != null || _playbackSleepWaitingForTrackEnd;
 
   Duration? get playbackSleepTimerRemaining {
     final deadline = _playbackSleepTimerDeadline;
@@ -770,6 +781,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     _playbackSleepTimer?.cancel();
     _playbackSleepFadeStartTimer?.cancel();
     _playbackSleepFadeTicker?.cancel();
+    _playbackSleepWaitingForTrackEnd = false;
     _playbackSleepFadeFactor = 1;
     unawaited(_audioService.player.setVolume(_volume));
     _playbackSleepTimerDeadline = DateTime.now().add(duration);
@@ -781,20 +793,14 @@ class PlaylistContentNotifier extends ChangeNotifier
       duration,
       () => unawaited(_handlePlaybackSleepTimerElapsed(generation)),
     );
-    final fadeDelay = duration - _playbackSleepFadeWindow;
-    if (fadeDelay <= Duration.zero) {
-      _startPlaybackSleepFade(generation);
-    } else {
-      _playbackSleepFadeStartTimer = Timer(
-        fadeDelay,
-        () => _startPlaybackSleepFade(generation),
-      );
+    if (!_settingsProvider.sleepTimerFinishCurrentTrack) {
+      _schedulePlaybackSleepFade(generation, duration);
     }
     notifyListeners();
   }
 
   void cancelPlaybackSleepTimer() {
-    if (_playbackSleepTimerDeadline == null) return;
+    if (!hasPlaybackSleepTimer) return;
     _playbackSleepTimerGeneration++;
     _playbackSleepTimer?.cancel();
     _playbackSleepFadeStartTimer?.cancel();
@@ -803,9 +809,52 @@ class PlaylistContentNotifier extends ChangeNotifier
     _playbackSleepFadeStartTimer = null;
     _playbackSleepFadeTicker = null;
     _playbackSleepTimerDeadline = null;
+    _playbackSleepWaitingForTrackEnd = false;
     _playbackSleepFadeFactor = 1;
+    if (_gaplessEnabled) _refreshGaplessNext();
     unawaited(_audioService.player.setVolume(_volume));
     notifyListeners();
+  }
+
+  void updatePlaybackSleepFinishCurrentTrack(bool enabled) {
+    final deadline = _playbackSleepTimerDeadline;
+    if (_playbackSleepWaitingForTrackEnd) {
+      if (!enabled) {
+        unawaited(_finishPlaybackSleepTimerNow(_playbackSleepTimerGeneration));
+      }
+      return;
+    }
+    if (deadline == null) return;
+    _playbackSleepFadeStartTimer?.cancel();
+    _playbackSleepFadeTicker?.cancel();
+    _playbackSleepFadeStartTimer = null;
+    _playbackSleepFadeTicker = null;
+    _playbackSleepFadeFactor = 1;
+    unawaited(_audioService.player.setVolume(_volume));
+    if (!enabled) {
+      _schedulePlaybackSleepFade(
+        _playbackSleepTimerGeneration,
+        deadline.difference(DateTime.now()),
+      );
+    }
+    notifyListeners();
+  }
+
+  void _schedulePlaybackSleepFade(int generation, Duration remaining) {
+    final boundedRemaining = remaining.isNegative ? Duration.zero : remaining;
+    const maximumFadeWindow = Duration(seconds: 30);
+    _playbackSleepFadeWindow = boundedRemaining < maximumFadeWindow
+        ? boundedRemaining
+        : maximumFadeWindow;
+    final fadeDelay = boundedRemaining - _playbackSleepFadeWindow;
+    if (fadeDelay <= Duration.zero) {
+      _startPlaybackSleepFade(generation);
+    } else {
+      _playbackSleepFadeStartTimer = Timer(
+        fadeDelay,
+        () => _startPlaybackSleepFade(generation),
+      );
+    }
   }
 
   void _startPlaybackSleepFade(int generation) {
@@ -844,6 +893,24 @@ class PlaylistContentNotifier extends ChangeNotifier
     _playbackSleepFadeStartTimer = null;
     _playbackSleepFadeTicker = null;
     _playbackSleepTimerDeadline = null;
+    if (shouldDelayPlaybackSleepUntilTrackEnd(
+      enabled: _settingsProvider.sleepTimerFinishCurrentTrack,
+      hasPlaybackIntent: _playbackIntent,
+      hasCurrentSong: _currentSong != null,
+    )) {
+      _playbackSleepWaitingForTrackEnd = true;
+      _playbackSleepFadeFactor = 1;
+      await _audioService.player.setVolume(_volume);
+      if (_gaplessEnabled) _audioService.replaceNext(null);
+      notifyListeners();
+      return;
+    }
+    await _finishPlaybackSleepTimerNow(generation);
+  }
+
+  Future<void> _finishPlaybackSleepTimerNow(int generation) async {
+    if (generation != _playbackSleepTimerGeneration) return;
+    _playbackSleepWaitingForTrackEnd = false;
     _playbackSleepFadeFactor = 0;
     await _audioService.player.setVolume(0);
     if (generation != _playbackSleepTimerGeneration) {
@@ -859,6 +926,18 @@ class PlaylistContentNotifier extends ChangeNotifier
         await _audioService.player.setVolume(_volume);
       }
     }
+  }
+
+  Future<void> _finishPlaybackSleepTimerAfterTrack() async {
+    if (!_playbackSleepWaitingForTrackEnd) return;
+    final generation = _playbackSleepTimerGeneration;
+    _playbackSleepWaitingForTrackEnd = false;
+    _setPlaybackPaused();
+    await _audioService.pause();
+    if (generation != _playbackSleepTimerGeneration) return;
+    _isPlaying = false;
+    PlaybackTracker().pauseTracking();
+    notifyListeners();
   }
 
   // 播放器的 playing 流表示实际输出状态，在加载和缓冲时可能短暂为 false，
@@ -902,6 +981,22 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   Duration get currentPosition => _currentPosition;
   ValueListenable<Duration> get positionListenable => _positionListenable;
+  final ValueNotifier<bool> _actualPlaybackListenable = ValueNotifier(false);
+  ValueListenable<bool> get actualPlaybackListenable =>
+      _actualPlaybackListenable;
+  final ValueNotifier<double> _actualPlaybackRateListenable = ValueNotifier(1);
+  ValueListenable<double> get actualPlaybackRateListenable =>
+      _actualPlaybackRateListenable;
+  final ValueNotifier<Duration?> _lyricSeekListenable = ValueNotifier(null);
+  ValueListenable<Duration?> get lyricSeekListenable => _lyricSeekListenable;
+  final ValueNotifier<int> _lyricSeekIntentListenable = ValueNotifier(0);
+  ValueListenable<int> get lyricSeekIntentListenable =>
+      _lyricSeekIntentListenable;
+  void signalLyricSeekIntent() => _lyricSeekIntentListenable.value++;
+  void signalLyricSeek(Duration position) {
+    _lyricSeekListenable.value = position;
+  }
+
   ValueListenable<int> get lyricLineIndexListenable =>
       _lyricLineIndexListenable;
   ValueListenable<int> get artworkRecoveryListenable =>
@@ -1652,6 +1747,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     _coverOverrides.removeListener(_handleCoverOverridesChanged);
     _positionSubscription?.cancel();
     _positionListenable.dispose();
+    _actualPlaybackListenable.dispose();
+    _actualPlaybackRateListenable.dispose();
+    _lyricSeekListenable.dispose();
+    _lyricSeekIntentListenable.dispose();
     _lyricLineIndexListenable.dispose();
     _artworkRecoveryListenable.dispose();
     _playbackArtworkTargetListenable.dispose();
@@ -1757,7 +1856,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final isForeground = state == AppLifecycleState.resumed;
+    final isForeground = foregroundAfterLifecycle(state, _isAppForeground);
     if (_isAppForeground == isForeground) return;
 
     _isAppForeground = isForeground;
@@ -1873,6 +1972,14 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _setupMediaPlayerListeners() {
+    _actualPlaybackListenable.value = _audioService.player.state.playing;
+    _actualPlaybackRateListenable.value = _audioService.player.state.rate;
+    _audioService.player.stream.playing.distinct().listen((playing) {
+      _actualPlaybackListenable.value = playing;
+    });
+    _audioService.player.stream.rate.distinct().listen((rate) {
+      _actualPlaybackRateListenable.value = rate;
+    });
     // `playing` briefly becomes false while seeking or buffering. The stable
     // playWhenReady signal matches the user's requested transport state.
     _audioService.player.stream.playWhenReady.distinct().listen((playing) {
@@ -1889,6 +1996,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     });
 
     _audioService.player.stream.completed.listen((completed) async {
+      if (completed && _playbackSleepWaitingForTrackEnd) {
+        await _finishPlaybackSleepTimerAfterTrack();
+        return;
+      }
       if (completed && _playbackIntent && _activeTrackChangeRevision == null) {
         _isPlaying = false; // 更新内部状态
         notifyListeners();
@@ -1899,6 +2010,12 @@ class PlaylistContentNotifier extends ChangeNotifier
     });
 
     _audioService.player.stream.playlist.listen((playlist) {
+      if (_playbackSleepWaitingForTrackEnd) {
+        if (playlist.index == 1) {
+          unawaited(_finishPlaybackSleepTimerAfterTrack());
+        }
+        return;
+      }
       if (!_gaplessEnabled || _activeTrackChangeRevision != null) return;
       // 检测 mpv 是否自动过渡到了 playlist 的第二首
       // playlist.index 变为 1 说明 mpv 切了歌
@@ -3292,6 +3409,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
 
     final bool allowAnyFormat = _settingsProvider.allowAnyFormat;
+
     final result = await _pickSongFiles(allowAnyFormat: allowAnyFormat);
 
     if (result == null) {
@@ -3301,18 +3419,33 @@ class PlaylistContentNotifier extends ChangeNotifier
     final currentPlaylist = _playlists[_selectedIndex];
     final List<String> newSongPaths = [];
     final selectedSongPaths = <String>[];
+    var skippedUnsupportedFiles = 0;
 
     for (final platformFile in result.files) {
-      if (platformFile.path != null) {
-        final pathToAdd = p.normalize(platformFile.path!);
-        selectedSongPaths.add(pathToAdd);
-        if (!currentPlaylist.songFilePaths.contains(pathToAdd)) {
-          newSongPaths.add(pathToAdd);
-        }
+      final selectedPath = platformFile.path;
+      if (selectedPath == null || selectedPath.isEmpty) continue;
+      final pathToAdd = p.normalize(selectedPath);
+      if (!allowAnyFormat &&
+          !_supportedAudioExtensions.contains(
+            p.extension(platformFile.name).toLowerCase(),
+          )) {
+        skippedUnsupportedFiles++;
+        continue;
+      }
+      selectedSongPaths.add(pathToAdd);
+      if (!currentPlaylist.songFilePaths.any(
+        (path) => _normalizePath(path).toLowerCase() ==
+            _normalizePath(pathToAdd).toLowerCase(),
+      )) {
+        newSongPaths.add(pathToAdd);
       }
     }
-    if (result.files.isNotEmpty && selectedSongPaths.isEmpty) {
-      _errorStreamController.add('无法读取所选歌曲，请将文件保存到本地后重试');
+    if (selectedSongPaths.isEmpty) {
+      _infoStreamController.add(
+        skippedUnsupportedFiles > 0
+            ? '所选文件不是支持的音频格式'
+            : '无法读取所选文件，请改从本机存储中选择',
+      );
       return false;
     }
     final restoredHiddenSongs = await _unhideImportedSongPaths(
@@ -3416,7 +3549,9 @@ class PlaylistContentNotifier extends ChangeNotifier
   }) async {
     if (!_beginAudioImportPicker()) return null;
     try {
-      if (allowAnyFormat) {
+      // Android may reject custom extensions without a registered MIME type.
+      // Pick broadly there and validate extensions in Dart after selection.
+      if (allowAnyFormat || Platform.isAndroid) {
         return await FilePicker.platform.pickFiles(
           type: FileType.any,
           allowMultiple: true,
@@ -4806,6 +4941,10 @@ class PlaylistContentNotifier extends ChangeNotifier
   void _refreshGaplessNext() {
     _refreshAdjacentPlaybackArtworkPrewarm();
     if (!_gaplessEnabled) return;
+    if (_playbackSleepWaitingForTrackEnd) {
+      _audioService.replaceNext(null);
+      return;
+    }
     final nextPath = _peekNextPath();
     _audioService.replaceNext(nextPath);
   }
@@ -5461,6 +5600,10 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<void> _startPlaybackNow({bool playAfterLoad = true}) async {
+    if (_playbackSleepWaitingForTrackEnd) {
+      await _finishPlaybackSleepTimerAfterTrack();
+      return;
+    }
     _startupPlaybackRestoreSuperseded = true;
     final requestRevision = ++_playbackRequestRevision;
     _activeTrackChangeRevision = requestRevision;

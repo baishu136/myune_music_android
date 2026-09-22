@@ -1,23 +1,31 @@
 import 'dart:async';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
+import 'package:characters/characters.dart' as characters;
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
-import 'package:flutter/rendering.dart' show ScrollCacheExtent;
+import 'package:flutter/rendering.dart'
+    show RenderComparison, ScrollCacheExtent;
 import 'package:flutter/physics.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
 import '../page/playlist/playlist_models.dart';
+import '../page/setting/settings_provider.dart';
+import '../services/interaction_performance_controller.dart';
 import 'interlude_animation_widget.dart';
+import 'karaoke_motion.dart';
 import 'lyric_seek_guide.dart';
 import 'lyric_scroll_motion.dart';
 
+part 'karaoke_media_clock.dart';
+
 const int mobileLyricsTopEdgeAlpha = 0x00;
-const int mobileLyricsTopFadeSoftAlpha = 0x18;
-const int mobileLyricsTopFadeMidAlpha = 0x58;
-const int mobileLyricsTopFadeNearAlpha = 0xB8;
-const int mobileLyricsBottomFadeNearAlpha = 0xC4;
-const int mobileLyricsBottomFadeMidAlpha = 0x74;
+const int mobileLyricsTopFadeSoftAlpha = 0x24;
+const int mobileLyricsTopFadeMidAlpha = 0x68;
+const int mobileLyricsTopFadeNearAlpha = 0xC0;
+const int mobileLyricsBottomFadeNearAlpha = 0xC0;
+const int mobileLyricsBottomFadeMidAlpha = 0x68;
 const int mobileLyricsBottomFadeSoftAlpha = 0x24;
 const Color mobileLyricsBrowseMaskColor = Color(0x4DFFFFFF);
 const Duration mobileLyricsBrowseMaskRevealDelay = Duration(milliseconds: 300);
@@ -28,8 +36,24 @@ const Color mobileLyricsBrowseGuideColor = Color(0xB3FFFFFF);
 const Duration mobileLyricsFocusTransitionDuration = Duration(
   milliseconds: 520,
 );
-const Curve mobileLyricsFocusTransitionCurve = Cubic(.33, 0, .2, 1);
+const Curve mobileLyricsFocusTransitionCurve = Cubic(.2, .72, .24, 1);
+const Duration mobileLyricsDefaultScrollTransitionDuration = Duration(
+  milliseconds: 620,
+);
+const Duration mobileLyricsKaraokeLineShiftDuration =
+    mobileLyricsDefaultScrollTransitionDuration;
+const double mobileLyricsDefaultScrollFrequency = 8.8;
+const double mobileLyricsRenderOverflow = 180;
 const double mobileLyricsActiveScale = 1.1;
+
+double mobileLyricsLargeFontProgress(double fontSize) =>
+    ((fontSize - 20) / 16).clamp(0.0, 1.0).toDouble();
+
+double mobileLyricsScrollFrequencyForFontSize(double fontSize) => ui.lerpDouble(
+  mobileLyricsDefaultScrollFrequency,
+  7.2,
+  mobileLyricsLargeFontProgress(fontSize),
+)!;
 
 double mobileLyricScaleSafeExtent(double contentExtent) =>
     contentExtent * mobileLyricsActiveScale;
@@ -41,6 +65,26 @@ double mobileLyricsHorizontalInset(TextAlign alignment) => switch (alignment) {
   TextAlign.left || TextAlign.right || TextAlign.start || TextAlign.end => 4,
   _ => 24,
 };
+
+double mobileLyricsKaraokeLineShift(int relativeDistance) =>
+    relativeDistance < 0
+    ? -.16
+    : relativeDistance > 0
+    ? .22
+    : 0;
+
+bool karaokePlaybackPositionDiscontinuity({
+  required Duration previousSource,
+  required Duration source,
+  required Duration elapsedSinceSource,
+  double playbackRate = 1,
+}) {
+  final sourceDelta = source.inMicroseconds - previousSource.inMicroseconds;
+  final expectedDelta =
+      elapsedSinceSource.inMicroseconds.clamp(0, 5000000) * playbackRate;
+  final drift = sourceDelta - expectedDelta;
+  return drift.abs() > 160000 || sourceDelta < -20000;
+}
 
 String formatMobileLyricsBrowseTime(Duration timestamp) {
   final totalSeconds = timestamp.inSeconds.clamp(0, 359999);
@@ -56,24 +100,25 @@ String formatMobileLyricsBrowseTime(Duration timestamp) {
 
 List<double> mobileLyricsEdgeFadeStops(double viewportHeight) {
   final height = viewportHeight <= 0 ? 1.0 : viewportHeight;
-  final topBand = (height * .16)
-      .clamp(84.0, 112.0)
-      .clamp(0.0, height * .38)
-      .toDouble();
-  final bottomBand = (height * .18)
-      .clamp(96.0, 128.0)
+  final topBand = (height * .26)
+      .clamp(144.0, 200.0)
       .clamp(0.0, height * .42)
+      .toDouble();
+  final bottomBand = (height * .30)
+      .clamp(160.0, 224.0)
+      .clamp(0.0, height * .44)
       .toDouble();
   return [
     0,
-    topBand * .16 / height,
-    topBand * .38 / height,
-    topBand * .68 / height,
+    topBand * .18 / height,
+    topBand * .44 / height,
+    topBand * .72 / height,
     topBand / height,
     1 - bottomBand / height,
-    1 - bottomBand * .66 / height,
-    1 - bottomBand * .34 / height,
-    1 - bottomBand * .13 / height,
+    1 - bottomBand * .72 / height,
+    1 - bottomBand * .44 / height,
+    1 - bottomBand * .18 / height,
+    1 - bottomBand * .08 / height,
     1,
   ];
 }
@@ -165,14 +210,39 @@ class _LyricElasticPulse {
 
 double clampLyricElasticDisplacement(
   double displacement,
-  double viewportHeight,
-) {
-  final limit = (viewportHeight * .28).clamp(56.0, 120.0).toDouble();
+  double viewportHeight, {
+  double fontSize = 20,
+}) {
+  final largeFont = mobileLyricsLargeFontProgress(fontSize);
+  final viewportShare = ui.lerpDouble(.36, .31, largeFont)!;
+  final limit = (viewportHeight * viewportShare)
+      .clamp(72.0, ui.lerpDouble(156, 140, largeFont)!)
+      .toDouble();
   return displacement.clamp(-limit, limit).toDouble();
 }
 
-double lyricSeekVisibleTravel(double viewportHeight) =>
-    (viewportHeight * .42).clamp(72.0, 180.0).toDouble();
+double lyricSeekVisibleTravel(double viewportHeight, {double fontSize = 20}) {
+  final largeFont = mobileLyricsLargeFontProgress(fontSize);
+  final viewportShare = ui.lerpDouble(.42, .32, largeFont)!;
+  return (viewportHeight * viewportShare)
+      .clamp(72.0, ui.lerpDouble(180, 152, largeFont)!)
+      .toDouble();
+}
+
+double boundedLyricAnimationStart(
+  double current,
+  double target,
+  double viewportHeight, {
+  double fontSize = 20,
+}) {
+  final displacement = target - current;
+  final visibleTravel = lyricSeekVisibleTravel(
+    viewportHeight,
+    fontSize: fontSize,
+  );
+  if (displacement.abs() <= visibleTravel) return current;
+  return target - displacement.sign * visibleTravel;
+}
 
 double mobileLyricBlurSigmaForDistance(int distance) => switch (distance) {
   <= 0 => 0,
@@ -182,6 +252,552 @@ double mobileLyricBlurSigmaForDistance(int distance) => switch (distance) {
   4 => 3,
   _ => 3.4,
 };
+
+double karaokeTokenProgress(LyricToken token, Duration position) {
+  final duration = token.end.inMicroseconds - token.start.inMicroseconds;
+  if (duration <= 0) return position >= token.start ? 1 : 0;
+  return ((position.inMicroseconds - token.start.inMicroseconds) / duration)
+      .clamp(0.0, 1.0);
+}
+
+double karaokeVisualTokenProgress(LyricToken token, Duration position) {
+  return karaokeRawVisualTokenProgress(token, position).clamp(0.0, 1.0);
+}
+
+double karaokeRawVisualTokenProgress(LyricToken token, Duration position) {
+  final visualStart = karaokeVisualTokenStart(token);
+  final visualDuration = token.end.inMicroseconds - visualStart.inMicroseconds;
+  if (visualDuration <= 0) return position >= token.start ? 1 : 0;
+  return (position.inMicroseconds - visualStart.inMicroseconds) /
+      visualDuration;
+}
+
+Duration karaokeVisualTokenStart(LyricToken token) {
+  const minimumVisualDuration = Duration(milliseconds: 520);
+  const standardLeadIn = Duration(milliseconds: 45);
+  const maximumEdgeExtension = Duration(milliseconds: 60);
+  final sourceDuration = token.end - token.start;
+  if (sourceDuration <= Duration.zero) return token.start;
+  final missing = minimumVisualDuration - sourceDuration;
+  // Keep a tiny lead-in for every token so adjacent words hand the motion to
+  // one another instead of stopping at the whitespace boundary. Short tokens
+  // may use the existing, slightly wider window; completion never moves past
+  // the source timestamp.
+  final desiredLeadIn = missing > Duration.zero
+      ? math.max(standardLeadIn.inMicroseconds, missing.inMicroseconds ~/ 2)
+      : standardLeadIn.inMicroseconds;
+  final edgeExtension = Duration(
+    microseconds: math.min(
+      maximumEdgeExtension.inMicroseconds,
+      math.min(desiredLeadIn, sourceDuration.inMicroseconds ~/ 4),
+    ),
+  );
+  return token.start - edgeExtension;
+}
+
+double karaokePositionBlend(Duration frameDelta) {
+  final seconds = frameDelta.inMicroseconds / Duration.microsecondsPerSecond;
+  return (1 - math.exp(-seconds / .045)).clamp(0.0, 1.0);
+}
+
+double karaokeHighlightFeather(double glyphWidth) =>
+    (glyphWidth * .16).clamp(4.5, 12.0);
+
+/// Advance normally; ease only drift, never the passage of playback time.
+Duration karaokeAdvanceVisualClock(
+  Duration current,
+  Duration target,
+  Duration frameDelta, {
+  double playbackRate = 1,
+}) {
+  final step = math.max(0, frameDelta.inMicroseconds * playbackRate).round();
+  final predicted = current.inMicroseconds + step;
+  final correction =
+      ((target.inMicroseconds - predicted) * karaokePositionBlend(frameDelta))
+          .clamp(-step * .08, step * .08)
+          .round();
+  return Duration(microseconds: predicted + correction);
+}
+
+Duration karaokeVisualClockTarget(
+  Duration anchorPosition,
+  Duration elapsed,
+  Duration anchorElapsed,
+  double playbackRate,
+) =>
+    anchorPosition +
+    Duration(
+      microseconds: ((elapsed - anchorElapsed).inMicroseconds * playbackRate)
+          .round(),
+    );
+
+({Offset start, Offset end}) karaokeHighlightGradient(
+  Rect glyphBounds,
+  TextDirection direction,
+  double progress,
+  double feather,
+) {
+  final bounded = progress.clamp(0.0, 1.0);
+  final front = direction == TextDirection.rtl
+      ? glyphBounds.right - glyphBounds.width * bounded
+      : glyphBounds.left + glyphBounds.width * bounded;
+  return direction == TextDirection.rtl
+      ? (
+          start: Offset(front, glyphBounds.center.dy),
+          end: Offset(front - feather, glyphBounds.center.dy),
+        )
+      : (
+          start: Offset(front, glyphBounds.center.dy),
+          end: Offset(front + feather, glyphBounds.center.dy),
+        );
+}
+
+Rect karaokePlayedClipRect(
+  Rect glyphBounds,
+  TextDirection direction,
+  double progress,
+) {
+  final bounded = progress.clamp(0.0, 1.0);
+  final front = direction == TextDirection.rtl
+      ? glyphBounds.right - glyphBounds.width * bounded
+      : glyphBounds.left + glyphBounds.width * bounded;
+  return direction == TextDirection.rtl
+      ? Rect.fromLTRB(
+          front,
+          glyphBounds.top,
+          glyphBounds.right,
+          glyphBounds.bottom,
+        )
+      : Rect.fromLTRB(
+          glyphBounds.left,
+          glyphBounds.top,
+          front,
+          glyphBounds.bottom,
+        );
+}
+
+double karaokeHighlightLift(double progress, double glyphHeight) {
+  final bounded = progress.clamp(0.0, 1.0);
+  final amplitude = (glyphHeight * .09).clamp(1.8, 6.0);
+  // The eased curve has zero velocity at both ends and an extra top buffer.
+  final eased = karaokeLiftCurve(bounded);
+  return -eased * amplitude;
+}
+
+double karaokeLiftCurve(double progress) {
+  final bounded = progress.clamp(0.0, 1.0);
+  final eased =
+      bounded * bounded * bounded * (bounded * (bounded * 6 - 15) + 10);
+  // Keep zero velocity at both endpoints, with a little more braking as the
+  // glyph approaches the top instead of stopping abruptly at full height.
+  return eased + .2 * eased * (1 - eased);
+}
+
+const karaokeFollowerLiftHeights = <double>[.20, .15, .10, .05, .02];
+
+double karaokeLineGlyphCadenceUs(Iterable<LyricToken> tokens, int glyphCount) {
+  if (glyphCount <= 0) return 80000;
+  final activeUs = tokens.fold<int>(0, (sum, token) {
+    final durationUs = token.end.inMicroseconds - token.start.inMicroseconds;
+    return sum + math.max(0, durationUs);
+  });
+  if (activeUs <= 0) return 80000;
+  return (activeUs / glyphCount).clamp(40000.0, 260000.0);
+}
+
+/// Token boundaries are timed by the lyric source. Within an untimed token,
+/// each grapheme gets an estimated share of that token's duration.
+List<double> karaokeLocalGlyphCadencesUs(
+  List<LyricToken> tokens,
+  List<int> glyphCounts,
+) {
+  assert(tokens.length == glyphCounts.length);
+  final raw = <double>[];
+  for (var tokenIndex = 0; tokenIndex < tokens.length; tokenIndex++) {
+    final count = glyphCounts[tokenIndex];
+    if (count <= 0) continue;
+    final token = tokens[tokenIndex];
+    var cadence = (token.end - token.start).inMicroseconds / count;
+    // A sustained final syllable is not evidence that the preceding rapid
+    // characters were sung slowly. Bound only the tail against nearby pace.
+    if (tokenIndex == tokens.length - 1 && raw.isNotEmpty && count <= 2) {
+      cadence = math.min(cadence, raw.last * 2.5);
+    }
+    raw.addAll(List<double>.filled(count, cadence.clamp(40000.0, 260000.0)));
+  }
+  return List<double>.generate(raw.length, (index) {
+    final before = raw[math.max(0, index - 1)];
+    final after = raw[math.min(raw.length - 1, index + 1)];
+    return (before * .2 + raw[index] * .6 + after * .2).clamp(
+      40000.0,
+      260000.0,
+    );
+  });
+}
+
+double karaokeFollowerLiftFactor(
+  double elapsedUs,
+  int distance,
+  double lineCadenceUs,
+) {
+  if (distance <= 0 ||
+      distance > karaokeFollowerLiftHeights.length ||
+      lineCadenceUs <= 0) {
+    return 0;
+  }
+  final delayUs = lineCadenceUs * .22 * distance;
+  final riseUs = lineCadenceUs * 1.05;
+  final gate = karaokeLiftCurve((elapsedUs - delayUs) / riseUs);
+  return karaokeFollowerLiftHeights[distance - 1] * gate;
+}
+
+List<double> karaokeChainedLiftFactors(
+  List<double> ownFactors, {
+  required List<double> sourceStartTimesUs,
+  required double positionUs,
+  required double lineCadenceUs,
+  List<double>? sourceCadencesUs,
+  Set<int> breakBefore = const {},
+  List<bool>? breakBeforeFlags,
+  List<double>? resultBuffer,
+}) {
+  assert(ownFactors.length == sourceStartTimesUs.length);
+  assert(
+    sourceCadencesUs == null || sourceCadencesUs.length == ownFactors.length,
+  );
+  final result = resultBuffer ?? List<double>.filled(ownFactors.length, 0);
+  assert(result.length == ownFactors.length);
+  var chainStart = 0;
+  for (var index = 0; index < ownFactors.length; index++) {
+    if (breakBeforeFlags?[index] == true || breakBefore.contains(index)) {
+      chainStart = index;
+    }
+    var follower = 0.0;
+    for (
+      var distance = 1;
+      distance <= karaokeFollowerLiftHeights.length &&
+          index - distance >= chainStart;
+      distance++
+    ) {
+      final sourceIndex = index - distance;
+      if (ownFactors[sourceIndex] <= 0) continue;
+      follower = math.max(
+        follower,
+        karaokeFollowerLiftFactor(
+          positionUs - sourceStartTimesUs[sourceIndex],
+          distance,
+          sourceCadencesUs?[sourceIndex] ?? lineCadenceUs,
+        ),
+      );
+    }
+    final own = ownFactors[index].clamp(0.0, 1.0);
+    result[index] = follower + own * (1 - follower);
+  }
+  return result;
+}
+
+double karaokeGlyphLiftFactor(
+  double tokenProgress, {
+  required int glyphIndex,
+  required int glyphCount,
+}) {
+  final index = glyphIndex.clamp(0, math.max(0, glyphCount - 1)).toInt();
+  final ownFactors = List<double>.generate(
+    index + 1,
+    (currentIndex) => karaokeLiftCurve(
+      karaokeGlyphLiftProgress(
+        tokenProgress,
+        glyphIndex: currentIndex,
+        glyphCount: glyphCount,
+      ),
+    ),
+  );
+  const syntheticDurationUs = 1000000.0;
+  final sourceStarts = List<double>.generate(
+    index + 1,
+    (currentIndex) =>
+        karaokeGlyphLiftStartProgress(currentIndex, glyphCount, 0) *
+        syntheticDurationUs,
+  );
+  return karaokeChainedLiftFactors(
+    ownFactors,
+    sourceStartTimesUs: sourceStarts,
+    positionUs: tokenProgress * syntheticDurationUs,
+    lineCadenceUs: syntheticDurationUs / math.max(1, glyphCount),
+  ).last;
+}
+
+bool karaokeTokensShareLiftChain(LyricToken previous, LyricToken next) {
+  const maximumGap = Duration(milliseconds: 220);
+  const toleratedReorder = Duration(milliseconds: 50);
+  return next.start + toleratedReorder >= previous.start &&
+      next.start - previous.end <= maximumGap;
+}
+
+double karaokeGlyphLiftProgress(
+  double tokenProgress, {
+  required int glyphIndex,
+  required int glyphCount,
+  double? nextTokenStartProgress,
+  double leadInProgress = 0,
+}) {
+  final index = glyphIndex.clamp(0, math.max(0, glyphCount - 1)).toInt();
+  final start = karaokeGlyphLiftStartProgress(
+    index,
+    glyphCount,
+    leadInProgress,
+  );
+  final end = index + 1 < glyphCount
+      ? karaokeGlyphHighlightStart(index + 1, glyphCount)
+      : nextTokenStartProgress != null && nextTokenStartProgress > start
+      ? nextTokenStartProgress.clamp(start, 1.0)
+      : 1.0;
+  if (end <= start) {
+    return karaokeGlyphProgress(
+      tokenProgress,
+      glyphIndex: index,
+      glyphCount: glyphCount,
+    );
+  }
+  return ((tokenProgress - start) / (end - start)).clamp(0.0, 1.0);
+}
+
+double karaokeGlyphLiftStartProgress(
+  int glyphIndex,
+  int glyphCount,
+  double leadInProgress,
+) => glyphIndex > 0
+    ? karaokeGlyphHighlightStart(glyphIndex - 1, glyphCount)
+    : -leadInProgress.clamp(0.0, 1.0);
+
+double karaokeGlyphLiftLeadInProgress(LyricToken token, int glyphCount) {
+  final visualDuration =
+      token.end.inMicroseconds - karaokeVisualTokenStart(token).inMicroseconds;
+  if (visualDuration <= 0) return 0;
+  final firstStep = glyphCount > 1
+      ? karaokeGlyphHighlightStart(1, glyphCount)
+      : 1.0;
+  // Start the first glyph at most 80 ms before its highlight, and never more
+  // than one character interval or 35% of a very short token early.
+  return math.min(firstStep, math.min(.35, 80000 / visualDuration));
+}
+
+double karaokeGlyphHighlightStart(int glyphIndex, int glyphCount) {
+  if (glyphCount <= 1) return 0;
+  final travelWindow = math.min(.48, 1.8 / (glyphCount + .8));
+  final index = glyphIndex.clamp(0, glyphCount - 1);
+  return (1 - travelWindow) * index / (glyphCount - 1);
+}
+
+double? karaokeNextTokenStartProgress(LyricToken current, LyricToken next) {
+  if (!karaokeTokensShareLiftChain(current, next)) return null;
+  final visualStart = karaokeVisualTokenStart(current);
+  final duration = current.end.inMicroseconds - visualStart.inMicroseconds;
+  if (duration <= 0) return null;
+  final nextStart = karaokeVisualTokenStart(next);
+  return ((nextStart.inMicroseconds - visualStart.inMicroseconds) / duration)
+      .clamp(0.0, 1.0);
+}
+
+double karaokeGlyphProgress(
+  double tokenProgress, {
+  required int glyphIndex,
+  required int glyphCount,
+}) {
+  final bounded = tokenProgress.clamp(0.0, 1.0);
+  if (bounded <= 0) return 0;
+  if (bounded >= 1) return 1;
+  if (glyphCount <= 1) return bounded;
+  // A fixed wide window makes most letters in a long word animate together,
+  // which reads as word-level highlighting. Scale the window with grapheme
+  // count so only about one or two neighbouring glyphs overlap at once.
+  final travelWindow = math.min(.48, 1.8 / (glyphCount + .8));
+  final start = karaokeGlyphHighlightStart(glyphIndex, glyphCount);
+  return ((bounded - start) / travelWindow).clamp(0.0, 1.0);
+}
+
+double karaokeContinuousHighlightProgress(
+  double tokenProgress, {
+  required double precedingExtent,
+  required double glyphExtent,
+  required double totalExtent,
+}) {
+  if (glyphExtent <= 0 || totalExtent <= 0) return 0;
+  final front = tokenProgress.clamp(0.0, 1.0) * totalExtent;
+  return ((front - precedingExtent) / glyphExtent).clamp(0.0, 1.0);
+}
+
+double karaokeContinuousGradientFeather(double lineHeight) =>
+    (lineHeight * 1.55).clamp(32.0, 88.0);
+
+({Offset start, Offset end}) karaokeContinuousGradient(
+  Rect tokenBounds,
+  TextDirection direction,
+  double progress,
+  double feather,
+) {
+  final bounded = progress.clamp(0.0, 1.0);
+  final halfFeather = feather / 2;
+  final front = direction == TextDirection.rtl
+      ? tokenBounds.right +
+            halfFeather -
+            (tokenBounds.width + feather) * bounded
+      : tokenBounds.left -
+            halfFeather +
+            (tokenBounds.width + feather) * bounded;
+  return direction == TextDirection.rtl
+      ? (
+          start: Offset(front + halfFeather, tokenBounds.center.dy),
+          end: Offset(front - halfFeather, tokenBounds.center.dy),
+        )
+      : (
+          start: Offset(front - halfFeather, tokenBounds.center.dy),
+          end: Offset(front + halfFeather, tokenBounds.center.dy),
+        );
+}
+
+({Offset start, Offset end}) karaokeGlyphHighlightGradient(
+  Rect glyphBounds,
+  TextDirection direction,
+  double progress, {
+  double featherFraction = .72,
+}) {
+  final bounded = progress.clamp(0.0, 1.0);
+  final feather = (glyphBounds.width * featherFraction).clamp(6.0, 28.0);
+  final halfFeather = feather / 2;
+  final front = direction == TextDirection.rtl
+      ? glyphBounds.right +
+            halfFeather -
+            (glyphBounds.width + feather) * bounded
+      : glyphBounds.left -
+            halfFeather +
+            (glyphBounds.width + feather) * bounded;
+  return direction == TextDirection.rtl
+      ? (
+          start: Offset(front + halfFeather, glyphBounds.center.dy),
+          end: Offset(front - halfFeather, glyphBounds.center.dy),
+        )
+      : (
+          start: Offset(front - halfFeather, glyphBounds.center.dy),
+          end: Offset(front + halfFeather, glyphBounds.center.dy),
+        );
+}
+
+List<({int start, int end})> karaokeGraphemeRanges(
+  String text, {
+  int startOffset = 0,
+}) {
+  final ranges = <({int start, int end})>[];
+  var offset = startOffset;
+  for (final grapheme in characters.Characters(text)) {
+    final end = offset + grapheme.length;
+    if (grapheme.trim().isNotEmpty) ranges.add((start: offset, end: end));
+    offset = end;
+  }
+  return ranges;
+}
+
+({int start, int end})? karaokeVisibleTokenBounds(String token) {
+  final leading = RegExp(r'^\s*').firstMatch(token)?.end ?? 0;
+  final trailingMatch = RegExp(r'\s*$').firstMatch(token);
+  final trailing = trailingMatch?.start ?? token.length;
+  if (trailing <= leading) return null;
+  return (start: leading, end: trailing);
+}
+
+double karaokeSyntheticTokenWeight(String token) {
+  final visible = token.trim();
+  if (visible.isEmpty) return .25;
+  // A short word should finish quickly while a long word still gets enough
+  // time for its highlight to remain readable. The sub-linear exponent avoids
+  // making long English words feel disproportionately slow.
+  return math.pow(visible.runes.length, .72).toDouble();
+}
+
+List<String> _syntheticKaraokeChunks(String text) {
+  if (text.isEmpty) return const [];
+  // English-like lyrics move word by word, while CJK lyrics keep true
+  // character granularity. Whitespace stays attached to the preceding token
+  // so the highlight never leaves isolated gaps between words.
+  final raw = RegExp(
+    r'[\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]|[^\s\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF]+\s*|\s+',
+  ).allMatches(text).map((match) => match.group(0)!).toList(growable: false);
+  return raw.isEmpty ? [text] : raw;
+}
+
+class _SynthesizedKaraokeCacheEntry {
+  const _SynthesizedKaraokeCacheEntry(this.nextTimestamp, this.line);
+
+  final Duration? nextTimestamp;
+  final LyricLine line;
+}
+
+final Expando<_SynthesizedKaraokeCacheEntry> _synthesizedKaraokeCache =
+    Expando<_SynthesizedKaraokeCacheEntry>();
+
+bool karaokeRowCanHighlight(int rowIndex) => rowIndex == 0;
+
+/// Gives an ordinary line a deterministic karaoke timeline for the optional
+/// "all lyrics" mode. The generated word/character tokens mirror the visual
+/// cadence of timed LRC without pretending to infer unavailable vocals.
+LyricLine synthesizeKaraokeTiming(LyricLine line, {Duration? nextTimestamp}) {
+  if (line.isInterlude || line.texts.isEmpty) return line;
+  final cached = _synthesizedKaraokeCache[line];
+  if (cached != null && cached.nextTimestamp == nextTimestamp) {
+    return cached.line;
+  }
+  final interval = nextTimestamp == null
+      ? const Duration(seconds: 4)
+      : nextTimestamp - line.timestamp;
+  final boundedMs = (interval.inMilliseconds * .92)
+      .round()
+      .clamp(650, 8000)
+      .toInt();
+  final tokenRows = <List<LyricToken>>[];
+  for (var rowIndex = 0; rowIndex < line.texts.length; rowIndex++) {
+    // Only the original lyric row owns karaoke timing. Translation rows stay
+    // static and unplayed even in the synthetic "all lyrics" mode.
+    if (!karaokeRowCanHighlight(rowIndex)) {
+      tokenRows.add(const <LyricToken>[]);
+      continue;
+    }
+    final text = line.texts[rowIndex];
+    final chunks = _syntheticKaraokeChunks(text);
+    final weights = chunks.map(karaokeSyntheticTokenWeight).toList();
+    final totalWeight = weights.fold<double>(0, (sum, value) => sum + value);
+    var elapsedWeight = 0.0;
+    final row = <LyricToken>[];
+    for (var index = 0; index < chunks.length; index++) {
+      final startMs = (boundedMs * elapsedWeight / totalWeight).round();
+      elapsedWeight += weights[index];
+      final endMs = (boundedMs * elapsedWeight / totalWeight).round();
+      row.add(
+        LyricToken(
+          text: chunks[index],
+          start: line.timestamp + Duration(milliseconds: startMs),
+          end: line.timestamp + Duration(milliseconds: endMs),
+        ),
+      );
+    }
+    tokenRows.add(row);
+  }
+  final synthesized = LyricLine(
+    timestamp: line.timestamp,
+    texts: line.texts,
+    tokens: tokenRows,
+  );
+  _synthesizedKaraokeCache[line] = _SynthesizedKaraokeCacheEntry(
+    nextTimestamp,
+    synthesized,
+  );
+  return synthesized;
+}
+
+bool hasUsableKaraokeTiming(LyricLine line) {
+  final rows = line.tokens;
+  if (rows == null || rows.isEmpty) return false;
+  return rows.first.any((token) => token.end > token.start);
+}
 
 class MobileLyricsList extends StatefulWidget {
   const MobileLyricsList({
@@ -200,9 +816,16 @@ class MobileLyricsList extends StatefulWidget {
     this.brightForeground = false,
     this.textAlign = TextAlign.center,
     this.elasticScrollEnabled = false,
+    this.karaokeLyricsEnabled = true,
+    this.karaokeLyricsMode = KaraokeLyricsMode.timedOnly,
     this.lineBlurEnabled = false,
     this.highlightActiveLine = false,
     this.isPlaying = true,
+    this.playbackRate = 1,
+    this.playbackRateListenable,
+    this.actualPlaybackListenable,
+    this.seekPositionListenable,
+    this.seekIntentListenable,
     this.position = Duration.zero,
     this.positionListenable,
     this.onBrowseTargetChanged,
@@ -223,9 +846,16 @@ class MobileLyricsList extends StatefulWidget {
   final bool brightForeground;
   final TextAlign textAlign;
   final bool elasticScrollEnabled;
+  final bool karaokeLyricsEnabled;
+  final KaraokeLyricsMode karaokeLyricsMode;
   final bool lineBlurEnabled;
   final bool highlightActiveLine;
   final bool isPlaying;
+  final double playbackRate;
+  final ValueListenable<double>? playbackRateListenable;
+  final ValueListenable<bool>? actualPlaybackListenable;
+  final ValueListenable<Duration?>? seekPositionListenable;
+  final ValueListenable<int>? seekIntentListenable;
   final Duration position;
   final ValueListenable<Duration>? positionListenable;
   final ValueChanged<Duration?>? onBrowseTargetChanged;
@@ -240,11 +870,11 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   static const _focusAnchor = .4;
 
   ScrollController? _scrollControllerState;
-  // A slightly under-damped profile gives the opt-in mode a visible spring
-  // return while retaining the existing velocity-continuous retargeting.
+  // One critically damped motion retains velocity when consecutive lyric
+  // targets arrive. This avoids restarting a slow easing curve at every line.
   final LyricScrollMotion _motion = LyricScrollMotion(
-    dampingRatio: .78,
-    frequency: 11,
+    dampingRatio: 1,
+    frequency: mobileLyricsDefaultScrollFrequency,
   );
   final ValueNotifier<_LyricDebugSnapshot> _debugSnapshot = ValueNotifier(
     const _LyricDebugSnapshot(),
@@ -269,15 +899,18 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   bool _browseSelectionDispatching = false;
   bool _hasInitialPosition = false;
   bool _layoutInvalid = true;
+  bool _pendingTypographyReanchor = false;
   bool _debugOverlayEnabled = false;
   int _layoutRequestId = 0;
-  int _standardScrollGeneration = 0;
   int _seekElasticReplayId = 0;
   int _lyricContentRevision = 0;
   bool _awaitingNextSongLyrics = false;
   int _recompositionCount = 0;
   int? _browseTargetIndex;
   int? _seekTargetIndex;
+  int? _normalExitIndex;
+  bool _explicitSeekPending = false;
+  Timer? _explicitSeekTimer;
   Duration? _seekTargetTimestamp;
   double _viewportHeight = 0;
   double _layoutWidth = 0;
@@ -299,12 +932,25 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   void initState() {
     super.initState();
     _motionTicker = createTicker(_onMotionTick);
+    widget.seekIntentListenable?.addListener(_markExplicitSeek);
     widget.controller?._attach(this, _recenterActive, _settleOnTimestamp);
+  }
+
+  void _markExplicitSeek() {
+    _explicitSeekPending = true;
+    _explicitSeekTimer?.cancel();
+    _explicitSeekTimer = Timer(const Duration(seconds: 2), () {
+      _explicitSeekPending = false;
+    });
   }
 
   @override
   void didUpdateWidget(covariant MobileLyricsList oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (oldWidget.seekIntentListenable != widget.seekIntentListenable) {
+      oldWidget.seekIntentListenable?.removeListener(_markExplicitSeek);
+      widget.seekIntentListenable?.addListener(_markExplicitSeek);
+    }
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller?._detach(this);
       widget.controller?._attach(this, _recenterActive, _settleOnTimestamp);
@@ -312,6 +958,8 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     final linesChanged = oldWidget.lines != widget.lines;
     final contentChanged = oldWidget.contentIdentity != widget.contentIdentity;
     if (contentChanged) {
+      _normalExitIndex = null;
+      _explicitSeekPending = false;
       _awaitingNextSongLyrics = true;
       _resetScrollPositionForNewContent();
     }
@@ -326,6 +974,15 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     }
     if (linesChanged || fontChanged || contentChanged) {
       _layoutInvalid = true;
+      if (fontChanged && !contentChanged) {
+        // Font growth changes every item offset. Continuing the previous
+        // spring against the new coordinates causes visible back-and-forth
+        // movement, especially near the largest lyric size.
+        _pendingTypographyReanchor = true;
+        _stopMotion();
+        final previousPulse = _elasticPulse.value;
+        _elasticPulse.value = _LyricElasticPulse(id: previousPulse.id + 1);
+      }
       final replacingNextSongLyrics =
           linesChanged && _awaitingNextSongLyrics && !contentChanged;
       final preserveManualInteraction =
@@ -369,7 +1026,6 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     }
 
     if (oldWidget.elasticScrollEnabled != widget.elasticScrollEnabled) {
-      _standardScrollGeneration++;
       _stopMotion();
       if (_scrollControllerState?.hasClients ?? false) {
         _motion.sync(_scrollController.offset, viewportExtent: _viewportHeight);
@@ -378,6 +1034,16 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     }
 
     if (oldWidget.active == widget.active) return;
+    _normalExitIndex =
+        widget.active == oldWidget.active + 1 &&
+            _seekTargetIndex == null &&
+            !_explicitSeekPending &&
+            !_isManuallyBrowsing &&
+            widget.isPlaying &&
+            oldWidget.isPlaying
+        ? oldWidget.active
+        : null;
+    _explicitSeekPending = false;
     final seekTarget = _seekTargetIndex;
     if (seekTarget != null) {
       if (widget.active == seekTarget) {
@@ -388,14 +1054,17 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       }
       return;
     }
-    _retargetIndex(widget.active);
+    // Timestamp jumps, decoder catch-up and skipped empty lines can advance
+    // several rows at once. Do not animate the entire off-screen distance:
+    // mount near the destination first, then animate only the visible tail.
+    _retargetIndex(widget.active, boundedTravel: true);
   }
 
   void _resetScrollPositionForNewContent() {
     _layoutRequestId++;
-    _standardScrollGeneration++;
     _seekElasticReplayId++;
     _stopMotion();
+    _pendingTypographyReanchor = false;
     final previousController = _scrollControllerState;
     _scrollControllerState = null;
     _hasInitialPosition = false;
@@ -415,6 +1084,10 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     final previousTick = _lastTick;
     _lastTick = elapsed;
     if (previousTick == null) return;
+    InteractionPerformanceController.instance.pulse(
+      InteractionPhase.visualAnimation,
+      settleAfter: const Duration(milliseconds: 80),
+    );
     final frameSeconds =
         (elapsed - previousTick).inMicroseconds /
         Duration.microsecondsPerSecond;
@@ -433,13 +1106,19 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   void _startMotion() {
     if (_motionTicker.isActive) return;
-    _lastTick = null;
+    // Ticker elapsed time starts at zero for every start. Seeding the previous
+    // value lets the first rendered tick advance immediately instead of
+    // spending one frame only initializing timing state.
+    _lastTick = Duration.zero;
     _motionTicker.start();
   }
 
   void _stopMotion() {
     if (_motionTicker.isActive) _motionTicker.stop();
     _lastTick = null;
+    InteractionPerformanceController.instance.endPhase(
+      InteractionPhase.visualAnimation,
+    );
   }
 
   bool _retargetIndex(
@@ -476,14 +1155,18 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       _scrollController.position.maxScrollExtent,
     );
     if (widget.elasticScrollEnabled && springLines) {
-      _standardScrollGeneration++;
       final displacement = clampedTarget - _scrollController.offset;
       _stopMotion();
       if (displacement.abs() >= .35) {
+        InteractionPerformanceController.instance.pulse(
+          InteractionPhase.visualAnimation,
+          settleAfter: const Duration(milliseconds: 1100),
+        );
         final previous = _elasticPulse.value;
         final visualDisplacement = clampLyricElasticDisplacement(
           displacement,
           _viewportHeight,
+          fontSize: widget.fontSize,
         );
         final isLongJump = visualDisplacement.abs() + .5 < displacement.abs();
         final lineDuration = _lineDurationSeconds(anchorIndex ?? widget.active);
@@ -502,40 +1185,34 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     }
 
     if (widget.elasticScrollEnabled) {
-      _standardScrollGeneration++;
       _motion.offset = _scrollController.offset;
       _motion.retarget(clampedTarget, viewportExtent: _viewportHeight);
       _startMotion();
       return true;
     }
 
-    _stopMotion();
-    final generation = ++_standardScrollGeneration;
     var animationStart = _scrollController.offset;
     if (boundedTravel) {
-      final displacement = clampedTarget - animationStart;
-      final visibleTravel = lyricSeekVisibleTravel(_viewportHeight);
-      if (displacement.abs() > visibleTravel) {
-        animationStart = clampedTarget - displacement.sign * visibleTravel;
+      final boundedStart = boundedLyricAnimationStart(
+        animationStart,
+        clampedTarget,
+        _viewportHeight,
+        fontSize: widget.fontSize,
+      );
+      if ((boundedStart - animationStart).abs() >= .05) {
+        animationStart = boundedStart;
         _scrollController.jumpTo(animationStart);
       }
     }
-    _motion.sync(animationStart, viewportExtent: _viewportHeight);
-    unawaited(
-      _scrollController
-          .animateTo(
-            clampedTarget,
-            duration: mobileLyricsFocusTransitionDuration,
-            curve: mobileLyricsFocusTransitionCurve,
-          )
-          .then((_) {
-            if (!mounted || generation != _standardScrollGeneration) return;
-            _motion.sync(
-              _scrollController.offset,
-              viewportExtent: _viewportHeight,
-            );
-          }),
-    );
+    if (_motionTicker.isActive) {
+      // Preserve the current velocity across dense or multi-line lyric
+      // changes, while synchronizing any offset changed by a bounded seek.
+      _motion.offset = animationStart;
+    } else {
+      _motion.sync(animationStart, viewportExtent: _viewportHeight);
+    }
+    _motion.retarget(clampedTarget, viewportExtent: _viewportHeight);
+    _startMotion();
     return true;
   }
 
@@ -558,10 +1235,10 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       _scrollController.position.maxScrollExtent,
     );
     _stopMotion();
-    _standardScrollGeneration++;
     _scrollController.jumpTo(target);
     _motion.sync(target, viewportExtent: _viewportHeight);
     _hasInitialPosition = true;
+    _pendingTypographyReanchor = false;
   }
 
   void _scheduleLayoutRetarget({bool jump = false}) {
@@ -581,10 +1258,14 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       }
       final seekTarget = _seekTargetIndex;
       if (seekTarget != null) {
-        _retargetIndex(seekTarget, force: true, boundedTravel: true);
+        if (_pendingTypographyReanchor) {
+          _jumpToIndex(seekTarget);
+        } else {
+          _retargetIndex(seekTarget, force: true, boundedTravel: true);
+        }
         return;
       }
-      if (jump || !_hasInitialPosition) {
+      if (jump || !_hasInitialPosition || _pendingTypographyReanchor) {
         _jumpToIndex(widget.active.clamp(0, _itemOffsets.length - 1));
       } else {
         _retargetIndex(widget.active, force: true, springLines: false);
@@ -607,7 +1288,6 @@ class _MobileLyricsListState extends State<MobileLyricsList>
         _browseHighlightVisible = false;
       });
     }
-    _standardScrollGeneration++;
     _stopMotion();
     final previousPulse = _elasticPulse.value;
     _elasticPulse.value = _LyricElasticPulse(id: previousPulse.id + 1);
@@ -724,7 +1404,6 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   void _handleLyricsPointerDown(PointerDownEvent event) {
     _lyricsPointerDown = true;
     _layoutRequestId++;
-    _standardScrollGeneration++;
     _stopMotion();
     if (!_isManuallyBrowsing && _scrollController.hasClients) {
       final frozenOffset = _scrollController.offset;
@@ -1000,6 +1679,9 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     _layoutWidth = width;
     _viewportHeight = viewport;
     _layoutFontSize = widget.fontSize;
+    _motion.updateDynamics(
+      frequency: mobileLyricsScrollFrequencyForFontSize(widget.fontSize),
+    );
     _layoutFontFamily = widget.fontFamily;
     _layoutTextAlign = widget.textAlign;
     _layoutDirection = direction;
@@ -1069,6 +1751,22 @@ class _MobileLyricsListState extends State<MobileLyricsList>
           viewport * _focusAnchor,
       growable: false,
     );
+    final controller = _scrollControllerState;
+    if (_pendingTypographyReanchor &&
+        controller != null &&
+        controller.hasClients &&
+        _itemOffsets.isNotEmpty) {
+      // Font metrics and the scroll anchor must become visible in the same
+      // frame. A post-frame jump briefly paints the resized line at its old
+      // offset, which looks like a one-frame twitch while dragging the slider.
+      final anchor = widget.active.clamp(0, _itemOffsets.length - 1);
+      final target = _itemOffsets[anchor];
+      controller.position.correctPixels(target);
+      _motion.sync(target, viewportExtent: _viewportHeight);
+      _hasInitialPosition = true;
+      _pendingTypographyReanchor = false;
+      return true;
+    }
     _scheduleLayoutRetarget(jump: !_hasInitialPosition);
     return true;
   }
@@ -1093,6 +1791,11 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   @override
   void dispose() {
+    widget.seekIntentListenable?.removeListener(_markExplicitSeek);
+    _explicitSeekTimer?.cancel();
+    InteractionPerformanceController.instance.endPhase(
+      InteractionPhase.visualAnimation,
+    );
     widget.controller?._detach(this);
     _motionTicker.dispose();
     _scrollControllerState?.dispose();
@@ -1133,72 +1836,109 @@ class _MobileLyricsListState extends State<MobileLyricsList>
               _motion.sync(initialOffset, viewportExtent: _viewportHeight);
               _hasInitialPosition = true;
             }
-            Widget lyrics = NotificationListener<ScrollNotification>(
-              onNotification: _onScrollNotification,
-              child: KeyedSubtree(
-                key: ValueKey((
-                  'mobile_lyrics_content',
-                  widget.contentIdentity,
-                )),
-                child: ListView.builder(
-                  key: const ValueKey('mobile_lyrics_scroll_view'),
-                  controller: _scrollController,
-                  padding: EdgeInsets.only(
-                    top: _topPadding,
-                    bottom: _bottomPadding,
-                  ),
-                  scrollCacheExtent: const ScrollCacheExtent.viewport(1),
-                  itemCount: widget.lines.length,
-                  itemExtentBuilder: (index, dimensions) => _itemHeights[index],
-                  itemBuilder: (itemContext, index) {
-                    _recompositionCount++;
-                    final distance = (index - displayedActive).abs();
-                    final browseTarget =
-                        _isManuallyBrowsing && index == _browseTargetIndex;
-                    final browseHighlighted =
-                        browseTarget && _browseHighlightVisible;
-                    Widget item = _LyricLineItem(
-                      key: ValueKey('mobile_lyric_$index'),
-                      line: widget.lines[index],
-                      active: index == displayedActive,
-                      distance: distance,
-                      height: _itemHeights[index],
-                      fontSize: widget.fontSize,
-                      fontFamily: widget.fontFamily,
-                      activeColor: widget.activeColor,
-                      styleIdentity: (
-                        widget.contentIdentity,
-                        widget.activeColor?.toARGB32(),
-                      ),
-                      fontWeight: widget.fontWeight,
-                      glowEnabled: widget.glowEnabled,
-                      glowRadius: widget.glowRadius,
-                      brightForeground: widget.brightForeground,
-                      textAlign: widget.textAlign,
-                      lineBlurEnabled: widget.lineBlurEnabled,
-                      highlightActiveLine: widget.highlightActiveLine,
-                      browseHighlighted: browseHighlighted,
-                      lineBlurSuppressed: _isManuallyBrowsing,
-                      isPlaying: widget.isPlaying,
-                      position: displayedPosition,
-                      positionListenable:
-                          _seekTargetIndex == null && index == displayedActive
-                          ? widget.positionListenable
-                          : null,
-                    );
-                    if (widget.elasticScrollEnabled) {
-                      item = _ElasticLyricLine(
-                        key: ValueKey(
-                          'mobile_lyric_elastic_${_lyricContentRevision}_$index',
+            // Extend the render viewport beyond the clipped screen. This keeps
+            // tall translated lines mounted until their final pixels leave the
+            // top edge, including while elastic transforms are settling.
+            Widget lyrics = ClipRect(
+              key: const ValueKey('mobile_lyrics_viewport'),
+              child: Stack(
+                clipBehavior: Clip.none,
+                children: [
+                  Positioned(
+                    top: -mobileLyricsRenderOverflow,
+                    bottom: -mobileLyricsRenderOverflow,
+                    left: 0,
+                    right: 0,
+                    child: NotificationListener<ScrollNotification>(
+                      onNotification: _onScrollNotification,
+                      child: KeyedSubtree(
+                        key: ValueKey((
+                          'mobile_lyrics_content',
+                          widget.contentIdentity,
+                        )),
+                        child: ListView.builder(
+                          key: const ValueKey('mobile_lyrics_scroll_view'),
+                          controller: _scrollController,
+                          padding: EdgeInsets.only(
+                            top: _topPadding + mobileLyricsRenderOverflow,
+                            bottom: _bottomPadding + mobileLyricsRenderOverflow,
+                          ),
+                          scrollCacheExtent: const ScrollCacheExtent.pixels(
+                            240,
+                          ),
+                          itemCount: widget.lines.length,
+                          itemExtentBuilder: (index, dimensions) =>
+                              _itemHeights[index],
+                          itemBuilder: (itemContext, index) {
+                            _recompositionCount++;
+                            final distance = (index - displayedActive).abs();
+                            final browseTarget =
+                                _isManuallyBrowsing &&
+                                index == _browseTargetIndex;
+                            final browseHighlighted =
+                                browseTarget && _browseHighlightVisible;
+                            Widget item = _LyricLineItem(
+                              key: ValueKey('mobile_lyric_$index'),
+                              line: widget.lines[index],
+                              active: index == displayedActive,
+                              distance: distance,
+                              relativeDistance: index - displayedActive,
+                              height: _itemHeights[index],
+                              fontSize: widget.fontSize,
+                              fontFamily: widget.fontFamily,
+                              activeColor: widget.activeColor,
+                              styleIdentity: (
+                                widget.contentIdentity,
+                                widget.activeColor?.toARGB32(),
+                              ),
+                              fontWeight: widget.fontWeight,
+                              glowEnabled: widget.glowEnabled,
+                              glowRadius: widget.glowRadius,
+                              brightForeground: widget.brightForeground,
+                              textAlign: widget.textAlign,
+                              lineBlurEnabled: widget.lineBlurEnabled,
+                              highlightActiveLine: widget.highlightActiveLine,
+                              karaokeLyricsEnabled: widget.karaokeLyricsEnabled,
+                              karaokeLyricsMode: widget.karaokeLyricsMode,
+                              nextTimestamp: index + 1 < widget.lines.length
+                                  ? widget.lines[index + 1].timestamp
+                                  : null,
+                              browseHighlighted: browseHighlighted,
+                              lineBlurSuppressed: _isManuallyBrowsing,
+                              regularScrollMode: !widget.elasticScrollEnabled,
+                              isPlaying: widget.isPlaying,
+                              normalExit: index == _normalExitIndex,
+                              playbackRate: widget.playbackRate,
+                              playbackRateListenable:
+                                  widget.playbackRateListenable,
+                              actualPlaybackListenable:
+                                  widget.actualPlaybackListenable,
+                              seekPositionListenable:
+                                  widget.seekPositionListenable,
+                              position: displayedPosition,
+                              positionListenable:
+                                  _seekTargetIndex == null &&
+                                      index == displayedActive
+                                  ? widget.positionListenable
+                                  : null,
+                            );
+                            if (widget.elasticScrollEnabled) {
+                              item = _ElasticLyricLine(
+                                key: ValueKey(
+                                  'mobile_lyric_elastic_${_lyricContentRevision}_$index',
+                                ),
+                                index: index,
+                                pulse: _elasticPulse,
+                                child: item,
+                              );
+                            }
+                            return item;
+                          },
                         ),
-                        index: index,
-                        pulse: _elasticPulse,
-                        child: item,
-                      );
-                    }
-                    return item;
-                  },
-                ),
+                      ),
+                    ),
+                  ),
+                ],
               ),
             );
             lyrics = Stack(
@@ -1328,9 +2068,9 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                   begin: Alignment.topCenter,
                   end: Alignment.bottomCenter,
                   colors: const [
-                    // Use several low-contrast steps over a wider band so a
-                    // line remains perceptible until it actually reaches the
-                    // viewport edge instead of crossing a visible cutoff.
+                    // A wide, symmetric multi-stop ramp removes the visible
+                    // dark strip while keeping the fully opaque reading area
+                    // away from the playback controls and top chrome.
                     Color(mobileLyricsTopEdgeAlpha << 24),
                     Color(mobileLyricsTopFadeSoftAlpha << 24),
                     Color(mobileLyricsTopFadeMidAlpha << 24),
@@ -1340,6 +2080,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                     Color(mobileLyricsBottomFadeNearAlpha << 24),
                     Color(mobileLyricsBottomFadeMidAlpha << 24),
                     Color(mobileLyricsBottomFadeSoftAlpha << 24),
+                    Colors.transparent,
                     Colors.transparent,
                   ],
                   stops: mobileLyricsEdgeFadeStops(bounds.height),
@@ -1441,23 +2182,27 @@ class _ElasticLyricLineState extends State<_ElasticLyricLine>
     _controller.value = pulse.displacement;
     _pendingDurationSeconds = pulse.lineDurationSeconds;
     final distance = (widget.index - pulse.anchorIndex).abs();
-    if (distance > 6) {
+    if (distance > 4) {
       // Cached rows outside the visible elastic wave must not keep their own
       // spring ticker alive. They cannot be seen, but collectively add raster
       // and scheduling pressure when glow is enabled.
       _controller.value = 0;
       return;
     }
-    final delayStep = (_pendingDurationSeconds * 50).clamp(12.0, 60.0);
-    final delay = Duration(milliseconds: ((distance + 1) * delayStep).round());
-    _delayTimer = Timer(delay, _startSpring);
+    final delayStep = (_pendingDurationSeconds * 38).clamp(10.0, 44.0);
+    final delay = Duration(milliseconds: (distance * delayStep).round());
+    if (delay == Duration.zero) {
+      _startSpring();
+    } else {
+      _delayTimer = Timer(delay, _startSpring);
+    }
   }
 
   void _startSpring() {
     if (!mounted) return;
     final durationSquared = _pendingDurationSeconds * _pendingDurationSeconds;
-    final stiffness = (200 / (durationSquared > 0 ? durationSquared : 1))
-        .clamp(100.0, 200.0)
+    final stiffness = (210 / (durationSquared > 0 ? durationSquared : 1))
+        .clamp(105.0, 210.0)
         .toDouble();
     final durationProgress = (_pendingDurationSeconds / 1.5)
         .clamp(0.0, 1.0)
@@ -1465,7 +2210,7 @@ class _ElasticLyricLineState extends State<_ElasticLyricLine>
     final spring = SpringDescription.withDampingRatio(
       mass: 1,
       stiffness: stiffness,
-      ratio: 1 - .3 * durationProgress,
+      ratio: .74 - .10 * durationProgress,
     );
     _controller.animateWith(
       SpringSimulation(
@@ -1554,6 +2299,7 @@ class _LyricLineItem extends StatelessWidget {
     required this.line,
     required this.active,
     required this.distance,
+    required this.relativeDistance,
     required this.height,
     required this.fontSize,
     required this.fontFamily,
@@ -1566,9 +2312,18 @@ class _LyricLineItem extends StatelessWidget {
     required this.textAlign,
     required this.lineBlurEnabled,
     required this.highlightActiveLine,
+    required this.karaokeLyricsEnabled,
+    required this.karaokeLyricsMode,
+    required this.nextTimestamp,
     required this.browseHighlighted,
     required this.lineBlurSuppressed,
+    required this.regularScrollMode,
     required this.isPlaying,
+    required this.normalExit,
+    required this.playbackRate,
+    required this.playbackRateListenable,
+    required this.actualPlaybackListenable,
+    required this.seekPositionListenable,
     required this.position,
     required this.positionListenable,
   });
@@ -1576,6 +2331,7 @@ class _LyricLineItem extends StatelessWidget {
   final LyricLine line;
   final bool active;
   final int distance;
+  final int relativeDistance;
   final double height;
   final double fontSize;
   final String? fontFamily;
@@ -1588,24 +2344,37 @@ class _LyricLineItem extends StatelessWidget {
   final TextAlign textAlign;
   final bool lineBlurEnabled;
   final bool highlightActiveLine;
+  final bool karaokeLyricsEnabled;
+  final KaraokeLyricsMode karaokeLyricsMode;
+  final Duration? nextTimestamp;
   final bool browseHighlighted;
   final bool lineBlurSuppressed;
+  final bool regularScrollMode;
   final bool isPlaying;
+  final bool normalExit;
+  final double playbackRate;
+  final ValueListenable<double>? playbackRateListenable;
+  final ValueListenable<bool>? actualPlaybackListenable;
+  final ValueListenable<Duration?>? seekPositionListenable;
   final Duration position;
   final ValueListenable<Duration>? positionListenable;
 
   double get _opacity => switch (distance) {
     0 => 1,
-    1 => .72,
-    2 => .58,
-    3 => .46,
-    _ => .36,
+    1 => .68,
+    2 => .52,
+    3 => .40,
+    _ => .32,
   };
 
   double get _scale => switch (distance) {
     0 => mobileLyricsActiveScale,
     _ => 1,
   };
+
+  Offset get _lyricLineOffset => !lineBlurSuppressed && !browseHighlighted
+      ? Offset(0, mobileLyricsKaraokeLineShift(relativeDistance))
+      : Offset.zero;
 
   Alignment get _alignment => switch (textAlign) {
     TextAlign.left || TextAlign.start => Alignment.centerLeft,
@@ -1622,15 +2391,28 @@ class _LyricLineItem extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final hasTimedKaraoke = hasUsableKaraokeTiming(line);
+    final karaokeWillAnimate =
+        karaokeLyricsEnabled &&
+        (hasTimedKaraoke || karaokeLyricsMode == KaraokeLyricsMode.all);
+    final effectiveLine =
+        karaokeWillAnimate &&
+            karaokeLyricsMode == KaraokeLyricsMode.all &&
+            !hasTimedKaraoke
+        ? synthesizeKaraokeTiming(line, nextTimestamp: nextTimestamp)
+        : line;
     final darkForeground =
         brightForeground || Theme.of(context).brightness == Brightness.dark;
     final inactiveBase = darkForeground
         ? Colors.white
         : const Color(0xFF757575);
-    final inactiveColor = inactiveBase.withValues(alpha: _opacity);
     final karaokeUnplayedColor = darkForeground
-        ? Colors.white.withValues(alpha: .50)
-        : const Color(0xFF757575).withValues(alpha: .80);
+        ? Colors.white.withValues(alpha: .36)
+        : const Color(0xFF757575).withValues(alpha: .68);
+    // Karaoke uses one stable visual state for every non-playing line.
+    final inactiveColor = karaokeLyricsEnabled
+        ? karaokeUnplayedColor
+        : inactiveBase.withValues(alpha: _opacity);
     final resolvedActiveColor = highlightActiveLine
         ? Colors.white
         : activeColor ?? Theme.of(context).colorScheme.primary;
@@ -1658,11 +2440,10 @@ class _LyricLineItem extends StatelessWidget {
     final glowColor = lineColor.withValues(alpha: .30);
     Widget buildLyric(Duration currentPosition) {
       if (line.isInterlude) {
-        if (!active) return const SizedBox.shrink();
         return Align(
           alignment: _alignment,
           child: InterludeAnimationWidget(
-            isCurrent: true,
+            isCurrent: active,
             baseColor: inactiveColor,
             highlightColor: resolvedActiveColor.withValues(alpha: .9),
             startTime: line.timestamp,
@@ -1672,30 +2453,37 @@ class _LyricLineItem extends StatelessWidget {
           ),
         );
       }
-      // Highlight mode renders the entire active line with one color. Building
-      // token-by-token karaoke spans here adds layout and paint work without
-      // changing the result, especially when active lines change while the
-      // list is scrolling. Keep that hot path to a single lightweight Text.
-      if (!active || highlightActiveLine) {
+      // Karaoke has priority over whole-line highlighting when explicitly
+      // enabled. Previously highlight mode returned here first, which made the
+      // new karaoke switch appear to do nothing for users who had kept the
+      // older highlight option enabled.
+      if (!karaokeWillAnimate || browseHighlighted) {
         return Text(line.texts.join('\n'), textAlign: textAlign);
       }
+      final animatedPosition = active
+          ? currentPosition
+          : line.timestamp - const Duration(milliseconds: 120);
       return _KaraokeLyricText(
-        line: line,
-        position: currentPosition,
-        playedColor: style.color!,
-        unplayedColor: browseHighlighted
-            ? browseHighlightColor
-            : highlightActiveLine
-            ? Colors.white
-            : karaokeUnplayedColor,
+        cacheIdentity: (line, nextTimestamp, karaokeLyricsMode),
+        line: effectiveLine,
+        position: animatedPosition,
+        positionListenable: active ? positionListenable : null,
+        isPlaying: active && isPlaying,
+        normalExit: normalExit,
+        playbackRate: playbackRate,
+        playbackRateListenable: playbackRateListenable,
+        actualPlaybackListenable: actualPlaybackListenable,
+        seekPositionListenable: seekPositionListenable,
+        playedColor: active ? style.color! : karaokeUnplayedColor,
+        unplayedColor: karaokeUnplayedColor,
         textAlign: textAlign,
       );
     }
 
+    // Karaoke listens directly from its painter, so playback ticks repaint
+    // only its cached custom-paint surface and never rebuild the lyric row.
     final followsPlaybackPosition =
-        active &&
-        positionListenable != null &&
-        (line.isInterlude || !highlightActiveLine);
+        active && positionListenable != null && line.isInterlude;
     final lyric = followsPlaybackPosition
         ? ValueListenableBuilder<Duration>(
             valueListenable: positionListenable!,
@@ -1727,6 +2515,7 @@ class _LyricLineItem extends StatelessWidget {
                           textDirection: Directionality.of(context),
                           textScaler: MediaQuery.textScalerOf(context),
                           locale: Localizations.maybeLocaleOf(context),
+                          primaryRowOnly: karaokeWillAnimate,
                         ),
                       ),
                     ),
@@ -1746,6 +2535,9 @@ class _LyricLineItem extends StatelessWidget {
     final effectiveLyric = lineBlurEnabled
         ? _AnimatedLyricBlur(
             sigma: sigma,
+            duration: regularScrollMode
+                ? mobileLyricsDefaultScrollTransitionDuration
+                : mobileLyricsFocusTransitionDuration,
             child: RepaintBoundary(child: lyricPaintLayer),
           )
         : lyricPaintLayer;
@@ -1755,38 +2547,54 @@ class _LyricLineItem extends StatelessWidget {
         padding: EdgeInsets.symmetric(
           horizontal: mobileLyricsHorizontalInset(textAlign),
         ),
-        child: FractionallySizedBox(
-          key: const ValueKey('mobile_lyric_scale_safe_content'),
-          widthFactor: 1 / mobileLyricsActiveScale,
-          heightFactor: 1 / mobileLyricsActiveScale,
-          alignment: _alignment,
-          child: AnimatedScale(
-            scale: _scale,
-            duration: active
-                ? const Duration(milliseconds: 220)
-                : const Duration(milliseconds: 280),
-            curve: active ? Curves.easeOutCubic : const Cubic(.16, 1, .3, 1),
+        child: AnimatedSlide(
+          key: const ValueKey('mobile_lyric_karaoke_line_shift'),
+          offset: _lyricLineOffset,
+          duration: mobileLyricsKaraokeLineShiftDuration,
+          curve: mobileLyricsFocusTransitionCurve,
+          child: FractionallySizedBox(
+            key: const ValueKey('mobile_lyric_scale_safe_content'),
+            widthFactor: 1 / mobileLyricsActiveScale,
+            heightFactor: 1 / mobileLyricsActiveScale,
             alignment: _alignment,
-            // Keep the expensive glyph and glow raster below the transform.
-            // The scale-safe parent reserves the transformed paint bounds, so
-            // sliver culling cannot remove a still-visible departing line.
-            child: RepaintBoundary(
-              key: const ValueKey('mobile_lyric_scaled_paint'),
-              child: AnimatedDefaultTextStyle(
-                key: ValueKey(styleIdentity),
-                duration: active
-                    ? const Duration(milliseconds: 210)
-                    : const Duration(milliseconds: 280),
-                curve: active
-                    ? Curves.easeOutCubic
-                    : const Cubic(.16, 1, .3, 1),
-                style: style,
-                textAlign: textAlign,
-                child: Align(
-                  alignment: _alignment,
-                  child: SizedBox(
-                    width: double.infinity,
-                    child: effectiveLyric,
+            child: AnimatedScale(
+              scale: _scale,
+              duration: regularScrollMode
+                  ? mobileLyricsDefaultScrollTransitionDuration
+                  : active
+                  ? const Duration(milliseconds: 220)
+                  : const Duration(milliseconds: 280),
+              curve: regularScrollMode
+                  ? mobileLyricsFocusTransitionCurve
+                  : active
+                  ? Curves.easeOutCubic
+                  : const Cubic(.16, 1, .3, 1),
+              alignment: _alignment,
+              // Keep the expensive glyph and glow raster below the transform.
+              // The scale-safe parent reserves the transformed paint bounds, so
+              // sliver culling cannot remove a still-visible departing line.
+              child: RepaintBoundary(
+                key: const ValueKey('mobile_lyric_scaled_paint'),
+                child: AnimatedDefaultTextStyle(
+                  key: ValueKey(styleIdentity),
+                  duration: regularScrollMode
+                      ? mobileLyricsDefaultScrollTransitionDuration
+                      : active
+                      ? const Duration(milliseconds: 210)
+                      : const Duration(milliseconds: 280),
+                  curve: regularScrollMode
+                      ? mobileLyricsFocusTransitionCurve
+                      : active
+                      ? Curves.easeOutCubic
+                      : const Cubic(.16, 1, .3, 1),
+                  style: style,
+                  textAlign: textAlign,
+                  child: Align(
+                    alignment: _alignment,
+                    child: SizedBox(
+                      width: double.infinity,
+                      child: effectiveLyric,
+                    ),
                   ),
                 ),
               ),
@@ -1799,11 +2607,11 @@ class _LyricLineItem extends StatelessWidget {
 }
 
 class _AnimatedLyricBlur extends ImplicitlyAnimatedWidget {
-  const _AnimatedLyricBlur({required this.sigma, required this.child})
-    : super(
-        duration: mobileLyricsFocusTransitionDuration,
-        curve: mobileLyricsFocusTransitionCurve,
-      );
+  const _AnimatedLyricBlur({
+    required this.sigma,
+    required super.duration,
+    required this.child,
+  }) : super(curve: mobileLyricsFocusTransitionCurve);
 
   final double sigma;
   final Widget child;
@@ -1855,6 +2663,7 @@ class MobileLyricGlowPainter extends CustomPainter {
     required this.textDirection,
     required this.textScaler,
     required this.locale,
+    this.primaryRowOnly = false,
   });
 
   final String text;
@@ -1865,20 +2674,32 @@ class MobileLyricGlowPainter extends CustomPainter {
   final TextDirection textDirection;
   final TextScaler textScaler;
   final Locale? locale;
+  final bool primaryRowOnly;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (text.isEmpty || size.isEmpty || color.a <= 0 || blurRadius <= 0) {
       return;
     }
+    final baseStyle = style.copyWith(color: Colors.transparent, shadows: null);
+    final glowingStyle = baseStyle.copyWith(
+      shadows: [Shadow(color: color, blurRadius: blurRadius)],
+    );
+    final firstNewline = text.indexOf('\n');
+    final content = primaryRowOnly && firstNewline >= 0
+        ? TextSpan(
+            style: baseStyle,
+            children: [
+              TextSpan(
+                text: text.substring(0, firstNewline),
+                style: glowingStyle,
+              ),
+              TextSpan(text: text.substring(firstNewline), style: baseStyle),
+            ],
+          )
+        : TextSpan(text: text, style: glowingStyle);
     final painter = TextPainter(
-      text: TextSpan(
-        text: text,
-        style: style.copyWith(
-          color: Colors.transparent,
-          shadows: [Shadow(color: color, blurRadius: blurRadius)],
-        ),
-      ),
+      text: content,
       textAlign: textAlign,
       textDirection: textDirection,
       textScaler: textScaler,
@@ -1896,7 +2717,8 @@ class MobileLyricGlowPainter extends CustomPainter {
       oldDelegate.textAlign != textAlign ||
       oldDelegate.textDirection != textDirection ||
       oldDelegate.textScaler != textScaler ||
-      oldDelegate.locale != locale;
+      oldDelegate.locale != locale ||
+      oldDelegate.primaryRowOnly != primaryRowOnly;
 }
 
 class _LyricDebugSnapshot {
@@ -1957,15 +2779,31 @@ class _LyricDebugPanel extends StatelessWidget {
 
 class _KaraokeLyricText extends StatefulWidget {
   const _KaraokeLyricText({
+    required this.cacheIdentity,
     required this.line,
     required this.position,
+    required this.positionListenable,
+    required this.isPlaying,
+    required this.normalExit,
+    required this.playbackRate,
+    required this.playbackRateListenable,
+    required this.actualPlaybackListenable,
+    required this.seekPositionListenable,
     required this.playedColor,
     required this.unplayedColor,
     required this.textAlign,
   });
 
+  final Object cacheIdentity;
   final LyricLine line;
   final Duration position;
+  final ValueListenable<Duration>? positionListenable;
+  final bool isPlaying;
+  final bool normalExit;
+  final double playbackRate;
+  final ValueListenable<double>? playbackRateListenable;
+  final ValueListenable<bool>? actualPlaybackListenable;
+  final ValueListenable<Duration?>? seekPositionListenable;
   final Color playedColor;
   final Color unplayedColor;
   final TextAlign textAlign;
@@ -1974,104 +2812,985 @@ class _KaraokeLyricText extends StatefulWidget {
   State<_KaraokeLyricText> createState() => _KaraokeLyricTextState();
 }
 
-class _KaraokeLyricTextState extends State<_KaraokeLyricText> {
-  final Map<LyricToken, List<int>> _tokenRunes = Map.identity();
-  final Map<LyricToken, TextSpan> _playedTokens = Map.identity();
-  final Map<LyricToken, TextSpan> _unplayedTokens = Map.identity();
-  late TextStyle _playedStyle;
-  late TextStyle _unplayedStyle;
+class _KaraokeLyricTextState extends State<_KaraokeLyricText>
+    with TickerProviderStateMixin {
+  late String _text;
+  late List<_KaraokeTokenRange> _ranges;
+  late final Ticker _positionTicker;
+  late final KaraokeMediaClock _clock;
+  late final AnimationController _exitController;
+  bool _isExiting = false;
+  double _measureWidth = -1;
+  double _measuredHeight = 0;
+  TextStyle? _measureStyle;
+  TextAlign? _measureTextAlign;
+  TextDirection? _measureTextDirection;
+  TextScaler? _measureTextScaler;
+  Locale? _measureLocale;
 
   @override
   void initState() {
     super.initState();
+    final initialPosition = widget.positionListenable?.value ?? widget.position;
+    _clock = KaraokeMediaClock(initialPosition, rate: _playbackRate);
+    _exitController =
+        AnimationController(
+          vsync: this,
+          duration: karaokeDefaultMotion.exitDuration,
+        )..addStatusListener((status) {
+          if (status == AnimationStatus.completed && mounted) {
+            _isExiting = false;
+            _clock.seek(
+              widget.line.timestamp - const Duration(milliseconds: 120),
+            );
+            _exitController.value = 0;
+          }
+        });
+    _positionTicker = createTicker(_clock.tick);
+    widget.positionListenable?.addListener(_readSourcePosition);
+    widget.actualPlaybackListenable?.addListener(_syncTickerState);
+    widget.playbackRateListenable?.addListener(_readPlaybackRate);
+    widget.seekPositionListenable?.addListener(_readExplicitSeek);
     _rebuildCache();
+    _syncTickerState();
   }
 
   @override
   void didUpdateWidget(covariant _KaraokeLyricText oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!identical(oldWidget.line, widget.line) ||
-        oldWidget.playedColor != widget.playedColor ||
-        oldWidget.unplayedColor != widget.unplayedColor) {
-      _rebuildCache();
+    if (oldWidget.positionListenable != widget.positionListenable) {
+      oldWidget.positionListenable?.removeListener(_readSourcePosition);
+      widget.positionListenable?.addListener(_readSourcePosition);
+      if (oldWidget.positionListenable != null &&
+          widget.positionListenable == null &&
+          widget.normalExit &&
+          oldWidget.cacheIdentity == widget.cacheIdentity) {
+        _isExiting = true;
+        _exitController.forward(from: 0);
+      } else {
+        _isExiting = false;
+        _exitController.stop();
+        _exitController.value = 0;
+        _resetVisualPosition();
+      }
+    } else if (widget.positionListenable == null &&
+        oldWidget.position != widget.position) {
+      _resetVisualPosition();
     }
+    if (oldWidget.actualPlaybackListenable != widget.actualPlaybackListenable) {
+      oldWidget.actualPlaybackListenable?.removeListener(_syncTickerState);
+      widget.actualPlaybackListenable?.addListener(_syncTickerState);
+      _syncTickerState();
+    }
+    if (oldWidget.playbackRateListenable != widget.playbackRateListenable) {
+      oldWidget.playbackRateListenable?.removeListener(_readPlaybackRate);
+      widget.playbackRateListenable?.addListener(_readPlaybackRate);
+      _readPlaybackRate();
+    }
+    if (oldWidget.seekPositionListenable != widget.seekPositionListenable) {
+      oldWidget.seekPositionListenable?.removeListener(_readExplicitSeek);
+      widget.seekPositionListenable?.addListener(_readExplicitSeek);
+    }
+    if (oldWidget.playbackRate != widget.playbackRate) {
+      _readPlaybackRate();
+    }
+    if (oldWidget.cacheIdentity != widget.cacheIdentity) {
+      _isExiting = false;
+      _exitController.stop();
+      _exitController.value = 0;
+      _rebuildCache();
+      _resetVisualPosition();
+    }
+    if (oldWidget.isPlaying != widget.isPlaying) _syncTickerState();
+  }
+
+  @override
+  void dispose() {
+    widget.positionListenable?.removeListener(_readSourcePosition);
+    widget.actualPlaybackListenable?.removeListener(_syncTickerState);
+    widget.playbackRateListenable?.removeListener(_readPlaybackRate);
+    widget.seekPositionListenable?.removeListener(_readExplicitSeek);
+    _positionTicker.dispose();
+    _exitController.dispose();
+    _clock.dispose();
+    super.dispose();
+  }
+
+  Duration get _sourcePosition =>
+      widget.positionListenable?.value ?? widget.position;
+
+  double get _playbackRate =>
+      widget.playbackRateListenable?.value ?? widget.playbackRate;
+
+  void _readPlaybackRate() {
+    _clock.changeRate(_playbackRate, _sourcePosition);
+  }
+
+  void _readExplicitSeek() {
+    final target = widget.seekPositionListenable?.value;
+    if (target == null) return;
+    _clock.seek(target);
+  }
+
+  void _resetVisualPosition() => _clock.seek(_sourcePosition);
+
+  void _readSourcePosition() => _clock.readSource(_sourcePosition);
+
+  void _syncTickerState() {
+    if (_isExiting) {
+      if (_positionTicker.isActive) _positionTicker.stop();
+      _clock.freeze();
+      return;
+    }
+    // A static position is primarily used by previews and tests. Only keep a
+    // frame clock alive when a real playback position source can correct it.
+    if (widget.isPlaying &&
+        (widget.actualPlaybackListenable?.value ?? true) &&
+        widget.positionListenable != null) {
+      if (!_positionTicker.isActive) {
+        _clock.setRunning(true, _sourcePosition);
+        _positionTicker.start();
+      }
+      return;
+    }
+    if (_positionTicker.isActive) _positionTicker.stop();
+    _clock.setRunning(false, _sourcePosition);
   }
 
   void _rebuildCache() {
-    _tokenRunes.clear();
-    _playedTokens.clear();
-    _unplayedTokens.clear();
-    _playedStyle = TextStyle(color: widget.playedColor);
-    _unplayedStyle = TextStyle(color: widget.unplayedColor);
-    for (final row in widget.line.tokens ?? const <List<LyricToken>>[]) {
-      for (final token in row) {
-        _tokenRunes[token] = token.text.runes.toList(growable: false);
-        _playedTokens[token] = TextSpan(text: token.text, style: _playedStyle);
-        _unplayedTokens[token] = TextSpan(
-          text: token.text,
-          style: _unplayedStyle,
-        );
+    _text = widget.line.texts.join('\n');
+    _ranges = <_KaraokeTokenRange>[];
+    _measureWidth = -1;
+    final tokenRows = widget.line.tokens ?? const <List<LyricToken>>[];
+    var rowOffset = 0;
+    for (var rowIndex = 0; rowIndex < widget.line.texts.length; rowIndex++) {
+      final rowText = widget.line.texts[rowIndex];
+      var searchOffset = 0;
+      if (karaokeRowCanHighlight(rowIndex) && rowIndex < tokenRows.length) {
+        for (final token in tokenRows[rowIndex]) {
+          if (token.text == '\u200B') continue;
+          var localStart = rowText.indexOf(token.text, searchOffset);
+          if (localStart < 0 &&
+              searchOffset + token.text.length <= rowText.length) {
+            localStart = searchOffset;
+          }
+          if (localStart < 0) continue;
+          final localEnd = (localStart + token.text.length).clamp(
+            localStart,
+            rowText.length,
+          );
+          final visibleBounds = karaokeVisibleTokenBounds(token.text);
+          if (visibleBounds == null) {
+            searchOffset = localEnd;
+            continue;
+          }
+          _ranges.add(
+            _KaraokeTokenRange(
+              token: token,
+              start: rowOffset + localStart + visibleBounds.start,
+              end: rowOffset + localStart + visibleBounds.end,
+            ),
+          );
+          searchOffset = localEnd;
+        }
       }
+      rowOffset +=
+          rowText.length + (rowIndex + 1 < widget.line.texts.length ? 1 : 0);
     }
+  }
+
+  double _measureHeight({
+    required double width,
+    required TextStyle style,
+    required TextAlign textAlign,
+    required TextDirection textDirection,
+    required TextScaler textScaler,
+    required Locale? locale,
+  }) {
+    final cachedStyle = _measureStyle;
+    final styleNeedsLayout =
+        cachedStyle == null ||
+        style.compareTo(cachedStyle) == RenderComparison.layout;
+    final unchanged =
+        (_measureWidth - width).abs() < .1 &&
+        !styleNeedsLayout &&
+        _measureTextAlign == textAlign &&
+        _measureTextDirection == textDirection &&
+        _measureTextScaler == textScaler &&
+        _measureLocale == locale;
+    if (unchanged) return _measuredHeight;
+    final measure = TextPainter(
+      text: TextSpan(text: _text, style: style),
+      textAlign: textAlign,
+      textDirection: textDirection,
+      textScaler: textScaler,
+      locale: locale,
+    )..layout(maxWidth: width);
+    _measureWidth = width;
+    _measuredHeight = measure.height;
+    _measureStyle = style;
+    _measureTextAlign = textAlign;
+    _measureTextDirection = textDirection;
+    _measureTextScaler = textScaler;
+    _measureLocale = locale;
+    return _measuredHeight;
   }
 
   @override
   Widget build(BuildContext context) {
-    final tokenRows = widget.line.tokens;
-    if (tokenRows == null || tokenRows.isEmpty) {
-      return Text(widget.line.texts.join('\n'), textAlign: widget.textAlign);
-    }
-    final spans = <InlineSpan>[];
-    for (var row = 0; row < widget.line.texts.length; row++) {
-      if (row > 0) spans.add(const TextSpan(text: '\n'));
-      final tokens = row < tokenRows.length ? tokenRows[row] : null;
-      if (tokens == null || tokens.isEmpty) {
-        spans.add(
-          TextSpan(text: widget.line.texts[row], style: _unplayedStyle),
+    final inheritedStyle = DefaultTextStyle.of(context).style;
+    final textDirection = Directionality.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
+    final locale = Localizations.maybeLocaleOf(context);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final maxWidth = constraints.maxWidth.isFinite
+            ? constraints.maxWidth
+            : MediaQuery.sizeOf(context).width;
+        final measuredHeight = _measureHeight(
+          width: maxWidth,
+          style: inheritedStyle,
+          textAlign: widget.textAlign,
+          textDirection: textDirection,
+          textScaler: textScaler,
+          locale: locale,
         );
-        continue;
+        return Semantics(
+          label: _text,
+          child: SizedBox(
+            width: maxWidth,
+            height: measuredHeight,
+            child: CustomPaint(
+              key: const ValueKey('mobile_karaoke_single_pass_paint'),
+              painter: _SinglePassKaraokePainter(
+                text: _text,
+                ranges: _ranges,
+                position: _clock.value,
+                positionListenable: _clock,
+                exitAnimation: _exitController,
+                isExiting: _isExiting,
+                playedStyle: inheritedStyle.copyWith(color: widget.playedColor),
+                unplayedStyle: inheritedStyle.copyWith(
+                  color: widget.unplayedColor,
+                ),
+                textAlign: widget.textAlign,
+                textDirection: textDirection,
+                textScaler: textScaler,
+                locale: locale,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _KaraokePaintRange {
+  const _KaraokePaintRange({required this.start, required this.end});
+
+  final int start;
+  final int end;
+}
+
+class _KaraokeTokenRange extends _KaraokePaintRange {
+  const _KaraokeTokenRange({
+    required this.token,
+    required super.start,
+    required super.end,
+  });
+
+  final LyricToken token;
+}
+
+class _KaraokeGlyphRange extends _KaraokePaintRange {
+  const _KaraokeGlyphRange({
+    required this.tokenRange,
+    required this.index,
+    required this.count,
+    required super.start,
+    required super.end,
+  });
+
+  final _KaraokeTokenRange tokenRange;
+  final int index;
+  final int count;
+}
+
+// One-release internal A/B escape hatch. The old pure helpers remain for
+// comparison tests; the mobile painter uses the new plan by default.
+const bool _useLegacyKaraokeMotion = false;
+
+// Debug-only instrumentation for verifying that animation repaints reuse the
+// shaped text and glyph geometry. It is not incremented in release builds.
+int debugKaraokeLayoutBuildCount = 0;
+
+class _SinglePassKaraokePainter extends CustomPainter {
+  _SinglePassKaraokePainter({
+    required this.text,
+    required this.ranges,
+    required this.position,
+    required this.positionListenable,
+    required this.exitAnimation,
+    required this.isExiting,
+    required this.playedStyle,
+    required this.unplayedStyle,
+    required this.textAlign,
+    required this.textDirection,
+    required this.textScaler,
+    required this.locale,
+  }) : super(repaint: Listenable.merge([positionListenable, exitAnimation]));
+
+  final String text;
+  final List<_KaraokeTokenRange> ranges;
+  final Duration position;
+  final ValueListenable<Duration>? positionListenable;
+  final Animation<double> exitAnimation;
+  final bool isExiting;
+  final TextStyle playedStyle;
+  final TextStyle unplayedStyle;
+  final TextAlign textAlign;
+  final TextDirection textDirection;
+  final TextScaler textScaler;
+  final Locale? locale;
+  TextPainter? _layoutPainter;
+  TextPainter? _staticPainter;
+  TextPainter? _completedPainter;
+  TextPainter? _futurePainter;
+  List<int> _paintGroups = const [];
+  double _layoutWidth = -1;
+  double _liftReferenceHeight = 0;
+  double _lineCadenceUs = 80000;
+  List<_KaraokeTokenRange> _drawableRanges = const [];
+  List<_KaraokeGlyphRange> _orderedGlyphs = const [];
+  List<double> _glyphLiftStartTimesUs = const [];
+  List<KaraokeGlyphTiming> _glyphTimings = const [];
+  List<double> _highlightFactorBuffer = const [];
+  List<double> _glyphCadencesUs = const [];
+  List<bool> _breakBeforeGlyph = const [];
+  List<double?> _nextTokenStarts = const [];
+  List<int> _glyphTokenIndices = const [];
+  List<int> _tokenGlyphStarts = const [];
+  List<double> _rawProgressBuffer = const [];
+  List<double> _ownFactorBuffer = const [];
+  List<double> _liftFactorBuffer = const [];
+  List<int> _groupBuffer = const [];
+  List<double> _glyphLiftScratch = const [];
+  List<double> _glyphProgressScratch = const [];
+  final List<_KaraokeTokenRange> _completedBuffer = [];
+  final List<_KaraokeTokenRange> _futureBuffer = [];
+  Map<_KaraokeTokenRange, double> _leadInByToken = const {};
+  Map<_KaraokeTokenRange, List<_KaraokeGlyphRange>> _glyphsByToken = const {};
+  Map<_KaraokeGlyphRange, List<ui.TextBox>> _glyphBoxes = const {};
+  Map<_KaraokeTokenRange, Rect> _tokenBounds = const {};
+  Map<_KaraokeTokenRange, TextDirection> _tokenDirections = const {};
+  Map<_KaraokeGlyphRange, TextPainter> _unplayedGlyphPainters = {};
+  Map<_KaraokeGlyphRange, TextPainter> _maskGlyphPainters = {};
+  Map<_KaraokeGlyphRange, TextPainter> _playedGlyphPainters = {};
+
+  Duration get _currentPosition => positionListenable?.value ?? position;
+
+  TextPainter _layout(TextStyle style, double width) => TextPainter(
+    text: TextSpan(text: text, style: style),
+    textAlign: textAlign,
+    textDirection: textDirection,
+    textScaler: textScaler,
+    locale: locale,
+  )..layout(maxWidth: width);
+
+  TextPainter _layoutSelected(
+    Iterable<_KaraokePaintRange> selected,
+    TextStyle style,
+    double width,
+  ) {
+    final visibleRanges = selected.toList()
+      ..sort((a, b) => a.start.compareTo(b.start));
+    final transparentStyle = style.copyWith(
+      color: Colors.transparent,
+      shadows: null,
+    );
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+    for (final range in visibleRanges) {
+      final start = math.max(cursor, range.start);
+      final end = math.min(text.length, range.end);
+      if (start > cursor) {
+        spans.add(
+          TextSpan(
+            text: text.substring(cursor, start),
+            style: transparentStyle,
+          ),
+        );
       }
-      for (final token in tokens) {
-        _appendTokenSpans(spans, token);
+      if (end > start) {
+        spans.add(TextSpan(text: text.substring(start, end)));
+        cursor = end;
       }
     }
-    return Text.rich(TextSpan(children: spans), textAlign: widget.textAlign);
+    if (cursor < text.length) {
+      spans.add(
+        TextSpan(text: text.substring(cursor), style: transparentStyle),
+      );
+    }
+    return TextPainter(
+      text: TextSpan(style: style, children: spans),
+      textAlign: textAlign,
+      textDirection: textDirection,
+      textScaler: textScaler,
+      locale: locale,
+    )..layout(maxWidth: width);
   }
 
-  void _appendTokenSpans(List<InlineSpan> spans, LyricToken token) {
-    final durationMs = token.end.inMilliseconds - token.start.inMilliseconds;
-    final elapsedMs =
-        widget.position.inMilliseconds - token.start.inMilliseconds;
-    if (elapsedMs <= 0) {
-      spans.add(_unplayedTokens[token]!);
-      return;
-    }
-    if (durationMs <= 0 || elapsedMs >= durationMs) {
-      spans.add(_playedTokens[token]!);
-      return;
-    }
-    final runes = _tokenRunes[token]!;
-    if (runes.isEmpty) return;
-    final completed = (runes.length * elapsedMs / durationMs).floor().clamp(
-      0,
-      runes.length,
+  TextPainter _layoutWithoutSelected(
+    Iterable<_KaraokePaintRange> hidden,
+    double width,
+  ) {
+    final hiddenRanges = hidden.toList()
+      ..sort((a, b) => a.start.compareTo(b.start));
+    final transparentStyle = unplayedStyle.copyWith(
+      color: Colors.transparent,
+      shadows: null,
     );
-    if (completed > 0) {
-      spans.add(
-        TextSpan(
-          text: String.fromCharCodes(runes, 0, completed),
-          style: _playedStyle,
+    final spans = <InlineSpan>[];
+    var cursor = 0;
+    for (final range in hiddenRanges) {
+      final start = math.max(cursor, range.start);
+      final end = math.min(text.length, range.end);
+      if (start > cursor) {
+        spans.add(TextSpan(text: text.substring(cursor, start)));
+      }
+      if (end > start) {
+        spans.add(
+          TextSpan(text: text.substring(start, end), style: transparentStyle),
+        );
+        cursor = end;
+      }
+    }
+    if (cursor < text.length) {
+      spans.add(TextSpan(text: text.substring(cursor)));
+    }
+    return TextPainter(
+      text: TextSpan(style: unplayedStyle, children: spans),
+      textAlign: textAlign,
+      textDirection: textDirection,
+      textScaler: textScaler,
+      locale: locale,
+    )..layout(maxWidth: width);
+  }
+
+  void _ensureLayout(double width) {
+    if (_layoutWidth == width && _layoutPainter != null) return;
+    assert(() {
+      debugKaraokeLayoutBuildCount++;
+      return true;
+    }());
+    _layoutWidth = width;
+    _layoutPainter = _layout(unplayedStyle, width);
+    _liftReferenceHeight = _layoutPainter!.preferredLineHeight;
+    final glyphsByToken = <_KaraokeTokenRange, List<_KaraokeGlyphRange>>{};
+    final glyphBoxes = <_KaraokeGlyphRange, List<ui.TextBox>>{};
+    final tokenBounds = <_KaraokeTokenRange, Rect>{};
+    final tokenDirections = <_KaraokeTokenRange, TextDirection>{};
+    for (final range in ranges) {
+      if (range.start < 0 ||
+          range.end > text.length ||
+          range.end <= range.start) {
+        continue;
+      }
+      final offsets = karaokeGraphemeRanges(
+        text.substring(range.start, range.end),
+        startOffset: range.start,
+      );
+      if (offsets.isEmpty) continue;
+      final glyphs = <_KaraokeGlyphRange>[];
+      var allGlyphsDrawable = true;
+      for (var index = 0; index < offsets.length; index++) {
+        final offset = offsets[index];
+        final glyph = _KaraokeGlyphRange(
+          tokenRange: range,
+          index: index,
+          count: offsets.length,
+          start: offset.start,
+          end: offset.end,
+        );
+        final selectionBoxes = _layoutPainter!
+            .getBoxesForSelection(
+              TextSelection(baseOffset: glyph.start, extentOffset: glyph.end),
+            )
+            .where((box) {
+              final rect = box.toRect();
+              return rect.width > 0 && rect.height > 0;
+            })
+            .toList(growable: false);
+        if (selectionBoxes.isEmpty) {
+          allGlyphsDrawable = false;
+          break;
+        }
+        glyphs.add(glyph);
+        glyphBoxes[glyph] = selectionBoxes;
+      }
+      // If even one grapheme cannot be mapped by the platform shaper, leave
+      // the complete token in the static fallback. This avoids losing half a
+      // ligature or emoji while still animating all ordinary text per glyph.
+      if (allGlyphsDrawable && glyphs.length == offsets.length) {
+        glyphsByToken[range] = glyphs;
+        final allBoxes = glyphs
+            .expand((glyph) => glyphBoxes[glyph] ?? const <ui.TextBox>[])
+            .toList(growable: false);
+        var bounds = allBoxes.first.toRect();
+        for (final box in allBoxes.skip(1)) {
+          bounds = bounds.expandToInclude(box.toRect());
+        }
+        tokenBounds[range] = bounds;
+        tokenDirections[range] = allBoxes.first.direction;
+      } else {
+        for (final glyph in glyphs) {
+          glyphBoxes.remove(glyph);
+        }
+      }
+    }
+    _glyphsByToken = glyphsByToken;
+    _glyphBoxes = glyphBoxes;
+    _tokenBounds = tokenBounds;
+    _tokenDirections = tokenDirections;
+    _drawableRanges = glyphsByToken.keys.toList(growable: false);
+    _orderedGlyphs = _drawableRanges
+        .expand((range) => glyphsByToken[range] ?? const <_KaraokeGlyphRange>[])
+        .toList(growable: false);
+    _tokenGlyphStarts = <int>[];
+    _glyphTokenIndices = <int>[];
+    _breakBeforeGlyph = <bool>[];
+    _nextTokenStarts = <double?>[];
+    var glyphOffset = 0;
+    for (
+      var tokenIndex = 0;
+      tokenIndex < _drawableRanges.length;
+      tokenIndex++
+    ) {
+      final range = _drawableRanges[tokenIndex];
+      final glyphs = glyphsByToken[range]!;
+      _tokenGlyphStarts.add(glyphOffset);
+      final breaks =
+          tokenIndex > 0 &&
+          !karaokeTokensShareLiftChain(
+            _drawableRanges[tokenIndex - 1].token,
+            range.token,
+          );
+      for (var local = 0; local < glyphs.length; local++) {
+        _glyphTokenIndices.add(tokenIndex);
+        _breakBeforeGlyph.add(local == 0 && breaks);
+        final nextToken = tokenIndex + 1 < _drawableRanges.length
+            ? _drawableRanges[tokenIndex + 1].token
+            : null;
+        _nextTokenStarts.add(
+          local == glyphs.length - 1 &&
+                  nextToken != null &&
+                  range.token.end == nextToken.start
+              ? karaokeNextTokenStartProgress(range.token, nextToken)
+              : null,
+        );
+        glyphOffset++;
+      }
+    }
+    _lineCadenceUs = karaokeLineGlyphCadenceUs(
+      _drawableRanges.map((range) => range.token),
+      _orderedGlyphs.length,
+    );
+    _glyphCadencesUs = karaokeLocalGlyphCadencesUs(
+      [for (final range in _drawableRanges) range.token],
+      [for (final range in _drawableRanges) glyphsByToken[range]!.length],
+    );
+    _glyphTimings = List<KaraokeGlyphTiming>.generate(_orderedGlyphs.length, (
+      index,
+    ) {
+      final glyph = _orderedGlyphs[index];
+      final token = glyph.tokenRange.token;
+      final count = glyph.count;
+      return KaraokeGlyphTiming.fromToken(
+        sourceTokenStartUs: token.start.inMicroseconds,
+        sourceTokenEndUs: token.end.inMicroseconds,
+        visualTokenStartUs: karaokeVisualTokenStart(token).inMicroseconds,
+        highlightStartProgress: karaokeGlyphHighlightStart(glyph.index, count),
+        highlightWindowProgress: count <= 1
+            ? 1
+            : math.min(.48, 1.8 / (count + .8)),
+        estimatedCadenceUs: _glyphCadencesUs[index],
+      );
+    });
+    _rawProgressBuffer = List<double>.filled(_drawableRanges.length, 0);
+    _highlightFactorBuffer = List<double>.filled(_orderedGlyphs.length, 0);
+    _ownFactorBuffer = List<double>.filled(_orderedGlyphs.length, 0);
+    _liftFactorBuffer = List<double>.filled(_orderedGlyphs.length, 0);
+    _groupBuffer = List<int>.filled(_drawableRanges.length, 0);
+    final longestToken = _drawableRanges.fold<int>(
+      0,
+      (longest, range) => math.max(longest, glyphsByToken[range]!.length),
+    );
+    _glyphLiftScratch = List<double>.filled(longestToken, 0);
+    _glyphProgressScratch = List<double>.filled(longestToken, 0);
+    _paintGroups = const [];
+    _leadInByToken = <_KaraokeTokenRange, double>{
+      for (final range in _drawableRanges)
+        range: karaokeGlyphLiftLeadInProgress(
+          range.token,
+          glyphsByToken[range]?.length ?? 0,
+        ),
+    };
+    _glyphLiftStartTimesUs = [
+      for (final glyph in _orderedGlyphs)
+        karaokeVisualTokenStart(
+              glyph.tokenRange.token,
+            ).inMicroseconds.toDouble() +
+            karaokeGlyphLiftStartProgress(
+                  glyph.index,
+                  glyph.count,
+                  _leadInByToken[glyph.tokenRange] ?? 0,
+                ) *
+                (glyph.tokenRange.token.end.inMicroseconds -
+                    karaokeVisualTokenStart(
+                      glyph.tokenRange.token,
+                    ).inMicroseconds),
+    ];
+    _staticPainter = _layoutWithoutSelected(_drawableRanges, width);
+    _completedPainter = null;
+    _futurePainter = null;
+    _unplayedGlyphPainters.clear();
+    _maskGlyphPainters.clear();
+    _playedGlyphPainters.clear();
+  }
+
+  void _ensurePaintCache(double width) {
+    if (_staticPainter != null) return;
+    _staticPainter = _layoutWithoutSelected(_drawableRanges, width);
+    _completedPainter = null;
+    _futurePainter = null;
+    _unplayedGlyphPainters.clear();
+    _maskGlyphPainters.clear();
+    _playedGlyphPainters.clear();
+  }
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    _ensureLayout(size.width);
+    _ensurePaintCache(size.width);
+    if (_drawableRanges.isEmpty) {
+      _layoutPainter!.paint(canvas, Offset.zero);
+      return;
+    }
+    _staticPainter!.paint(canvas, Offset.zero);
+    final current = _currentPosition;
+    for (var index = 0; index < _drawableRanges.length; index++) {
+      _rawProgressBuffer[index] = karaokeRawVisualTokenProgress(
+        _drawableRanges[index].token,
+        current,
+      );
+    }
+    if (_useLegacyKaraokeMotion) {
+      for (var index = 0; index < _orderedGlyphs.length; index++) {
+        final glyph = _orderedGlyphs[index];
+        _ownFactorBuffer[index] = karaokeLiftCurve(
+          karaokeGlyphLiftProgress(
+            _rawProgressBuffer[_glyphTokenIndices[index]],
+            glyphIndex: glyph.index,
+            glyphCount: glyph.count,
+            nextTokenStartProgress: _nextTokenStarts[index],
+            leadInProgress: _leadInByToken[glyph.tokenRange] ?? 0,
+          ),
+        );
+        _highlightFactorBuffer[index] = karaokeGlyphProgress(
+          _rawProgressBuffer[_glyphTokenIndices[index]].clamp(0.0, 1.0),
+          glyphIndex: glyph.index,
+          glyphCount: glyph.count,
+        );
+      }
+      karaokeChainedLiftFactors(
+        _ownFactorBuffer,
+        sourceStartTimesUs: _glyphLiftStartTimesUs,
+        positionUs: current.inMicroseconds.toDouble(),
+        lineCadenceUs: _lineCadenceUs,
+        sourceCadencesUs: _glyphCadencesUs,
+        breakBeforeFlags: _breakBeforeGlyph,
+        resultBuffer: _liftFactorBuffer,
+      );
+    } else {
+      final retention = isExiting
+          ? karaokeExitRetention(
+              Duration(
+                microseconds:
+                    (exitAnimation.value *
+                            karaokeDefaultMotion.exitDuration.inMicroseconds)
+                        .round(),
+              ),
+              karaokeDefaultMotion,
+            )
+          : 1.0;
+      for (var index = 0; index < _orderedGlyphs.length; index++) {
+        final frame = karaokeGlyphFrame(
+          current.inMicroseconds,
+          _glyphTimings[index],
+          karaokeDefaultMotion,
+        );
+        _highlightFactorBuffer[index] = frame.highlightProgress;
+        _liftFactorBuffer[index] = frame.liftProgress * retention;
+      }
+    }
+    final factors = _liftFactorBuffer;
+    _completedBuffer.clear();
+    _futureBuffer.clear();
+    var groupsChanged = _paintGroups.length != _drawableRanges.length;
+    for (
+      var tokenIndex = 0;
+      tokenIndex < _drawableRanges.length;
+      tokenIndex++
+    ) {
+      final range = _drawableRanges[tokenIndex];
+      final progress = _rawProgressBuffer[tokenIndex].clamp(0.0, 1.0);
+      var group = 2;
+      if (progress <= 0) {
+        final start = _tokenGlyphStarts[tokenIndex];
+        final end = start + _glyphsByToken[range]!.length;
+        var anticipates = false;
+        for (var index = start; index < end; index++) {
+          if (factors[index] > .0001) {
+            anticipates = true;
+            break;
+          }
+        }
+        if (!anticipates) {
+          group = 0;
+          _futureBuffer.add(range);
+        }
+      } else if (progress >= 1 && !isExiting) {
+        final start = _tokenGlyphStarts[tokenIndex];
+        final end = start + _glyphsByToken[range]!.length;
+        var allAtTop = true;
+        for (var index = start; index < end; index++) {
+          if (factors[index] < .9999) {
+            allAtTop = false;
+            break;
+          }
+        }
+        if (allAtTop) {
+          group = 1;
+          _completedBuffer.add(range);
+        }
+      }
+      _groupBuffer[tokenIndex] = group;
+      if (!groupsChanged && _paintGroups[tokenIndex] != group) {
+        groupsChanged = true;
+      }
+    }
+    if (groupsChanged) {
+      _paintGroups = List<int>.of(_groupBuffer);
+      _completedPainter = _completedBuffer.isEmpty
+          ? null
+          : _layoutSelected(_completedBuffer, playedStyle, size.width);
+      _futurePainter = _futureBuffer.isEmpty
+          ? null
+          : _layoutSelected(_futureBuffer, unplayedStyle, size.width);
+    }
+    _futurePainter?.paint(canvas, Offset.zero);
+    final completedPainter = _completedPainter;
+    if (completedPainter != null) {
+      completedPainter.paint(
+        canvas,
+        Offset(
+          0,
+          _useLegacyKaraokeMotion
+              ? karaokeHighlightLift(1, _liftReferenceHeight)
+              : karaokeLiftPixels(
+                  1,
+                  _liftReferenceHeight,
+                  karaokeDefaultMotion,
+                ),
         ),
       );
     }
-    if (completed < runes.length) {
-      spans.add(
-        TextSpan(
-          text: String.fromCharCodes(runes, completed),
-          style: _unplayedStyle,
+    for (var index = 0; index < _drawableRanges.length; index++) {
+      if (_groupBuffer[index] == 2) {
+        _paintPartialToken(
+          canvas,
+          _drawableRanges[index],
+          size,
+          factors,
+          _tokenGlyphStarts[index],
+        );
+      }
+    }
+  }
+
+  void _paintPartialToken(
+    Canvas canvas,
+    _KaraokeTokenRange range,
+    Size size,
+    List<double> glyphLiftFactors,
+    int firstGlyphIndex,
+  ) {
+    final glyphs = _glyphsByToken[range];
+    if (glyphs == null || glyphs.isEmpty) return;
+    final tokenBounds = _tokenBounds[range];
+    final direction = _tokenDirections[range];
+    if (tokenBounds == null || direction == null) return;
+    final glyphLifts = _glyphLiftScratch;
+    final glyphProgresses = _glyphProgressScratch;
+    Rect? layerBounds;
+    for (var index = 0; index < glyphs.length; index++) {
+      final glyph = glyphs[index];
+      final liftProgress = _highlightFactorBuffer[firstGlyphIndex + index];
+      final liftFactor = glyphLiftFactors[firstGlyphIndex + index];
+      final lift = _useLegacyKaraokeMotion
+          ? karaokeHighlightLift(1, _liftReferenceHeight) * liftFactor
+          : karaokeLiftPixels(
+              liftFactor,
+              _liftReferenceHeight,
+              karaokeDefaultMotion,
+            );
+      glyphLifts[index] = lift;
+      glyphProgresses[index] = liftProgress;
+      final boxes = _glyphBoxes[glyph];
+      if (boxes == null) continue;
+      for (final box in boxes) {
+        final shifted = box.toRect().shift(Offset(0, lift));
+        layerBounds = layerBounds?.expandToInclude(shifted) ?? shifted;
+      }
+    }
+    if (layerBounds == null) return;
+    final safeOverflow = (_liftReferenceHeight * .2).clamp(3.0, 16.0);
+    final safeLayerBounds = layerBounds.inflate(safeOverflow);
+    final playedColor = playedStyle.color ?? Colors.white;
+    final unplayedColor =
+        unplayedStyle.color ?? Colors.white.withValues(alpha: .36);
+    final highlightPaint = Paint()..blendMode = BlendMode.srcIn;
+    for (var index = 0; index < glyphs.length; index++) {
+      final glyph = glyphs[index];
+      final glyphProgress = glyphProgresses[index];
+      if (glyphProgress <= 0 || glyphProgress >= 1) {
+        final completed = glyphProgress >= 1;
+        final painters = completed
+            ? _playedGlyphPainters
+            : _unplayedGlyphPainters;
+        final painter = painters.putIfAbsent(
+          glyph,
+          () => _layoutSelected(
+            [glyph],
+            completed ? playedStyle : unplayedStyle,
+            size.width,
+          ),
+        );
+        painter.paint(canvas, Offset(0, glyphLifts[index]));
+        continue;
+      }
+      final boxes = _glyphBoxes[glyph];
+      if (boxes == null || boxes.isEmpty) continue;
+      final lift = glyphLifts[index];
+      var glyphBounds = boxes.first.toRect().shift(Offset(0, lift));
+      for (final box in boxes.skip(1)) {
+        glyphBounds = glyphBounds.expandToInclude(
+          box.toRect().shift(Offset(0, lift)),
+        );
+      }
+      final gradient = karaokeGlyphHighlightGradient(
+        glyphBounds,
+        direction,
+        glyphProgresses[index],
+        featherFraction: karaokeDefaultMotion.highlightFeatherFraction,
+      );
+      highlightPaint.shader = ui.Gradient.linear(
+        gradient.start,
+        gradient.end,
+        [
+          playedColor,
+          Color.lerp(unplayedColor, playedColor, .72)!,
+          Color.lerp(unplayedColor, playedColor, .18)!,
+          unplayedColor,
+        ],
+        const [0, .38, .78, 1],
+        TileMode.clamp,
+      );
+      // An opaque coverage mask allows BOTH colour and alpha to change.
+      // srcATop over translucent text preserves the grey alpha and previously
+      // kept every active letter dim until the whole token was completed.
+      final bounds = glyphBounds
+          .inflate(safeOverflow)
+          .intersect(safeLayerBounds);
+      final mask = _maskGlyphPainters.putIfAbsent(
+        glyph,
+        () => _layoutSelected(
+          [glyph],
+          unplayedStyle.copyWith(color: Colors.white, shadows: null),
+          size.width,
         ),
       );
+      canvas.saveLayer(bounds, Paint());
+      mask.paint(canvas, Offset(0, lift));
+      canvas.drawRect(bounds, highlightPaint);
+      canvas.restore();
     }
+  }
+
+  @override
+  bool shouldRepaint(covariant _SinglePassKaraokePainter oldDelegate) {
+    final playedComparison = playedStyle.compareTo(oldDelegate.playedStyle);
+    final unplayedComparison = unplayedStyle.compareTo(
+      oldDelegate.unplayedStyle,
+    );
+    final layoutChanged =
+        text != oldDelegate.text ||
+        !identical(ranges, oldDelegate.ranges) ||
+        playedComparison == RenderComparison.layout ||
+        unplayedComparison == RenderComparison.layout ||
+        textAlign != oldDelegate.textAlign ||
+        textDirection != oldDelegate.textDirection ||
+        textScaler != oldDelegate.textScaler ||
+        locale != oldDelegate.locale;
+    final paintChanged =
+        playedStyle != oldDelegate.playedStyle ||
+        unplayedStyle != oldDelegate.unplayedStyle;
+    if (!layoutChanged) {
+      // Colour changes during an active-line jump must not reshape every
+      // grapheme. Preserve geometry and only rebuild the inexpensive paint
+      // spans; ordinary playback frames retain both geometry and paint caches.
+      _layoutWidth = oldDelegate._layoutWidth;
+      _layoutPainter = oldDelegate._layoutPainter;
+      _liftReferenceHeight = oldDelegate._liftReferenceHeight;
+      _lineCadenceUs = oldDelegate._lineCadenceUs;
+      _drawableRanges = oldDelegate._drawableRanges;
+      _orderedGlyphs = oldDelegate._orderedGlyphs;
+      _glyphLiftStartTimesUs = oldDelegate._glyphLiftStartTimesUs;
+      _glyphTimings = oldDelegate._glyphTimings;
+      _highlightFactorBuffer = oldDelegate._highlightFactorBuffer;
+      _glyphCadencesUs = oldDelegate._glyphCadencesUs;
+      _breakBeforeGlyph = oldDelegate._breakBeforeGlyph;
+      _nextTokenStarts = oldDelegate._nextTokenStarts;
+      _glyphTokenIndices = oldDelegate._glyphTokenIndices;
+      _tokenGlyphStarts = oldDelegate._tokenGlyphStarts;
+      _rawProgressBuffer = oldDelegate._rawProgressBuffer;
+      _ownFactorBuffer = oldDelegate._ownFactorBuffer;
+      _liftFactorBuffer = oldDelegate._liftFactorBuffer;
+      _groupBuffer = oldDelegate._groupBuffer;
+      _glyphLiftScratch = oldDelegate._glyphLiftScratch;
+      _glyphProgressScratch = oldDelegate._glyphProgressScratch;
+      _leadInByToken = oldDelegate._leadInByToken;
+      _glyphsByToken = oldDelegate._glyphsByToken;
+      _glyphBoxes = oldDelegate._glyphBoxes;
+      _tokenBounds = oldDelegate._tokenBounds;
+      _tokenDirections = oldDelegate._tokenDirections;
+      if (!paintChanged) {
+        _staticPainter = oldDelegate._staticPainter;
+        _completedPainter = oldDelegate._completedPainter;
+        _futurePainter = oldDelegate._futurePainter;
+        _paintGroups = oldDelegate._paintGroups;
+        _unplayedGlyphPainters = oldDelegate._unplayedGlyphPainters;
+        _maskGlyphPainters = oldDelegate._maskGlyphPainters;
+        _playedGlyphPainters = oldDelegate._playedGlyphPainters;
+      }
+    }
+    return layoutChanged ||
+        paintChanged ||
+        isExiting != oldDelegate.isExiting ||
+        exitAnimation != oldDelegate.exitAnimation ||
+        position != oldDelegate.position ||
+        positionListenable != oldDelegate.positionListenable;
   }
 }
 

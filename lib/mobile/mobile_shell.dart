@@ -7,6 +7,7 @@ import 'package:flutter/cupertino.dart' show CupertinoPageRoute;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
@@ -15,6 +16,7 @@ import 'package:permission_handler/permission_handler.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../models/fluid_background_state.dart';
 import '../page/playlist/playlist_content_notifier.dart';
 import '../page/playlist/playlist_models.dart';
 import '../page/lyric_copy_page.dart';
@@ -36,6 +38,7 @@ import '../services/desktop_lyrics_controller.dart';
 import '../services/song_group_presentation.dart';
 import '../services/audio_cover_editor_service.dart';
 import '../services/cover_override_service.dart';
+import '../services/foreground_lifecycle.dart';
 import '../services/artwork_prefetch_plan.dart';
 import '../services/interaction_performance_controller.dart';
 import '../theme/theme_provider.dart';
@@ -43,6 +46,7 @@ import '../theme/playback_theme_policy.dart';
 import '../widgets/custom_theme_background.dart';
 import '../widgets/custom_theme_image_editor.dart';
 import '../widgets/artwork_image.dart';
+import '../widgets/playback_background/playback_background.dart';
 
 bool _hasCustomPlaybackTheme(SettingsProvider settings) {
   final path = settings.playbackThemeImagePath;
@@ -64,6 +68,18 @@ bool _hasResolvedPlaybackTheme(
       (settings.followAlbumArtOnPlayback &&
           (_hasUsableAlbumArt(song) ||
               (cachedArtwork != null && cachedArtwork.isNotEmpty)));
+}
+
+bool _hasResolvedFluidPlaybackBackground(
+  SettingsProvider settings,
+  PlaylistContentNotifier notifier,
+) {
+  final song = notifier.currentSong;
+  return settings.followAlbumArtOnPlayback &&
+      settings.playbackArtworkBackgroundStyle ==
+          PlaybackArtworkBackgroundStyle.fluid &&
+      song != null &&
+      notifier.displayCoverForSong(song) != null;
 }
 
 enum _CoverApplyTarget { appOnly, sourceFile }
@@ -194,7 +210,29 @@ class MobileShell extends StatefulWidget {
   State<MobileShell> createState() => _MobileShellState();
 }
 
-class _MobileShellState extends State<MobileShell> {
+int? homePageAnimationBridge(int current, int target) {
+  if ((target - current).abs() <= 1) return null;
+  return target > current ? target - 1 : target + 1;
+}
+
+bool shouldStartLibraryEntrance({
+  required bool enabled,
+  required bool libraryLoaded,
+  required bool hasSongs,
+  required bool alreadyStarted,
+  required bool alreadyClaimed,
+}) =>
+    enabled && libraryLoaded && hasSongs && !alreadyStarted && !alreadyClaimed;
+
+enum LibraryEntranceStyle { list, indexed }
+
+int libraryEntranceItemLimit(LibraryEntranceStyle style) => switch (style) {
+  LibraryEntranceStyle.list => 6,
+  LibraryEntranceStyle.indexed => 10,
+};
+
+class _MobileShellState extends State<MobileShell>
+    with SingleTickerProviderStateMixin {
   static const _notificationPromptedKey = 'notification_permission_prompted';
   static const _overlayPromptedKey = 'overlay_permission_prompted';
   int _tab = 0;
@@ -205,7 +243,9 @@ class _MobileShellState extends State<MobileShell> {
   StreamSubscription<String>? _errorSubscription;
   StreamSubscription<String>? _infoSubscription;
   bool _noticeStreamsBound = false;
-  bool _animateLibraryEntrance = true;
+  late final AnimationController _libraryEntranceController;
+  bool _libraryEntranceScheduled = false;
+  bool _libraryEntranceCompleted = false;
   bool _librarySelectionMode = false;
   bool _isExiting = false;
   final Set<String> _selectedLibrarySongPaths = {};
@@ -218,6 +258,10 @@ class _MobileShellState extends State<MobileShell> {
   @override
   void initState() {
     super.initState();
+    _libraryEntranceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 620),
+    );
     _homePageController = PageController();
     _homePageController.addListener(_markHomePageTransition);
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -298,18 +342,38 @@ class _MobileShellState extends State<MobileShell> {
   @override
   void dispose() {
     _homeNavigationRevision++;
+    _libraryEntranceController.dispose();
     _homePageController.dispose();
     _errorSubscription?.cancel();
     _infoSubscription?.cancel();
     super.dispose();
   }
 
+  void _scheduleLibraryEntrance() {
+    if (_libraryEntranceScheduled || _libraryEntranceCompleted) return;
+    // Claim the one-shot animation before leaving this build. The previous
+    // child-owned delayed task could be disposed while waiting and then mark
+    // the animation complete without ever presenting a visible frame.
+    _libraryEntranceScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _libraryEntranceCompleted) return;
+      SchedulerBinding.instance.scheduleFrameCallback((_) {
+        if (!mounted || _libraryEntranceCompleted) return;
+        InteractionPerformanceController.instance.pulse(
+          InteractionPhase.visualAnimation,
+          settleAfter: const Duration(milliseconds: 720),
+        );
+        _libraryEntranceController.forward(from: 0).whenComplete(() {
+          if (!mounted) return;
+          _libraryEntranceCompleted = true;
+        });
+      });
+    });
+  }
+
   Future<void> _requestAudioAccess() async {
     if (!Platform.isAndroid) return;
 
-    // Android 13+ uses READ_MEDIA_AUDIO, while Android 12 and below still use
-    // READ_EXTERNAL_STORAGE. Asking only for Permission.audio makes every
-    // legacy Android device report a false denial before opening the picker.
     final audioStatus = await Permission.audio.request();
     if (audioStatus.isGranted) return;
 
@@ -338,9 +402,9 @@ class _MobileShellState extends State<MobileShell> {
     return switch (index) {
       0 => _LibraryTab(
         query: _query,
-        animateEntrance: _animateLibraryEntrance,
+        entranceAnimation: _libraryEntranceController,
         topEdgeFadeEnabled: useHomeTheme,
-        onEntranceFinished: () => _animateLibraryEntrance = false,
+        onEntranceReady: _scheduleLibraryEntrance,
         selectionMode: _librarySelectionMode,
         selectedPaths: _selectedLibrarySongPaths,
         onToggleSelection: _toggleLibrarySongSelection,
@@ -402,16 +466,24 @@ class _MobileShellState extends State<MobileShell> {
     final useHomeTheme =
         useCustomHomeTheme ||
         (settings.followAlbumArtOnHome && currentSong != null);
-    final page = PageView.builder(
-      controller: _homePageController,
-      physics: selecting
-          ? const NeverScrollableScrollPhysics()
-          : const PageScrollPhysics(parent: BouncingScrollPhysics()),
-      onPageChanged: _handleHomePageChanged,
-      itemCount: _titles.length,
-      itemBuilder: (context, index) => _KeepAlivePage(
-        key: ValueKey('home-page-$index'),
-        child: _buildHomePage(index, useHomeTheme),
+    final page = Listener(
+      onPointerDown: selecting
+          ? null
+          : (_) => InteractionPerformanceController.instance.pulse(
+              InteractionPhase.transition,
+              settleAfter: const Duration(milliseconds: 180),
+            ),
+      child: PageView.builder(
+        controller: _homePageController,
+        physics: selecting
+            ? const NeverScrollableScrollPhysics()
+            : const PageScrollPhysics(parent: BouncingScrollPhysics()),
+        onPageChanged: _handleHomePageChanged,
+        itemCount: _titles.length,
+        itemBuilder: (context, index) => _KeepAlivePage(
+          key: ValueKey('home-page-$index'),
+          child: _buildHomePage(index, useHomeTheme),
+        ),
       ),
     );
     final headerTitle = selecting
@@ -775,11 +847,12 @@ class _MobileShellState extends State<MobileShell> {
       );
     }
 
+    final homeContent = RepaintBoundary(child: scaffold);
     final background = homeCoverListenable == null
-        ? buildHomeBackground(scaffold)
+        ? buildHomeBackground(homeContent)
         : AnimatedBuilder(
             animation: homeCoverListenable,
-            child: scaffold,
+            child: homeContent,
             builder: (context, child) => buildHomeBackground(child!),
           );
     return _PlaybackArtworkPreparationCoordinator(
@@ -795,6 +868,10 @@ class _MobileShellState extends State<MobileShell> {
 
   void _selectTab(int index) {
     if (index == _tab) return;
+    InteractionPerformanceController.instance.pulse(
+      InteractionPhase.transition,
+      settleAfter: const Duration(milliseconds: 420),
+    );
     if (index != 1) {
       context.read<PlaylistContentNotifier>().exitMultiSelectMode();
     }
@@ -933,6 +1010,9 @@ class _MobileShellState extends State<MobileShell> {
     }
     final navigationRevision = ++_homeNavigationRevision;
     _programmaticTabTarget = index;
+    final current = (_homePageController.page ?? _tab.toDouble()).round();
+    final bridge = homePageAnimationBridge(current, index);
+    if (bridge != null) _homePageController.jumpToPage(bridge);
     unawaited(_completeHomePageAnimation(index, navigationRevision));
   }
 
@@ -1255,17 +1335,17 @@ class _MobileShellState extends State<MobileShell> {
 class _LibraryTab extends StatefulWidget {
   const _LibraryTab({
     required this.query,
-    required this.animateEntrance,
+    required this.entranceAnimation,
     required this.topEdgeFadeEnabled,
-    required this.onEntranceFinished,
+    required this.onEntranceReady,
     required this.selectionMode,
     required this.selectedPaths,
     required this.onToggleSelection,
   });
   final String query;
-  final bool animateEntrance;
+  final Animation<double> entranceAnimation;
   final bool topEdgeFadeEnabled;
-  final VoidCallback onEntranceFinished;
+  final VoidCallback onEntranceReady;
   final bool selectionMode;
   final Set<String> selectedPaths;
   final ValueChanged<Song> onToggleSelection;
@@ -1274,33 +1354,7 @@ class _LibraryTab extends StatefulWidget {
   State<_LibraryTab> createState() => _LibraryTabState();
 }
 
-class _LibraryTabState extends State<_LibraryTab>
-    with SingleTickerProviderStateMixin {
-  late final AnimationController _entranceController = AnimationController(
-    vsync: this,
-    duration: const Duration(milliseconds: 720),
-    value: widget.animateEntrance ? 0 : 1,
-  );
-  bool _entranceStarted = false;
-
-  Future<void> _playEntrance() async {
-    try {
-      await _entranceController.forward().timeout(
-        const Duration(milliseconds: 1200),
-      );
-    } on TimeoutException {
-      if (mounted) _entranceController.value = 1;
-    } finally {
-      if (mounted) widget.onEntranceFinished();
-    }
-  }
-
-  @override
-  void dispose() {
-    _entranceController.dispose();
-    super.dispose();
-  }
-
+class _LibraryTabState extends State<_LibraryTab> {
   @override
   Widget build(BuildContext context) {
     final libraryState = context
@@ -1318,12 +1372,14 @@ class _LibraryTabState extends State<_LibraryTab>
     final filtered = widget.query.isEmpty
         ? songs
         : notifier.searchSongs(widget.query, songs);
-    if (widget.animateEntrance && songs.isNotEmpty && !_entranceStarted) {
-      _entranceStarted = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
-        unawaited(_playEntrance());
-      });
+    if (shouldStartLibraryEntrance(
+      enabled: !widget.entranceAnimation.isCompleted,
+      libraryLoaded: libraryState.loaded,
+      hasSongs: songs.isNotEmpty,
+      alreadyStarted: false,
+      alreadyClaimed: false,
+    )) {
+      widget.onEntranceReady();
     }
     if (!libraryState.loaded && songs.isEmpty) {
       return const Center(child: CircularProgressIndicator());
@@ -1340,7 +1396,7 @@ class _LibraryTabState extends State<_LibraryTab>
       child: _SongList(
         songs: displayedSongs,
         pinScope: PlaylistContentNotifier.libraryPinScope,
-        entranceAnimation: widget.animateEntrance ? _entranceController : null,
+        entranceAnimation: widget.entranceAnimation,
         selectionMode: widget.selectionMode,
         selectedPaths: widget.selectedPaths,
         onToggleSelection: widget.onToggleSelection,
@@ -1407,6 +1463,7 @@ class _PlaylistsTab extends StatelessWidget {
         ? const Center(child: Text('选择一个歌单开始管理音乐'))
         : _SongList(
             songs: displayedSongs,
+            compact: playlistViewMode == PlaylistViewMode.split,
             pinScope: pinScope,
             onPlay: (index) =>
                 notifier.playCurrentPlaylistSearchResult(displayedSongs[index]),
@@ -1426,8 +1483,8 @@ class _PlaylistsTab extends StatelessWidget {
     if (playlistViewMode == PlaylistViewMode.split) {
       return LayoutBuilder(
         builder: (context, constraints) {
-          final railWidth = (constraints.maxWidth * .29)
-              .clamp(124.0, 180.0)
+          final railWidth = (constraints.maxWidth * .27)
+              .clamp(108.0, 164.0)
               .toDouble();
 
           Widget railAction({
@@ -1438,14 +1495,16 @@ class _PlaylistsTab extends StatelessWidget {
             child: Tooltip(
               message: label,
               child: Material(
-                color: Theme.of(context).colorScheme.surfaceContainer,
+                color: Theme.of(
+                  context,
+                ).colorScheme.surfaceContainer.withValues(alpha: .72),
                 borderRadius: BorderRadius.circular(12),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(12),
                   onTap: onTap,
                   child: SizedBox(
                     height: 48,
-                    child: Center(child: Icon(icon, size: 24)),
+                    child: Center(child: Icon(icon, size: 22)),
                   ),
                 ),
               ),
@@ -1457,7 +1516,7 @@ class _PlaylistsTab extends StatelessWidget {
               SizedBox(
                 width: railWidth,
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(8, 8, 8, 0),
+                  padding: const EdgeInsets.fromLTRB(8, 8, 4, 0),
                   child: Column(
                     children: [
                       Row(
@@ -1497,9 +1556,10 @@ class _PlaylistsTab extends StatelessWidget {
                                     ? Theme.of(
                                         context,
                                       ).colorScheme.secondaryContainer
-                                    : Theme.of(
-                                        context,
-                                      ).colorScheme.surfaceContainerLow,
+                                    : Theme.of(context)
+                                          .colorScheme
+                                          .surfaceContainerLow
+                                          .withValues(alpha: .55),
                                 borderRadius: BorderRadius.circular(12),
                                 child: InkWell(
                                   borderRadius: BorderRadius.circular(12),
@@ -1512,7 +1572,7 @@ class _PlaylistsTab extends StatelessWidget {
                                   child: Padding(
                                     padding: const EdgeInsets.symmetric(
                                       horizontal: 10,
-                                      vertical: 10,
+                                      vertical: 12,
                                     ),
                                     child: Column(
                                       crossAxisAlignment:
@@ -1520,8 +1580,21 @@ class _PlaylistsTab extends StatelessWidget {
                                       children: [
                                         Text(
                                           playlist.name,
-                                          maxLines: 1,
+                                          maxLines: 2,
                                           overflow: TextOverflow.ellipsis,
+                                          style: Theme.of(context)
+                                              .textTheme
+                                              .labelLarge
+                                              ?.copyWith(
+                                                fontWeight: selected
+                                                    ? FontWeight.w700
+                                                    : FontWeight.w500,
+                                                color: selected
+                                                    ? Theme.of(context)
+                                                          .colorScheme
+                                                          .onSecondaryContainer
+                                                    : null,
+                                              ),
                                         ),
                                         const SizedBox(height: 2),
                                         Text(
@@ -2567,7 +2640,7 @@ class _TopEdgeFadeState extends State<_TopEdgeFade>
       onNotification: _onScrollNotification,
       child: AnimatedBuilder(
         animation: _controller,
-        child: widget.child,
+        child: RepaintBoundary(child: widget.child),
         builder: (context, child) {
           final opacity = Curves.fastOutSlowIn.transform(_controller.value);
           return ShaderMask(
@@ -2709,6 +2782,39 @@ class _SongCollectionPage extends StatelessWidget {
   }
 }
 
+Widget buildLibrarySongEntranceTransition({
+  required Animation<double>? animation,
+  required int order,
+  required Widget child,
+  LibraryEntranceStyle style = LibraryEntranceStyle.list,
+}) {
+  final limit = libraryEntranceItemLimit(style);
+  if (animation == null || order >= limit) return child;
+  final startStep = style == LibraryEntranceStyle.indexed ? .038 : .055;
+  final start = order * startStep;
+  final end = (start + (style == LibraryEntranceStyle.indexed ? .48 : .58))
+      .clamp(0.0, 1.0);
+  final progress = CurvedAnimation(
+    parent: animation,
+    curve: Interval(start, end, curve: const Cubic(.16, 1, .3, 1)),
+  );
+  Widget transition = SlideTransition(
+    position: Tween<Offset>(
+      begin: Offset(0, style == LibraryEntranceStyle.indexed ? .10 : .18),
+      end: Offset.zero,
+    ).animate(progress),
+    child: RepaintBoundary(child: child),
+  );
+  if (style == LibraryEntranceStyle.indexed) {
+    transition = ScaleTransition(
+      scale: Tween<double>(begin: .965, end: 1).animate(progress),
+      alignment: Alignment.topCenter,
+      child: transition,
+    );
+  }
+  return FadeTransition(opacity: progress, child: transition);
+}
+
 class _SongList extends StatelessWidget {
   const _SongList({
     required this.songs,
@@ -2720,6 +2826,7 @@ class _SongList extends StatelessWidget {
     this.onToggleSelection,
     this.pinScope,
     this.groupByInitial = false,
+    this.compact = false,
   });
   final List<Song> songs;
   final Future<void> Function(int index) onPlay;
@@ -2730,6 +2837,8 @@ class _SongList extends StatelessWidget {
   final ValueChanged<Song>? onToggleSelection;
   final String? pinScope;
   final bool groupByInitial;
+  // Only the playlist split pane uses this density; other views stay unchanged.
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -2747,7 +2856,7 @@ class _SongList extends StatelessWidget {
           child: child,
         );
 
-    Widget buildSongTile(int index, {required bool grid}) {
+    Widget buildSongTile(int index, {required bool grid, int? entranceOrder}) {
       final song = songs[index];
       final isPinned =
           pinScope != null && notifier.isPinned(pinScope!, song.normalizedPath);
@@ -2771,22 +2880,40 @@ class _SongList extends StatelessWidget {
           color: Colors.transparent,
           child: ListTile(
             contentPadding: EdgeInsets.symmetric(
-              horizontal: grid ? 12 : 16,
-              vertical: 3,
+              horizontal: compact
+                  ? 8
+                  : grid
+                  ? 12
+                  : 16,
+              vertical: compact ? 0 : 3,
             ),
-            horizontalTitleGap: grid ? 10 : 16,
-            leading: _Cover(song: song),
+            horizontalTitleGap: compact
+                ? 8
+                : grid
+                ? 10
+                : 16,
+            minLeadingWidth: compact ? 40 : null,
+            minVerticalPadding: compact ? 10 : null,
+            leading: _Cover(song: song, size: compact ? 40 : 48),
             title: Text(
               song.title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: grid ? Theme.of(context).textTheme.titleMedium : null,
+              style: compact
+                  ? Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    )
+                  : grid
+                  ? Theme.of(context).textTheme.titleMedium
+                  : null,
             ),
             subtitle: Text(
               '${song.artist} · ${song.album}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
-              style: grid ? Theme.of(context).textTheme.bodySmall : null,
+              style: compact || grid
+                  ? Theme.of(context).textTheme.bodySmall
+                  : null,
             ),
             trailing: selectionMode
                 ? Checkbox(
@@ -2833,33 +2960,10 @@ class _SongList extends StatelessWidget {
         key: ValueKey(song.normalizedPath),
         child: tile,
       );
-      final animation = entranceAnimation;
-      if (animation == null) return keyedTile;
-      final group = index.clamp(0, 4);
-      final start = group * 0.08;
-      final end = (start + 0.55).clamp(0.0, 1.0);
-      final distance = switch (group) {
-        0 => 100.0,
-        1 => 75.0,
-        2 => 50.0,
-        3 => 25.0,
-        _ => 25.0,
-      };
-      return AnimatedBuilder(
-        animation: animation,
+      return buildLibrarySongEntranceTransition(
+        animation: entranceAnimation,
+        order: entranceOrder ?? index,
         child: keyedTile,
-        builder: (context, child) {
-          final progress = Curves.easeOutCubic.transform(
-            Interval(start, end).transform(animation.value),
-          );
-          return Opacity(
-            opacity: progress,
-            child: Transform.translate(
-              offset: Offset(0, distance * (1 - progress)),
-              child: child,
-            ),
-          );
-        },
       );
     }
 
@@ -2878,14 +2982,18 @@ class _SongList extends StatelessWidget {
       required bool grid,
       SliverGridDelegate? gridDelegate,
     }) {
-      Widget buildItems(List<int> indices) {
+      Widget buildItems(List<int> indices, {required int startOrder}) {
         if (grid) {
           return SliverPadding(
             padding: const EdgeInsets.symmetric(horizontal: 12),
             sliver: SliverGrid(
               gridDelegate: gridDelegate!,
               delegate: SliverChildBuilderDelegate(
-                (context, index) => buildSongTile(indices[index], grid: true),
+                (context, index) => buildSongTile(
+                  indices[index],
+                  grid: true,
+                  entranceOrder: startOrder + index,
+                ),
                 childCount: indices.length,
               ),
             ),
@@ -2893,8 +3001,11 @@ class _SongList extends StatelessWidget {
         }
         return SliverList.builder(
           itemCount: indices.length,
-          itemBuilder: (context, index) =>
-              buildSongTile(indices[index], grid: false),
+          itemBuilder: (context, index) => buildSongTile(
+            indices[index],
+            grid: false,
+            entranceOrder: startOrder + index,
+          ),
         );
       }
 
@@ -2903,7 +3014,7 @@ class _SongList extends StatelessWidget {
           // Pinned songs already occupy their own leading section and expose
           // their state through the row action. Start the content immediately
           // so a redundant marker does not leave a large empty header above it.
-          buildItems(pinnedIndices),
+          buildItems(pinnedIndices, startOrder: 0),
           if (regularIndices.isNotEmpty) ...[
             const SliverToBoxAdapter(
               child: Padding(
@@ -2911,7 +3022,7 @@ class _SongList extends StatelessWidget {
                 child: Divider(height: 1),
               ),
             ),
-            buildItems(regularIndices),
+            buildItems(regularIndices, startOrder: pinnedIndices.length),
           ],
           const SliverToBoxAdapter(child: SizedBox(height: 18)),
         ],
@@ -2923,8 +3034,14 @@ class _SongList extends StatelessWidget {
         regularIndices,
         (index) => songs[index].title,
       );
+      final sectionStartOrders = <String, int>{};
+      var nextEntranceOrder = pinnedIndices.length;
+      for (final section in sections.entries) {
+        sectionStartOrders[section.key] = nextEntranceOrder;
+        nextEntranceOrder += section.value.length;
+      }
 
-      Widget buildCompactSongCard(int songIndex) {
+      Widget buildCompactSongCard(int songIndex, int entranceOrder) {
         final song = songs[songIndex];
         final selected = selectedPaths.contains(
           song.normalizedPath.toLowerCase(),
@@ -2933,7 +3050,7 @@ class _SongList extends StatelessWidget {
             pinScope != null &&
             notifier.isPinned(pinScope!, song.normalizedPath);
         final scheme = Theme.of(context).colorScheme;
-        return AnimatedContainer(
+        final card = AnimatedContainer(
           duration: const Duration(milliseconds: 180),
           curve: Curves.easeOutCubic,
           decoration: BoxDecoration(
@@ -2999,30 +3116,42 @@ class _SongList extends StatelessWidget {
             ),
           ),
         );
+        final keyedCard = KeyedSubtree(
+          key: ValueKey('indexed-${song.normalizedPath}'),
+          child: card,
+        );
+        return buildLibrarySongEntranceTransition(
+          animation: entranceAnimation,
+          order: entranceOrder,
+          style: LibraryEntranceStyle.indexed,
+          child: keyedCard,
+        );
       }
 
-      Widget buildItems(List<int> indices) => SliverPadding(
-        padding: const EdgeInsets.symmetric(horizontal: 10),
-        sliver: SliverGrid(
-          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 88,
-            mainAxisSpacing: 8,
-            crossAxisSpacing: 8,
-            childAspectRatio: .76,
-          ),
-          delegate: SliverChildBuilderDelegate(
-            (context, index) => buildCompactSongCard(indices[index]),
-            childCount: indices.length,
-          ),
-        ),
-      );
+      Widget buildItems(List<int> indices, {required int startOrder}) =>
+          SliverPadding(
+            padding: const EdgeInsets.symmetric(horizontal: 10),
+            sliver: SliverGrid(
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 88,
+                mainAxisSpacing: 8,
+                crossAxisSpacing: 8,
+                childAspectRatio: .76,
+              ),
+              delegate: SliverChildBuilderDelegate(
+                (context, index) =>
+                    buildCompactSongCard(indices[index], startOrder + index),
+                childCount: indices.length,
+              ),
+            ),
+          );
 
       return CustomScrollView(
         key: const ValueKey('library-indexed-song-list'),
         slivers: [
           if (pinnedIndices.isNotEmpty) ...[
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
-            buildItems(pinnedIndices),
+            buildItems(pinnedIndices, startOrder: 0),
           ],
           for (final section in sections.entries) ...[
             SliverToBoxAdapter(
@@ -3036,7 +3165,10 @@ class _SongList extends StatelessWidget {
                 ),
               ),
             ),
-            buildItems(section.value),
+            buildItems(
+              section.value,
+              startOrder: sectionStartOrders[section.key]!,
+            ),
           ],
           const SliverToBoxAdapter(child: SizedBox(height: 18)),
         ],
@@ -3068,7 +3200,7 @@ class _SongList extends StatelessWidget {
       );
     }
 
-    if (isTablet) {
+    if (isTablet && !compact) {
       return LayoutBuilder(
         builder: (context, constraints) {
           if (constraints.maxWidth < 500) {
@@ -3242,6 +3374,9 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
   int? _lastPrefetchSignature;
 
   bool _onScroll(ScrollNotification notification) {
+    if (notification.depth != 0 || notification.metrics.axis != Axis.vertical) {
+      return false;
+    }
     final now = _scrollClock.elapsedMicroseconds;
     final elapsed = now - _lastMicros;
     if (elapsed > 0 && _lastMicros != 0) {
@@ -3318,6 +3453,13 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
     // completers every time a fast fling advances the viewport.
     for (var index = firstVisible; index < lastVisible; index++) {
       final song = widget.songs[index];
+      final cached = notifier.displayThumbnailForSong(song);
+      if (cached != null &&
+          PaintingBinding.instance.imageCache
+              .statusForKey(CoverMemoryImage(cached, targetPixels: 192))
+              .tracked) {
+        continue;
+      }
       notifier
           .ensureSongThumbnail(
             song.filePath,
@@ -3325,7 +3467,13 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
           )
           .then((bytes) {
             if (!mounted || generation != _generation || bytes == null) return;
-            precacheImage(CoverMemoryImage(bytes, targetPixels: 192), context);
+            final image = CoverMemoryImage(bytes, targetPixels: 192);
+            // The mounted cover may already have started the same decode.
+            if (!PaintingBinding.instance.imageCache
+                .statusForKey(image)
+                .tracked) {
+              precacheImage(image, context);
+            }
           });
     }
 
@@ -3509,32 +3657,36 @@ class _MiniPlayer extends StatelessWidget {
 
 void _openNowPlaying(BuildContext context) {
   final notifier = context.read<PlaylistContentNotifier>();
-  final settings = context.read<SettingsProvider>();
   final song = notifier.currentSong;
-  final startsOnCover =
-      settings.playbackInitialView == PlaybackInitialView.cover;
   final initialCoverHeroReady =
-      startsOnCover &&
-      song != null &&
-      _isNowPlayingArtworkPrepared(notifier, song);
+      song != null && _isNowPlayingArtworkPrepared(notifier, song);
   notifier.postponeForegroundArtworkRecovery();
   InteractionPerformanceController.instance.pulse(
     InteractionPhase.transition,
-    settleAfter: const Duration(milliseconds: 460),
+    settleAfter: const Duration(milliseconds: 640),
   );
   unawaited(
     Navigator.of(context).push(
-      CupertinoPageRoute<void>(
-        // A route snapshot can preserve placeholder list thumbnails captured
-        // during the push and briefly replay them on pop. The home subtree is a
-        // repaint boundary, so rendering it live keeps the transition accurate
-        // without causing the song list to repaint every frame.
-        allowSnapshotting: false,
+      _GentleNowPlayingRoute(
+        // Snapshotting is allowed where the active Flutter/backend transition
+        // supports it; current Cupertino slide implementations may still paint
+        // routes live, so correctness and performance do not depend on it.
+        allowSnapshotting: true,
         builder: (_) =>
             _NowPlayingPage(initialCoverHeroReady: initialCoverHeroReady),
       ),
     ),
   );
+}
+
+class _GentleNowPlayingRoute extends CupertinoPageRoute<void> {
+  _GentleNowPlayingRoute({required super.builder, super.allowSnapshotting});
+
+  @override
+  Duration get transitionDuration => nowPlayingRouteTransitionDuration;
+
+  @override
+  Duration get reverseTransitionDuration => const Duration(milliseconds: 460);
 }
 
 class _NowPlayingArtworkWarmup extends StatelessWidget {
@@ -3576,6 +3728,8 @@ class _PlaybackBackgroundFrame {
     required this.coverDim,
     required this.coverBlur,
     required this.usePlaybackTheme,
+    required this.artworkStyle,
+    required this.fluidQuality,
   });
 
   final String? path;
@@ -3587,6 +3741,8 @@ class _PlaybackBackgroundFrame {
   final double coverDim;
   final double coverBlur;
   final bool usePlaybackTheme;
+  final PlaybackArtworkBackgroundStyle artworkStyle;
+  final FluidBackgroundQuality fluidQuality;
 }
 
 _PreparedPlaybackArtwork? _preparedPlaybackArtwork;
@@ -3616,6 +3772,7 @@ class _PlaybackArtworkPreparationCoordinatorState
   final Map<String, int> _prewarmedArtworkKeys = {};
   int _generation = 0;
   int _prewarmGeneration = 0;
+  int? _observedImageCacheGeneration;
   String? _observedPath;
   bool _decodeInFlight = false;
   bool _retryAfterDecode = false;
@@ -3634,6 +3791,7 @@ class _PlaybackArtworkPreparationCoordinatorState
       _prewarmTargetListenable?.removeListener(_handlePrewarmTargetsChanged);
       _detachPrewarmCoverListeners();
       _notifier = notifier;
+      _observedImageCacheGeneration = notifier.artworkImageCacheGeneration;
       _targetListenable = notifier.playbackArtworkTargetListenable
         ..addListener(_handleTargetChanged);
       _artworkRecoveryListenable = notifier.artworkRecoveryListenable
@@ -3734,9 +3892,13 @@ class _PlaybackArtworkPreparationCoordinatorState
   void _handleArtworkRecovery() {
     final notifier = _notifier;
     if (notifier == null) return;
-    _generation++;
-    _prewarmGeneration++;
-    _prewarmedArtworkKeys.clear();
+    final cacheGeneration = notifier.artworkImageCacheGeneration;
+    if (_observedImageCacheGeneration != cacheGeneration) {
+      _observedImageCacheGeneration = cacheGeneration;
+      _generation++;
+      _prewarmGeneration++;
+      _prewarmedArtworkKeys.clear();
+    }
     if (notifier.isAppForeground) {
       _schedulePreparation();
       _schedulePrewarmPreparation();
@@ -3804,7 +3966,10 @@ class _PlaybackArtworkPreparationCoordinatorState
         prepared.path == path &&
         identical(prepared.bytes, artwork) &&
         prepared.targetPixels == targetPixels &&
-        prepared.cacheGeneration == cacheGeneration) {
+        prepared.cacheGeneration == cacheGeneration &&
+        PaintingBinding.instance.imageCache
+            .statusForKey(CoverMemoryImage(artwork, targetPixels: targetPixels))
+            .tracked) {
       return;
     }
     if (_decodeInFlight) {
@@ -4012,7 +4177,15 @@ bool _isNowPlayingArtworkPrepared(PlaylistContentNotifier notifier, Song song) {
   final prepared = _preparedPlaybackArtwork;
   return prepared != null &&
       prepared.path == song.normalizedPath &&
-      prepared.cacheGeneration == notifier.artworkImageCacheGeneration;
+      prepared.cacheGeneration == notifier.artworkImageCacheGeneration &&
+      PaintingBinding.instance.imageCache
+          .statusForKey(
+            CoverMemoryImage(
+              prepared.bytes,
+              targetPixels: prepared.targetPixels,
+            ),
+          )
+          .tracked;
 }
 
 class _NowPlayingPage extends StatefulWidget {
@@ -4025,10 +4198,22 @@ class _NowPlayingPage extends StatefulWidget {
 }
 
 class _NowPlayingPageState extends State<_NowPlayingPage>
-    with TickerProviderStateMixin {
+    with TickerProviderStateMixin, WidgetsBindingObserver {
   static const _playbackGlassBlur = 7.0;
+  static const _fluidPlaybackGlassBlur = 5.0;
   static const _playbackGlassFillAlpha = .10;
   static const _playbackGlassBorderAlpha = .72;
+  static final ui.ImageFilter _playbackFeatureBlurFilter = ui.ImageFilter.blur(
+    sigmaX: _playbackGlassBlur,
+    sigmaY: _playbackGlassBlur,
+  );
+  static final ui.ImageFilter _fluidPlaybackFeatureBlurFilter =
+      ui.ImageFilter.blur(
+        sigmaX: _fluidPlaybackGlassBlur,
+        sigmaY: _fluidPlaybackGlassBlur,
+      );
+  static const _playbackGlassResumeDelay = Duration(milliseconds: 1150);
+  static const _playbackGlassEnterDuration = Duration(milliseconds: 220);
   static const _coverExitDuration = Duration(milliseconds: 210);
   static const _coverEnterDuration = Duration(milliseconds: 155);
   static const _lyricsContentEnterDuration = Duration(milliseconds: 140);
@@ -4044,10 +4229,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       MobileLyricsListController();
   late final AnimationController _coverTransitionController;
   late final AnimationController _lyricsContentTransitionController;
+  late final AnimationController _playbackGlassTransitionController;
+  late final Animation<double> _playbackGlassTransition;
   final List<Timer> _visualTransitionTimers = [];
   int _visualTransitionRevision = 0;
   int _lyricsEntryRevision = 0;
   final ValueNotifier<double?> _seekPosition = ValueNotifier(null);
+  final ValueNotifier<bool> _routeTransitionSignal = ValueNotifier(true);
   bool _isDraggingSeek = false;
   int _seekSessionId = 0;
   Timer? _seekSettleTimer;
@@ -4075,12 +4263,16 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   Animation<double>? _routeAnimation;
   bool _routeTransitionComplete = false;
   bool _routeTransitionActive = true;
+  bool _playbackGlassReady = false;
+  bool _playbackForeground = true;
+  int _playbackGlassGeneration = 0;
   _PlaybackBackgroundFrame? _renderedPlaybackBackground;
   _PlaybackBackgroundFrame? _pendingPlaybackBackground;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _preparedPlaybackArtworkSignal.addListener(
       _handlePreparedPlaybackArtworkChanged,
     );
@@ -4092,9 +4284,15 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       vsync: this,
       duration: _lyricsContentEnterDuration,
     );
-    _showLyrics =
-        context.read<SettingsProvider>().playbackInitialView ==
-        PlaybackInitialView.lyrics;
+    _playbackGlassTransitionController = AnimationController(
+      vsync: this,
+      duration: _playbackGlassEnterDuration,
+    );
+    _playbackGlassTransition = CurvedAnimation(
+      parent: _playbackGlassTransitionController,
+      curve: Curves.easeOutCubic,
+    );
+    _showLyrics = false;
     _coverLayerBuilt = !_showLyrics;
     _lyricsLayerBuilt = _showLyrics;
     _lyricsRealtimeVisualsEnabled = false;
@@ -4153,6 +4351,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         routeAnimation == null ||
         routeAnimation.status == AnimationStatus.completed;
     _routeTransitionActive = !_routeTransitionComplete;
+    if (_routeTransitionComplete) {
+      _schedulePlaybackGlassRestore();
+    }
     _lyricsRealtimeVisualsEnabled = shouldRunNowPlayingLyricsRealtime(
       showLyrics: _showLyrics,
       routeTransitionActive: _routeTransitionActive,
@@ -4168,12 +4369,16 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       // persistence work cannot start during a reverse transition.
       InteractionPerformanceController.instance.pulse(
         InteractionPhase.transition,
-        settleAfter: const Duration(milliseconds: 520),
+        settleAfter: nowPlayingRouteTransitionDuration,
       );
       _routeTransitionActive = true;
-      if (_lyricsRealtimeVisualsEnabled && mounted) {
-        setState(() => _lyricsRealtimeVisualsEnabled = false);
-      }
+      _routeTransitionSignal.value = true;
+      _playbackGlassGeneration++;
+      _playbackGlassTransitionController.stop();
+      // Do not rebuild the complete playback page on the first reverse frame.
+      // The route signal freezes the shader and the lyric subtree directly;
+      // disposal clears the remaining glass resources after the animation.
+      _lyricsRealtimeVisualsEnabled = false;
       return;
     }
     if (status != AnimationStatus.completed) return;
@@ -4190,6 +4395,66 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         routeTransitionActive: _routeTransitionActive,
       );
     });
+    _routeTransitionSignal.value = false;
+    _schedulePlaybackGlassRestore();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    final wasForeground = _playbackForeground;
+    final isForeground = foregroundAfterLifecycle(state, wasForeground);
+    if (isForeground == wasForeground) return;
+    _playbackForeground = isForeground;
+    _playbackGlassGeneration++;
+    if (!isForeground) {
+      _playbackGlassTransitionController.stop();
+      _playbackGlassTransitionController.value = 0;
+      if (_playbackGlassReady && mounted) {
+        setState(() => _playbackGlassReady = false);
+      }
+      return;
+    }
+    _schedulePlaybackGlassRestore(delay: _playbackGlassResumeDelay);
+  }
+
+  void _schedulePlaybackGlassRestore({Duration delay = Duration.zero}) {
+    if (!mounted || _routeTransitionActive || _playbackGlassReady) return;
+    final generation = ++_playbackGlassGeneration;
+    unawaited(() async {
+      if (delay > Duration.zero) {
+        await Future<void>.delayed(delay);
+      }
+      if (!mounted ||
+          generation != _playbackGlassGeneration ||
+          _routeTransitionActive ||
+          !_playbackForeground) {
+        return;
+      }
+      final lease = await InteractionPerformanceController.instance
+          .acquireIdleWork(
+            priority: InteractionWorkPriority.userVisible,
+            isStillNeeded: () =>
+                mounted &&
+                generation == _playbackGlassGeneration &&
+                !_routeTransitionActive &&
+                _playbackForeground,
+          );
+      try {
+        if (!lease.isGranted ||
+            !mounted ||
+            generation != _playbackGlassGeneration ||
+            _routeTransitionActive ||
+            !_playbackForeground) {
+          return;
+        }
+        // setState requests the frame itself. A post-frame callback alone can
+        // remain pending forever when playback and the background are static.
+        setState(() => _playbackGlassReady = true);
+        _playbackGlassTransitionController.forward(from: 0);
+      } finally {
+        lease.release();
+      }
+    }());
   }
 
   void _runVisualTransition({required bool showLyrics}) {
@@ -4263,6 +4528,19 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     }
   }
 
+  void _stageCompleteLyricsEntry() {
+    // The retained lyric layer can still own a paused scroll ticker, while an
+    // interrupted cover transition may leave either visual controller between
+    // its endpoints. Establish one deterministic frame before recentering so
+    // the following cover-to-lyrics transition always runs from 0 to 1.
+    _visualTransitionRevision++;
+    _cancelVisualTransitionTimers();
+    _coverTransitionController.stop(canceled: false);
+    _lyricsContentTransitionController.stop(canceled: false);
+    _coverTransitionController.value = 0;
+    _lyricsContentTransitionController.value = 0;
+  }
+
   void _animateVisualLayer(
     AnimationController controller, {
     required double target,
@@ -4292,6 +4570,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
 
   @override
   void dispose() {
+    _playbackGlassGeneration++;
+    WidgetsBinding.instance.removeObserver(this);
     _preparedPlaybackArtworkSignal.removeListener(
       _handlePreparedPlaybackArtworkChanged,
     );
@@ -4304,8 +4584,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _cancelVisualTransitionTimers();
     _coverTransitionController.dispose();
     _lyricsContentTransitionController.dispose();
+    _playbackGlassTransitionController.dispose();
     _frozenLyricLineIndex.dispose();
     _seekPosition.dispose();
+    _routeTransitionSignal.dispose();
     super.dispose();
   }
 
@@ -4323,8 +4605,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _isDraggingSeek = false;
     _seekPosition.value = targetMs;
     _lyricsListController.settleOn(target);
+    notifier.signalLyricSeekIntent();
     for (var attempt = 0; attempt < 2; attempt++) {
-      await notifier.mediaPlayer.seek(Duration(milliseconds: targetMs.round()));
+      final target = Duration(milliseconds: targetMs.round());
+      await notifier.mediaPlayer.seek(target);
+      notifier.signalLyricSeek(target);
       if (!mounted || sessionId != _seekSessionId) return;
       if (attempt == 0 && !notifier.isPlaying) {
         await notifier.play();
@@ -4442,7 +4727,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       await notifier.mediaPlayer.setRate(baseRate);
     }
     if (!mounted || sessionId != _seekSessionId) return;
-    await notifier.mediaPlayer.seek(Duration(milliseconds: targetMs.round()));
+    final target = Duration(milliseconds: targetMs.round());
+    notifier.signalLyricSeekIntent();
+    await notifier.mediaPlayer.seek(target);
+    notifier.signalLyricSeek(target);
     if (!mounted || sessionId != _seekSessionId) return;
     // 某些 Android 音频后端在 seek 后会把 playWhenReady 留在暂停态。
     // 操作前正在播放时显式重发播放命令；原本暂停则不改变状态。
@@ -4477,7 +4765,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       _lyricsListController.settleOn(Duration(milliseconds: value.round()));
     }
 
-    await notifier.mediaPlayer.seek(Duration(milliseconds: value.round()));
+    final target = Duration(milliseconds: value.round());
+    notifier.signalLyricSeekIntent();
+    await notifier.mediaPlayer.seek(target);
+    notifier.signalLyricSeek(target);
     if (!mounted || sessionId != _seekSessionId) return;
     _waitForSeekPosition(notifier, sessionId, value);
   }
@@ -4595,6 +4886,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       currentCover: playback.cover,
       retainedCover: _retainedPlaybackArtworkFor(song.normalizedPath),
     );
+    // Palette extraction does not need the full-resolution cover. Prefer the
+    // already cached thumbnail so enabling fluid mode cannot delay cover paint.
+    final paletteArtwork =
+        notifier.displayThumbnailForSong(song) ?? currentAlbumArt;
     final useAlbumArtOnPlayback =
         settings.followAlbumArtOnPlayback && currentAlbumArt != null;
     final usePlaybackTheme = useCustomPlaybackTheme || useAlbumArtOnPlayback;
@@ -4609,9 +4904,15 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         coverDim: settings.playbackAlbumArtBackgroundDim,
         coverBlur: settings.playbackAlbumArtBackgroundBlur,
         usePlaybackTheme: usePlaybackTheme,
+        artworkStyle: settings.playbackArtworkBackgroundStyle,
+        fluidQuality: settings.fluidBackgroundQuality,
       ),
     );
     final renderedPlaybackTheme = playbackBackground.usePlaybackTheme;
+    final useFluidBackground =
+        playbackBackground.artworkStyle ==
+            PlaybackArtworkBackgroundStyle.fluid &&
+        playbackBackground.coverEnabled;
     if (_lastSongPath != song.filePath) {
       _lastSongPath = song.filePath;
       _lyricsEntryRevision++;
@@ -4634,6 +4935,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       lyrics: playback.lyrics,
       lyricFontFamily: lyricFontFamily,
       usePlaybackTheme: renderedPlaybackTheme,
+      fallbackArtwork: currentAlbumArt,
       maxCoverSize: useSplitLayout
           ? 520
           : isTablet
@@ -4648,6 +4950,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       totalMs: totalMs,
       tablet: isTablet,
       usePlaybackTheme: renderedPlaybackTheme,
+      useFluidBackground: useFluidBackground,
     );
 
     final scaffold = Scaffold(
@@ -4738,16 +5041,25 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         ),
       ),
     );
-    return CustomThemeBackground(
+    return PlaybackBackground(
+      style: playbackBackground.artworkStyle,
+      artworkIdentity: song.normalizedPath,
+      artworkCacheGeneration: notifier.artworkImageCacheGeneration,
+      routeTransitionActive: _routeTransitionActive,
+      routeTransitionListenable: _routeTransitionSignal,
+      fluidQuality: playbackBackground.fluidQuality,
+      fallbackSeed: Theme.of(context).colorScheme.primary,
       path: playbackBackground.path,
-      enabled: playbackBackground.customImageEnabled,
-      dim: playbackBackground.customImageDim,
-      blurSigma: playbackBackground.customImageBlur,
+      customImageEnabled: playbackBackground.customImageEnabled,
+      customImageDim: playbackBackground.customImageDim,
+      customImageBlur: playbackBackground.customImageBlur,
       coverBytes: playbackBackground.coverBytes,
+      paletteArtworkBytes: paletteArtwork,
+      rhythmFrames: notifier.mediaPlayer.stream.fft,
       coverEnabled: playbackBackground.coverEnabled,
       coverDim: playbackBackground.coverDim,
-      coverBlurSigma: playbackBackground.coverBlur,
-      brightnessOverride: renderedPlaybackTheme ? Brightness.dark : null,
+      coverBlur: playbackBackground.coverBlur,
+      usePlaybackTheme: renderedPlaybackTheme,
       child: scaffold,
     );
   }
@@ -4797,6 +5109,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required List<LyricLine> lyrics,
     required String? lyricFontFamily,
     required bool usePlaybackTheme,
+    required Uint8List? fallbackArtwork,
     required double maxCoverSize,
   }) {
     final activeLyricColor = context.watch<ThemeProvider>().currentSeedColor;
@@ -4810,11 +5123,18 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       positionListenable: _lyricsRealtimeVisualsEnabled
           ? notifier.positionListenable
           : null,
+      playbackRate: notifier.currentPlaybackRate,
+      playbackRateListenable: notifier.actualPlaybackRateListenable,
+      actualPlaybackListenable: notifier.actualPlaybackListenable,
+      seekPositionListenable: notifier.lyricSeekListenable,
+      seekIntentListenable: notifier.lyricSeekIntentListenable,
       fontSize: settings.fontSize,
       fontFamily: lyricFontFamily,
       fontWeight: settings.lyricFontWeight,
       textAlign: settings.lyricAlignment,
       elasticScrollEnabled: settings.enableLyricElasticScroll,
+      karaokeLyricsEnabled: settings.enableKaraokeLyrics,
+      karaokeLyricsMode: settings.karaokeLyricsMode,
       lineBlurEnabled: settings.enableLyricBlur,
       highlightActiveLine: settings.highlightActiveLyric,
       isPlaying: _lyricsRealtimeVisualsEnabled && notifier.isPlaying,
@@ -4844,6 +5164,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         final showLyrics = !_showLyrics;
         final entryRevision = ++_lyricsEntryRevision;
         _frozenLyricLineIndex.value = notifier.lyricLineIndexListenable.value;
+        if (showLyrics) _stageCompleteLyricsEntry();
         setState(() {
           _showLyrics = showLyrics;
           _lyricsRealtimeVisualsEnabled = false;
@@ -4965,6 +5286,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                                 child: _AtomicNowPlayingCover(
                                   songPath: song.normalizedPath,
                                   size: size,
+                                  fallbackArtwork: fallbackArtwork,
                                 ),
                               ),
                             ),
@@ -4993,28 +5315,34 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                         ),
                       );
                     },
-                    child: TickerMode(
-                      enabled: _lyricsRealtimeVisualsEnabled,
-                      child: RepaintBoundary(
-                        child: ClipRRect(
-                          borderRadius: BorderRadius.circular(12),
-                          // Keep one stable bridge around the lyric list. A
-                          // conditional wrapper used to replace the complete
-                          // list subtree when realtime visuals were paused,
-                          // forcing every highlighted line and cached glyph
-                          // layer to be recreated inside the page transition.
-                          child: ValueListenableBuilder<int>(
-                            key: const ValueKey(
-                              'now_playing_lyric_index_bridge',
+                    child: ValueListenableBuilder<bool>(
+                      valueListenable: _routeTransitionSignal,
+                      builder: (context, routeTransitionActive, _) {
+                        final realtime =
+                            _lyricsRealtimeVisualsEnabled &&
+                            !routeTransitionActive;
+                        return TickerMode(
+                          enabled: realtime,
+                          child: RepaintBoundary(
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(12),
+                              // Keep one stable bridge around the lyric list.
+                              // Only this isolated subtree observes route state,
+                              // so a pop never rebuilds the whole playback page.
+                              child: ValueListenableBuilder<int>(
+                                key: const ValueKey(
+                                  'now_playing_lyric_index_bridge',
+                                ),
+                                valueListenable: realtime
+                                    ? notifier.lyricLineIndexListenable
+                                    : _frozenLyricLineIndex,
+                                builder: (context, activeLyric, _) =>
+                                    buildLyricsList(activeLyric),
+                              ),
                             ),
-                            valueListenable: _lyricsRealtimeVisualsEnabled
-                                ? notifier.lyricLineIndexListenable
-                                : _frozenLyricLineIndex,
-                            builder: (context, activeLyric, _) =>
-                                buildLyricsList(activeLyric),
                           ),
-                        ),
-                      ),
+                        );
+                      },
                     ),
                   ),
                 ),
@@ -5112,6 +5440,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required double totalMs,
     required bool tablet,
     required bool usePlaybackTheme,
+    required bool useFluidBackground,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
     final timelineControls = ValueListenableBuilder<double?>(
@@ -5235,6 +5564,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         ? _playbackThemePanel(
             context,
             enabled: true,
+            // Keep the two marked wide surfaces translucent but unblurred.
+            blurEnabled: false,
             child: Padding(
               padding: const EdgeInsets.fromLTRB(4, 4, 4, 6),
               child: Column(
@@ -5255,96 +5586,103 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
               transportControls,
             ],
           );
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Row(
-          children: [
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    song.title,
-                    maxLines: tablet ? 2 : 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: tablet
-                        ? Theme.of(context).textTheme.headlineSmall
-                        : Theme.of(context).textTheme.titleLarge,
-                  ),
-                  Text(
-                    song.artist,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodyLarge,
-                  ),
-                ],
+    return BackdropGroup(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      song.title,
+                      maxLines: tablet ? 2 : 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: tablet
+                          ? Theme.of(context).textTheme.headlineSmall
+                          : Theme.of(context).textTheme.titleLarge,
+                    ),
+                    Text(
+                      song.artist,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: Theme.of(context).textTheme.bodyLarge,
+                    ),
+                  ],
+                ),
               ),
-            ),
-            const SizedBox(width: 8),
-            _buildEqualizerPresetButton(
-              context,
-              notifier: notifier,
-              usePlaybackTheme: usePlaybackTheme,
-            ),
-          ],
-        ),
-        SizedBox(height: tablet ? 10 : 4),
-        primaryControls,
-        SizedBox(height: tablet ? 12 : 10),
-        _playbackThemePanel(
-          context,
-          enabled: usePlaybackTheme,
-          child: Material(
-            color: usePlaybackTheme
-                ? Colors.transparent
-                : Theme.of(context).colorScheme.surfaceContainer,
-            shape: const StadiumBorder(),
-            clipBehavior: Clip.antiAlias,
-            child: Row(
-              children: [
-                Expanded(
-                  child: IconButton(
-                    tooltip: '歌词源',
-                    icon: const Icon(Icons.lyrics_outlined),
-                    onPressed: () => _showLyricSource(context),
+              const SizedBox(width: 8),
+              _buildEqualizerPresetButton(
+                context,
+                notifier: notifier,
+                usePlaybackTheme: usePlaybackTheme,
+                useFluidBackground: useFluidBackground,
+              ),
+            ],
+          ),
+          SizedBox(height: tablet ? 10 : 4),
+          primaryControls,
+          SizedBox(height: tablet ? 12 : 10),
+          _playbackThemePanel(
+            context,
+            enabled: usePlaybackTheme,
+            blurEnabled: false,
+            child: Material(
+              color: usePlaybackTheme
+                  ? Colors.transparent
+                  : Theme.of(context).colorScheme.surfaceContainer,
+              shape: const StadiumBorder(),
+              clipBehavior: Clip.antiAlias,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: IconButton(
+                      tooltip: '歌词源',
+                      icon: const Icon(Icons.lyrics_outlined),
+                      onPressed: () => _showLyricSource(context),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 30, child: VerticalDivider(width: 1)),
-                Expanded(
-                  child: IconButton(
-                    tooltip: '歌曲列表',
-                    icon: const Icon(Icons.queue_music),
-                    onPressed: () => _showQueue(context),
-                  ),
-                ),
-                const SizedBox(height: 30, child: VerticalDivider(width: 1)),
-                Expanded(
-                  child: IconButton(
-                    tooltip: '音频效果',
-                    icon: const Icon(Icons.tune),
-                    onPressed: () => _showAudioEffects(context),
-                  ),
-                ),
-                if (settings.showAudioAnalysis) ...[
                   const SizedBox(height: 30, child: VerticalDivider(width: 1)),
                   Expanded(
                     child: IconButton(
-                      tooltip: '音频分析',
-                      icon: const Icon(Icons.graphic_eq),
-                      onPressed: () => Navigator.of(context).push(
-                        CupertinoPageRoute<void>(
-                          builder: (_) => const AudioAnalysisPage(),
+                      tooltip: '歌曲列表',
+                      icon: const Icon(Icons.queue_music),
+                      onPressed: () => _showQueue(context),
+                    ),
+                  ),
+                  const SizedBox(height: 30, child: VerticalDivider(width: 1)),
+                  Expanded(
+                    child: IconButton(
+                      tooltip: '音频效果',
+                      icon: const Icon(Icons.tune),
+                      onPressed: () => _showAudioEffects(context),
+                    ),
+                  ),
+                  if (settings.showAudioAnalysis) ...[
+                    const SizedBox(
+                      height: 30,
+                      child: VerticalDivider(width: 1),
+                    ),
+                    Expanded(
+                      child: IconButton(
+                        tooltip: '音频分析',
+                        icon: const Icon(Icons.graphic_eq),
+                        onPressed: () => Navigator.of(context).push(
+                          CupertinoPageRoute<void>(
+                            builder: (_) => const AudioAnalysisPage(),
+                          ),
                         ),
                       ),
                     ),
-                  ),
+                  ],
                 ],
-              ],
+              ),
             ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
@@ -5352,6 +5690,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     BuildContext context, {
     required PlaylistContentNotifier notifier,
     required bool usePlaybackTheme,
+    required bool useFluidBackground,
   }) {
     if (!usePlaybackTheme) {
       return ActionChip(
@@ -5371,6 +5710,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     return _playbackThemePanel(
       context,
       enabled: true,
+      blurEnabled: _playbackGlassReady,
+      blurSigma: useFluidBackground
+          ? _fluidPlaybackGlassBlur
+          : _playbackGlassBlur,
       borderRadius: radius,
       drawBorder: false,
       child: Semantics(
@@ -5416,6 +5759,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required Widget child,
     BorderRadius? borderRadius,
     bool drawBorder = true,
+    bool blurEnabled = true,
+    double blurSigma = _playbackGlassBlur,
   }) {
     if (!enabled) return child;
     final scheme = Theme.of(context).colorScheme;
@@ -5423,27 +5768,63 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         ? Colors.white.withValues(alpha: _playbackGlassBorderAlpha)
         : scheme.outlineVariant.withValues(alpha: _playbackGlassBorderAlpha);
     final radius = borderRadius ?? BorderRadius.circular(22);
-    return ClipRRect(
-      borderRadius: radius,
-      child: BackdropFilter(
-        filter: ui.ImageFilter.blur(
-          sigmaX: _playbackGlassBlur,
-          sigmaY: _playbackGlassBlur,
-        ),
-        child: DecoratedBox(
+    Widget surface({required double alpha, bool border = false}) =>
+        DecoratedBox(
           decoration: BoxDecoration(
-            color: scheme.surface.withValues(alpha: _playbackGlassFillAlpha),
+            color: scheme.surface.withValues(alpha: alpha),
             borderRadius: radius,
-            border: drawBorder ? Border.all(color: borderColor) : null,
+            border: border && drawBorder
+                ? Border.all(color: borderColor)
+                : null,
           ),
-          child: Material(
-            color: Colors.transparent,
-            borderRadius: radius,
-            clipBehavior: Clip.antiAlias,
-            child: child,
+        );
+    final foreground = DecoratedBox(
+      decoration: BoxDecoration(
+        borderRadius: radius,
+        border: drawBorder ? Border.all(color: borderColor) : null,
+      ),
+      child: Material(
+        color: Colors.transparent,
+        borderRadius: radius,
+        clipBehavior: Clip.antiAlias,
+        child: child,
+      ),
+    );
+    if (!blurEnabled) {
+      return DecoratedBox(
+        decoration: BoxDecoration(
+          color: scheme.surface.withValues(alpha: .22),
+          borderRadius: radius,
+        ),
+        child: foreground,
+      );
+    }
+    return Stack(
+      fit: StackFit.passthrough,
+      children: [
+        Positioned.fill(
+          child: FadeTransition(
+            opacity: ReverseAnimation(_playbackGlassTransition),
+            child: surface(alpha: .22),
           ),
         ),
-      ),
+        Positioned.fill(
+          child: FadeTransition(
+            opacity: _playbackGlassTransition,
+            child: ClipRRect(
+              borderRadius: radius,
+              child: BackdropFilter.grouped(
+                filter: ui.ImageFilter.blur(
+                  sigmaX: blurSigma,
+                  sigmaY: blurSigma,
+                ),
+                child: surface(alpha: _playbackGlassFillAlpha),
+              ),
+            ),
+          ),
+        ),
+        foreground,
+      ],
     );
   }
 
@@ -5875,6 +6256,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required Widget child,
   }) {
     final scheme = Theme.of(context).colorScheme;
+    final useFluidBackground = _hasResolvedFluidPlaybackBackground(
+      context.read<SettingsProvider>(),
+      context.read<PlaylistContentNotifier>(),
+    );
     final brightForeground = Theme.of(context).brightness == Brightness.light;
     final borderColor = brightForeground
         ? Colors.white.withValues(alpha: _playbackGlassBorderAlpha)
@@ -5885,26 +6270,29 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       child: child,
     );
     const radius = BorderRadius.vertical(top: Radius.circular(28));
+    final surface = DecoratedBox(
+      decoration: BoxDecoration(
+        color: scheme.surface.withValues(
+          alpha: useFluidBackground ? .28 : _playbackGlassFillAlpha,
+        ),
+        borderRadius: radius,
+        border: Border.all(color: borderColor),
+      ),
+      child: Material(
+        color: Colors.transparent,
+        shape: const RoundedRectangleBorder(borderRadius: radius),
+        clipBehavior: Clip.antiAlias,
+        child: themedChild,
+      ),
+    );
     return ClipRRect(
       borderRadius: radius,
       child: BackdropFilter(
-        filter: ui.ImageFilter.blur(
-          sigmaX: _playbackGlassBlur,
-          sigmaY: _playbackGlassBlur,
-        ),
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: scheme.surface.withValues(alpha: _playbackGlassFillAlpha),
-            borderRadius: radius,
-            border: Border.all(color: borderColor),
-          ),
-          child: Material(
-            color: Colors.transparent,
-            shape: const RoundedRectangleBorder(borderRadius: radius),
-            clipBehavior: Clip.antiAlias,
-            child: themedChild,
-          ),
-        ),
+        key: const ValueKey('playback-feature-backdrop-filter'),
+        filter: useFluidBackground
+            ? _fluidPlaybackFeatureBlurFilter
+            : _playbackFeatureBlurFilter,
+        child: surface,
       ),
     );
   }
@@ -6395,6 +6783,8 @@ class _SleepTimerSectionState extends State<_SleepTimerSection> {
   @override
   Widget build(BuildContext context) {
     final remaining = widget.notifier.playbackSleepTimerRemaining;
+    final waitingForTrackEnd = widget.notifier.playbackSleepWaitingForTrackEnd;
+    final settings = context.watch<SettingsProvider>();
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -6408,7 +6798,9 @@ class _SleepTimerSectionState extends State<_SleepTimerSection> {
                 children: [
                   Text('播放定时', style: Theme.of(context).textTheme.titleMedium),
                   Text(
-                    remaining == null
+                    waitingForTrackEnd
+                        ? '计时已结束，将在当前歌曲播放完后停止'
+                        : remaining == null
                         ? '未设置，到时自动暂停播放'
                         : '剩余 ${_sleepTimerRemainingLabel(remaining)}',
                     style: Theme.of(context).textTheme.bodySmall,
@@ -6416,12 +6808,22 @@ class _SleepTimerSectionState extends State<_SleepTimerSection> {
                 ],
               ),
             ),
-            if (remaining != null)
+            if (widget.notifier.hasPlaybackSleepTimer)
               TextButton(
                 onPressed: widget.notifier.cancelPlaybackSleepTimer,
                 child: const Text('取消定时'),
               ),
           ],
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('延时到整首播完后结束'),
+          subtitle: const Text('计时结束后播放完当前歌曲再停止'),
+          value: settings.sleepTimerFinishCurrentTrack,
+          onChanged: (value) async {
+            await settings.setSleepTimerFinishCurrentTrack(value);
+            widget.notifier.updatePlaybackSleepFinishCurrentTrack(value);
+          },
         ),
         const SizedBox(height: 10),
         Wrap(
@@ -6584,6 +6986,41 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
           value: settings.enableLyricElasticScroll,
           onChanged: settings.setEnableLyricElasticScroll,
         ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('逐字歌词'),
+          subtitle: const Text('按逐字时间推进当前歌词的高亮动画'),
+          value: settings.enableKaraokeLyrics,
+          onChanged: settings.setEnableKaraokeLyrics,
+        ),
+        if (settings.enableKaraokeLyrics) ...[
+          const ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text('逐字歌词范围'),
+            subtitle: Text('仅适配：只处理带逐字时间戳的 LRC 歌词'),
+          ),
+          SizedBox(
+            width: double.infinity,
+            child: SegmentedButton<KaraokeLyricsMode>(
+              expandedInsets: EdgeInsets.zero,
+              showSelectedIcon: false,
+              segments: const [
+                ButtonSegment(
+                  value: KaraokeLyricsMode.timedOnly,
+                  label: Text('仅适配'),
+                ),
+                ButtonSegment(value: KaraokeLyricsMode.all, label: Text('全部')),
+              ],
+              selected: {settings.karaokeLyricsMode},
+              onSelectionChanged: (selection) {
+                if (selection.isNotEmpty) {
+                  settings.setKaraokeLyricsMode(selection.first);
+                }
+              },
+            ),
+          ),
+          const SizedBox(height: 6),
+        ],
         ListTile(
           contentPadding: EdgeInsets.zero,
           leading: const Icon(Icons.format_bold_rounded),
@@ -7260,10 +7697,15 @@ class _RequestedGroupArtworkState extends State<_RequestedGroupArtwork> {
 }
 
 class _AtomicNowPlayingCover extends StatelessWidget {
-  const _AtomicNowPlayingCover({required this.songPath, required this.size});
+  const _AtomicNowPlayingCover({
+    required this.songPath,
+    required this.size,
+    required this.fallbackArtwork,
+  });
 
   final String songPath;
   final double size;
+  final Uint8List? fallbackArtwork;
 
   @override
   Widget build(BuildContext context) {
@@ -7287,30 +7729,54 @@ class _AtomicNowPlayingCover extends StatelessWidget {
                 )
                 ? retainedPrepared
                 : null);
+        final artwork = chooseNowPlayingArtwork(
+          prepared: prepared?.bytes,
+          fallback: fallbackArtwork,
+        );
+        final preparedProvider =
+            prepared != null &&
+                prepared.bytes.isNotEmpty &&
+                identical(artwork, prepared.bytes)
+            ? CoverMemoryImage(artwork!, targetPixels: prepared.targetPixels)
+            : null;
+        Widget coverImage(Uint8List bytes) => preparedProvider != null
+            ? Image(
+                image: preparedProvider,
+                width: size,
+                height: size,
+                fit: BoxFit.cover,
+                filterQuality: FilterQuality.high,
+                gaplessPlayback: true,
+                errorBuilder: (context, error, stackTrace) => ColoredBox(
+                  color: Theme.of(context).colorScheme.secondaryContainer,
+                  child: Icon(Icons.music_note, size: size * .5),
+                ),
+              )
+            : ArtworkImage(
+                bytes: bytes,
+                size: ArtworkSize.large,
+                logicalSize: size,
+                width: size,
+                height: size,
+                fit: BoxFit.cover,
+                progressive: true,
+                filterQuality: FilterQuality.high,
+                gaplessPlayback: true,
+                errorBuilder: (context, error, stackTrace) => ColoredBox(
+                  color: Theme.of(context).colorScheme.secondaryContainer,
+                  child: Icon(Icons.music_note, size: size * .5),
+                ),
+              );
         return ClipRRect(
           borderRadius: BorderRadius.circular(8),
           child: SizedBox.square(
             dimension: size,
-            child: prepared == null
+            child: artwork == null || artwork.isEmpty
                 ? ColoredBox(
                     color: Theme.of(context).colorScheme.secondaryContainer,
                     child: Icon(Icons.music_note, size: size * .5),
                   )
-                : Image(
-                    image: CoverMemoryImage(
-                      prepared.bytes,
-                      targetPixels: prepared.targetPixels,
-                    ),
-                    width: size,
-                    height: size,
-                    fit: BoxFit.cover,
-                    filterQuality: FilterQuality.medium,
-                    gaplessPlayback: true,
-                    errorBuilder: (context, error, stackTrace) => ColoredBox(
-                      color: Theme.of(context).colorScheme.secondaryContainer,
-                      child: Icon(Icons.music_note, size: size * .5),
-                    ),
-                  ),
+                : coverImage(artwork),
           ),
         );
       },

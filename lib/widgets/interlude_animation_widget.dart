@@ -31,6 +31,9 @@ class InterludeAnimationWidget extends StatefulWidget {
 class _InterludeAnimationWidgetState extends State<InterludeAnimationWidget>
     with TickerProviderStateMixin {
   late AnimationController _breatheController;
+  late AnimationController _visibilityController;
+  late Animation<double> _visibility;
+  late Animation<Offset> _entryOffset;
   Ticker? _progressTicker;
 
   double _progress = 0.0;
@@ -46,11 +49,26 @@ class _InterludeAnimationWidgetState extends State<InterludeAnimationWidget>
       vsync: this,
       duration: const Duration(milliseconds: 1500),
     );
+    _visibilityController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 340),
+      reverseDuration: const Duration(milliseconds: 280),
+    );
+    _visibility = CurvedAnimation(
+      parent: _visibilityController,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeInCubic,
+    );
+    _entryOffset = Tween<Offset>(
+      begin: const Offset(0, .22),
+      end: Offset.zero,
+    ).animate(_visibility);
 
     _lastAudioTime = widget.currentTime;
     _lastAudioUpdateTime = DateTime.now();
 
     if (widget.isCurrent) {
+      _visibilityController.forward();
       _breatheController.repeat(reverse: true);
       _startTicker();
     }
@@ -72,14 +90,18 @@ class _InterludeAnimationWidgetState extends State<InterludeAnimationWidget>
     }
 
     if (widget.isCurrent && !oldWidget.isCurrent) {
+      _visibilityController.forward();
       _breatheController.repeat(reverse: true);
       _startTicker();
     } else if (!widget.isCurrent && oldWidget.isCurrent) {
-      _breatheController.stop();
-      _breatheController.value = 0;
       _stopTicker();
-      setState(() {
-        _progress = 0.0;
+      _visibilityController.reverse().whenComplete(() {
+        if (!mounted || widget.isCurrent) return;
+        _breatheController.stop();
+        _breatheController.value = 0;
+        setState(() {
+          _progress = 0.0;
+        });
       });
     }
   }
@@ -125,73 +147,83 @@ class _InterludeAnimationWidgetState extends State<InterludeAnimationWidget>
   @override
   void dispose() {
     _breatheController.dispose();
+    _visibilityController.dispose();
     _stopTicker();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment: MainAxisAlignment.center,
-      children: List.generate(3, (index) {
-        return AnimatedBuilder(
-          animation: _breatheController,
-          builder: (context, child) {
-            // 三个点，计算每个点对应的进度区间
-            final double dotStart = index / 3.0;
-            final double dotEnd = (index + 1) / 3.0;
+    return IgnorePointer(
+      child: FadeTransition(
+        key: const ValueKey('interlude_visibility'),
+        opacity: _visibility,
+        child: SlideTransition(
+          position: _entryOffset,
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(3, (index) {
+              return AnimatedBuilder(
+                animation: _breatheController,
+                builder: (context, child) {
+                  // 三个点，计算每个点对应的进度区间
+                  final double dotStart = index / 3.0;
+                  final double dotEnd = (index + 1) / 3.0;
 
-            double dotProgress = 0.0;
-            if (_progress >= dotEnd) {
-              dotProgress = 1.0;
-            } else if (_progress > dotStart) {
-              dotProgress = (_progress - dotStart) / (dotEnd - dotStart);
-            }
+                  double dotProgress = 0.0;
+                  if (_progress >= dotEnd) {
+                    dotProgress = 1.0;
+                  } else if (_progress > dotStart) {
+                    dotProgress = (_progress - dotStart) / (dotEnd - dotStart);
+                  }
 
-            // 颜色混合
-            final double easedProgress = Curves.easeInOut.transform(
-              dotProgress,
-            );
-            final Color dotColor = Color.lerp(
-              widget.baseColor,
-              widget.highlightColor,
-              easedProgress,
-            )!;
+                  // 颜色混合
+                  final double easedProgress = Curves.easeInOut.transform(
+                    dotProgress,
+                  );
+                  final Color dotColor = Color.lerp(
+                    widget.baseColor,
+                    widget.highlightColor,
+                    easedProgress,
+                  )!;
 
-            double scale = 0.8;
+                  double scale = 0.8;
 
-            final double breathe = _breatheController.value;
+                  final double breathe = _breatheController.value;
 
-            // dotProgress=0 → amplitude=0.25（微弱）
-            // dotProgress=0.5 → amplitude=0.45（最强，填充中）
-            // dotProgress=1.0 → amplitude=0.15（安静）
-            final double amplitude = dotProgress < 1.0
-                ? lerpDouble(0.25, 0.45, dotProgress)!
-                : 0.15;
+                  // dotProgress=0 → amplitude=0.25（微弱）
+                  // dotProgress=0.5 → amplitude=0.45（最强，填充中）
+                  // dotProgress=1.0 → amplitude=0.15（安静）
+                  final double amplitude = dotProgress < 1.0
+                      ? lerpDouble(0.25, 0.45, dotProgress)!
+                      : 0.15;
 
-            // 基础大小也随进度增长
-            final double baseScale = lerpDouble(0.8, 1.0, dotProgress)!;
+                  // 基础大小也随进度增长
+                  final double baseScale = lerpDouble(0.8, 1.0, dotProgress)!;
 
-            scale = baseScale + amplitude * breathe;
+                  scale = baseScale + amplitude * breathe;
 
-            return Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 6.0),
-              child: Transform.scale(
-                scale: scale,
-                child: Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    color: dotColor,
-                    shape: BoxShape.circle,
-                  ),
-                ),
-              ),
-            );
-          },
-        );
-      }),
+                  return Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 6.0),
+                    child: Transform.scale(
+                      scale: scale,
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          color: dotColor,
+                          shape: BoxShape.circle,
+                        ),
+                      ),
+                    ),
+                  );
+                },
+              );
+            }),
+          ),
+        ),
+      ),
     );
   }
 }

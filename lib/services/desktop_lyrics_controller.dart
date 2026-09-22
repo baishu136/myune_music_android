@@ -45,6 +45,8 @@ class DesktopLyricsController extends ChangeNotifier {
   bool get enabled => _settings?.desktopLyricsEnabled ?? false;
   bool get locked => _settings?.desktopLyricsLocked ?? false;
   double get fontSize => _settings?.desktopLyricsFontSize ?? 22.0;
+  double get opacity => _settings?.desktopLyricsOpacity ?? 1.0;
+  int get fontWeight => _settings?.desktopLyricsFontWeight ?? 600;
   int get color => _settings?.desktopLyricsColor ?? 0xFF00A9D6;
   bool get outlineEnabled => _settings?.desktopLyricsOutlineEnabled ?? false;
   double get outlineWidth => _settings?.desktopLyricsOutlineWidth ?? 1.15;
@@ -174,6 +176,16 @@ class DesktopLyricsController extends ChangeNotifier {
 
   Future<void> setFontSize(double value) async {
     await _settings?.setDesktopLyricsFontSize(value);
+    await _sync(force: true);
+  }
+
+  Future<void> setOpacity(double value) async {
+    await _settings?.setDesktopLyricsOpacity(value);
+    await _sync(force: true);
+  }
+
+  Future<void> setFontWeight(double value) async {
+    await _settings?.setDesktopLyricsFontWeight(value.round());
     await _sync(force: true);
   }
 
@@ -381,6 +393,8 @@ class DesktopLyricsController extends ChangeNotifier {
       'isLocked': settings.desktopLyricsLocked,
       'color': settings.desktopLyricsColor,
       'fontSize': settings.desktopLyricsFontSize,
+      'opacity': settings.desktopLyricsOpacity,
+      'fontWeight': settings.desktopLyricsFontWeight,
       'fontFamily': theme.currentFontFamily,
       'fontPath': fontPath ?? '',
       'fontCollectionIndex': _resolvedFontCollectionIndex,

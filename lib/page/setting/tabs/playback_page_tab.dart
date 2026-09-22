@@ -99,6 +99,8 @@ class _DesktopLyricsSettingsSection extends StatelessWidget {
                 onPressed: () async {
                   await value.setColor(0xFF00A9D6);
                   await value.setFontSize(22);
+                  await value.setOpacity(1);
+                  await value.setFontWeight(600);
                   await value.setOutlineEnabled(false);
                   await value.setOutlineWidth(1.15);
                   await value.setOutlineColor(0xFFFFFFFF);
@@ -111,6 +113,8 @@ class _DesktopLyricsSettingsSection extends StatelessWidget {
           _DesktopLyricsPreview(
             color: Color(value.color),
             fontSize: value.fontSize,
+            opacity: value.opacity,
+            fontWeight: value.fontWeight,
             fontFamily: fontFamily,
             outlineEnabled: value.outlineEnabled,
             outlineWidth: value.outlineWidth,
@@ -197,6 +201,30 @@ class _DesktopLyricsSettingsSection extends StatelessWidget {
             divisions: 22,
             label: value.fontSize.toStringAsFixed(0),
             onChanged: value.setFontSize,
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text('歌词透明度：${(value.opacity * 100).round()}%'),
+          ),
+          Slider(
+            value: value.opacity,
+            min: .2,
+            max: 1,
+            divisions: 16,
+            label: '${(value.opacity * 100).round()}%',
+            onChanged: value.setOpacity,
+          ),
+          Align(
+            alignment: Alignment.centerLeft,
+            child: Text('字体粗细：${value.fontWeight}'),
+          ),
+          Slider(
+            value: value.fontWeight.toDouble(),
+            min: 300,
+            max: 900,
+            divisions: 6,
+            label: value.fontWeight.toString(),
+            onChanged: value.setFontWeight,
           ),
           SwitchListTile.adaptive(
             contentPadding: EdgeInsets.zero,
@@ -313,6 +341,8 @@ class _DesktopLyricsPreview extends StatelessWidget {
   const _DesktopLyricsPreview({
     required this.color,
     required this.fontSize,
+    required this.opacity,
+    required this.fontWeight,
     required this.fontFamily,
     required this.outlineEnabled,
     required this.outlineWidth,
@@ -321,6 +351,8 @@ class _DesktopLyricsPreview extends StatelessWidget {
 
   final Color color;
   final double fontSize;
+  final double opacity;
+  final int fontWeight;
   final String fontFamily;
   final bool outlineEnabled;
   final double outlineWidth;
@@ -334,7 +366,9 @@ class _DesktopLyricsPreview extends StatelessWidget {
       fontFamily: fontFamily,
       fontSize: size,
       height: 1.15,
-      color: color,
+      color: color.withValues(alpha: opacity),
+      fontWeight:
+          FontWeight.values[(fontWeight ~/ 100 - 1).clamp(0, 8).toInt()],
     );
     return Container(
       key: const ValueKey('desktop-lyrics-style-preview'),
@@ -359,7 +393,9 @@ class _DesktopLyricsPreview extends StatelessWidget {
                   ..style = PaintingStyle.stroke
                   ..strokeJoin = StrokeJoin.round
                   ..strokeWidth = outlineWidth
-                  ..color = outlineColor,
+                  ..color = outlineColor.withValues(
+                    alpha: outlineColor.a * opacity,
+                  ),
               ),
             ),
           Text(
