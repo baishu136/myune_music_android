@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -15,6 +15,13 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Update GitHub Release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release edit v0.9.9-android.325 \
+            --notes "🚫此版本为修复无法导入歌曲bug的更新推送，含有较多bug并存在卡顿问题，若您已安装旧版，则不建议更新此版本，请稍作等待，1.0版本将很快发布"
 
       - name: Set up Java
         uses: actions/setup-java@v4
