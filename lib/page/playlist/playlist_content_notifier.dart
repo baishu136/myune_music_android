@@ -7,6 +7,7 @@ import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -1103,6 +1104,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   // --- 当前歌单的歌曲 ---
   List<Song> _currentPlaylistSongs = []; // 当前选中歌单下的所有歌曲
   bool _isLoadingSongs = false; // 是否正在加载歌曲
+  bool _isPickingAudioImport = false;
 
   List<Song> get currentPlaylistSongs => _currentPlaylistSongs;
   bool get isLoadingSongs => _isLoadingSongs;
@@ -3290,37 +3292,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
 
     final bool allowAnyFormat = _settingsProvider.allowAnyFormat;
-
-    FilePickerResult? result;
-    if (allowAnyFormat) {
-      result = await FilePicker.platform.pickFiles(
-        type: FileType.any,
-        allowMultiple: true,
-        lockParentWindow: true,
-      );
-    } else {
-      result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: [
-          'wav',
-          'wady',
-          'wavarc',
-          'flac',
-          'alac',
-          'ape',
-          'mp3',
-          'aac',
-          'm4a',
-          'ogg',
-          'opus',
-          'wma',
-          'aiff',
-          'pcm',
-        ],
-        allowMultiple: true,
-        lockParentWindow: true,
-      );
-    }
+    final result = await _pickSongFiles(allowAnyFormat: allowAnyFormat);
 
     if (result == null) {
       return false; // 用户取消
@@ -3339,14 +3311,16 @@ class PlaylistContentNotifier extends ChangeNotifier
         }
       }
     }
+    if (result.files.isNotEmpty && selectedSongPaths.isEmpty) {
+      _errorStreamController.add('无法读取所选歌曲，请将文件保存到本地后重试');
+      return false;
+    }
     final restoredHiddenSongs = await _unhideImportedSongPaths(
       selectedSongPaths,
     );
     // 如果不为空，说明有新歌曲被添加
     if (newSongPaths.isNotEmpty) {
-      // 后台异步处理歌曲添加
-      _processSongsInBackground(currentPlaylist, newSongPaths);
-      return true; // 真的有添加
+      return _processSongsInBackground(currentPlaylist, newSongPaths);
     }
     // 如果确实选择了文件，但 newSongPaths 为空，说明选择是重复歌曲
     else if (result.files.isNotEmpty) {
@@ -3371,10 +3345,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       return false;
     }
 
-    final folderPath = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择音乐文件夹',
-      lockParentWindow: true,
-    );
+    final folderPath = await _pickSongFolder();
     if (folderPath == null) return false;
 
     final directory = Directory(folderPath);
@@ -3437,11 +3408,91 @@ class PlaylistContentNotifier extends ChangeNotifier
       return false;
     }
 
-    await _processSongsInBackground(currentPlaylist, newSongPaths);
+    return _processSongsInBackground(currentPlaylist, newSongPaths);
+  }
+
+  Future<FilePickerResult?> _pickSongFiles({
+    required bool allowAnyFormat,
+  }) async {
+    if (!_beginAudioImportPicker()) return null;
+    try {
+      if (allowAnyFormat) {
+        return await FilePicker.platform.pickFiles(
+          type: FileType.any,
+          allowMultiple: true,
+          lockParentWindow: true,
+        );
+      }
+      return await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const [
+          'wav',
+          'wady',
+          'wavarc',
+          'flac',
+          'alac',
+          'ape',
+          'mp3',
+          'aac',
+          'm4a',
+          'ogg',
+          'opus',
+          'wma',
+          'aiff',
+          'pcm',
+        ],
+        allowMultiple: true,
+        lockParentWindow: true,
+      );
+    } on PlatformException catch (error) {
+      await _reportAudioPickerError(error);
+      return null;
+    } catch (error) {
+      _errorStreamController.add('无法打开系统文件选择器，请重试');
+      await _writeErrorToLog('导入歌曲时打开文件选择器失败', error);
+      return null;
+    } finally {
+      _isPickingAudioImport = false;
+    }
+  }
+
+  Future<String?> _pickSongFolder() async {
+    if (!_beginAudioImportPicker()) return null;
+    try {
+      return await FilePicker.platform.getDirectoryPath(
+        dialogTitle: '选择音乐文件夹',
+        lockParentWindow: true,
+      );
+    } on PlatformException catch (error) {
+      await _reportAudioPickerError(error);
+      return null;
+    } catch (error) {
+      _errorStreamController.add('无法打开系统文件选择器，请重试');
+      await _writeErrorToLog('导入文件夹时打开文件选择器失败', error);
+      return null;
+    } finally {
+      _isPickingAudioImport = false;
+    }
+  }
+
+  bool _beginAudioImportPicker() {
+    if (_isPickingAudioImport || _isLoadingSongs) {
+      _infoStreamController.add('已有导入任务正在进行，请稍候');
+      return false;
+    }
+    _isPickingAudioImport = true;
     return true;
   }
 
-  Future<void> _processSongsInBackground(
+  Future<void> _reportAudioPickerError(PlatformException error) async {
+    final message = error.code == 'already_active'
+        ? '文件选择器已打开，请先完成当前选择'
+        : '无法打开系统文件选择器，请重试（${error.code}）';
+    _errorStreamController.add(message);
+    await _writeErrorToLog('导入歌曲时打开文件选择器失败', error);
+  }
+
+  Future<bool> _processSongsInBackground(
     Playlist currentPlaylist,
     List<String> newSongPaths,
   ) async {
@@ -3490,6 +3541,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       await _updateAllSongsList();
 
       _infoStreamController.add('成功添加 ${newSongPaths.length} 首歌曲');
+      return true;
     } catch (e, stackTrace) {
       _errorStreamController.add('添加歌曲时发生错误: $e');
       _writeErrorToLog('添加歌曲时发生错误', e);
@@ -3504,6 +3556,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       // 重新加载播放列表
       await _loadCurrentPlaylistSongs();
       await _updateAllSongsList();
+      return false;
     } finally {
       _isLoadingSongs = false;
       notifyListeners();

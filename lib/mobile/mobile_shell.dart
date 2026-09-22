@@ -305,10 +305,19 @@ class _MobileShellState extends State<MobileShell> {
   }
 
   Future<void> _requestAudioAccess() async {
-    final status = await Permission.audio.request();
-    if (!status.isGranted) {
-      if (!mounted) return;
-      context.read<NotificationService>().warning('请允许“音乐和音频”权限后再导入歌曲');
+    if (!Platform.isAndroid) return;
+
+    // Android 13+ uses READ_MEDIA_AUDIO, while Android 12 and below still use
+    // READ_EXTERNAL_STORAGE. Asking only for Permission.audio makes every
+    // legacy Android device report a false denial before opening the picker.
+    final audioStatus = await Permission.audio.request();
+    if (audioStatus.isGranted) return;
+
+    final storageStatus = await Permission.storage.request();
+    if (!storageStatus.isGranted && mounted) {
+      context.read<NotificationService>().warning(
+        '未授予音频访问权限，仍可通过系统文件选择器导入',
+      );
     }
   }
 
