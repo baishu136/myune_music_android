@@ -291,6 +291,16 @@ class PlaylistContentNotifier extends ChangeNotifier
     return null;
   }
 
+  // 歌单歌曲列表可能来自 const/fixed-length 列表（例如恢复排序缓存）。
+  // 所有后续增删操作前统一复制为可变列表，避免运行时抛出
+  // "Cannot add to a fixed-length list"。
+  void _makePlaylistSongsMutable(Playlist playlist) {
+    final songs = playlist.songs;
+    if (songs != null) {
+      playlist.songs = List<Song>.from(songs);
+    }
+  }
+
   bool isFavorite(Song song) {
     final playlist = favoritePlaylist;
     if (playlist == null) return false;
@@ -314,12 +324,14 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     if (existingIndex >= 0) {
       playlist.songFilePaths.removeAt(existingIndex);
+      _makePlaylistSongsMutable(playlist);
       playlist.songs?.removeWhere(
         (item) => p.normalize(item.filePath).toLowerCase() == target,
       );
       _infoStreamController.add('已取消收藏：${song.title}');
     } else {
       playlist.songFilePaths.add(song.filePath);
+      _makePlaylistSongsMutable(playlist);
       playlist.songs?.add(song);
       _infoStreamController.add('已收藏：${song.title}');
     }
@@ -345,6 +357,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     for (final song in songs) {
       if (!existing.add(song.normalizedPath.toLowerCase())) continue;
       playlist.songFilePaths.add(song.filePath);
+      _makePlaylistSongsMutable(playlist);
       playlist.songs?.add(song);
       added++;
     }
@@ -3660,6 +3673,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 更新歌曲对象列表
       if (currentPlaylist.songs != null) {
+        _makePlaylistSongsMutable(currentPlaylist);
         currentPlaylist.songs!.addAll(parsedSongs);
       } else {
         // 如果之前没有解析过歌曲，则全部重新解析
@@ -3851,6 +3865,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 更新播放列表的歌曲对象列表（仅在已加载时维护）
       if (playlist.songs != null) {
+        _makePlaylistSongsMutable(playlist);
         playlist.songs!.removeWhere(
           (song) => removedPathsNormalized.contains(
             p.normalize(song.filePath).toLowerCase(),
@@ -3942,6 +3957,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     playlist.songFilePaths.addAll(addedPaths);
 
     if (playlist.songs != null) {
+      _makePlaylistSongsMutable(playlist);
       playlist.songs!.removeWhere(
         (song) => removedPathsNormalized.contains(
           p.normalize(song.filePath).toLowerCase(),
@@ -4095,6 +4111,7 @@ class PlaylistContentNotifier extends ChangeNotifier
           );
           playlist.songFilePaths.addAll(diff.added);
           if (playlist.songs != null) {
+            _makePlaylistSongsMutable(playlist);
             playlist.songs!.removeWhere(
               (song) => removedKeys.contains(
                 p.normalize(song.filePath).toLowerCase(),
@@ -4363,7 +4380,7 @@ class PlaylistContentNotifier extends ChangeNotifier
             knownSong: knownSongs[_normalizePath(filePath)],
           ),
         )
-        .toList(growable: false);
+        .toList();
     unawaited(_verifySongMetadataInBackground(playlist.songFilePaths));
   }
 
@@ -4443,6 +4460,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       if (removed > 0) {
         // 同步更新 songs 列表
         if (playlist.songs != null) {
+          _makePlaylistSongsMutable(playlist);
           playlist.songs!.removeWhere(
             (song) => removedNormalized.contains(
               p.normalize(song.filePath).toLowerCase(),
@@ -8133,6 +8151,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     // 如果目标歌单已经解析过歌曲，则同时解析并添加新歌曲
     if (targetPlaylist.songs != null) {
+      _makePlaylistSongsMutable(targetPlaylist);
       final List<Song> newSongs = [];
       for (final path in newSongPaths) {
         final song = await _parseSongMetadata(path);
@@ -8187,6 +8206,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     // 如果歌单已解析过歌曲，则解析并添加新歌曲
     if (targetPlaylist.songs != null) {
+      _makePlaylistSongsMutable(targetPlaylist);
       final parsedSongs = await Future.wait(
         newPaths.map((path) => _parseSongMetadata(path)),
       );
@@ -8235,6 +8255,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       targetPlaylist.songFilePaths.addAll(newPaths);
 
       if (targetPlaylist.songs != null) {
+        _makePlaylistSongsMutable(targetPlaylist);
         final parsedSongs = await Future.wait(
           newPaths.map((path) => _parseSongMetadata(path)),
         );
