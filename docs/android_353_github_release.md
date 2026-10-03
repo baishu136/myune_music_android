@@ -6,6 +6,7 @@
 
 - 设置 → 常规 → 其他中的更新日志现在完整展示 0.99 汇总记录及其后的所有版本有效更改；更早的版本记录和全局发布统计仍保留。
 - 移除原“赞助”内容，改为 GitHub Star 支持入口，显示“如果您喜欢此软件，请在GitHub留下star”及项目仓库链接。
+- 删除不再使用的赞助二维码资源，避免继续打入安装包。
 - README 软件截图更新为音乐库、播放页和全屏歌词三张当前截图。
 - `pubspec.yaml` 升为 `1.0.0+353`，同步应用版本及日志范围测试。
 
@@ -19,7 +20,7 @@
 ## 发布产物
 
 - ARM64 Release APK：`dist/Myune-Music-1.0.0-android.353-arm64-v8a.apk`
-- APK 大小：32,301,884 bytes（30.81 MiB）；SHA-256：`952DEAAB186DCC5CB84FA4E858B96DACBF15E492199F525A3CA074754B72DAEE`
+- APK 大小：32,304,060 bytes（30.81 MiB）；SHA-256：`2ADCA3CE896430EC290171C8B3E9534596B2C2083909AA5224B5E4E2B92DF0E7`
 - 源码归档：`dist/Myune-Music-1.0.0-android.353-source-20261003.zip`
 - GitHub Release：<https://github.com/baishu136/myune_music_android/releases/tag/v1.0.0-android.353>
 
