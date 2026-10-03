@@ -379,10 +379,16 @@ class _MobileShellState extends State<MobileShell>
   }
 
   Future<void> _requestAudioAccess() async {
-    final status = await Permission.audio.request();
-    if (!status.isGranted) {
-      if (!mounted) return;
-      context.read<NotificationService>().warning('请允许“音乐和音频”权限后再导入歌曲');
+    if (!Platform.isAndroid) return;
+
+    final audioStatus = await Permission.audio.request();
+    if (audioStatus.isGranted) return;
+
+    final storageStatus = await Permission.storage.request();
+    if (!storageStatus.isGranted && mounted) {
+      context.read<NotificationService>().warning(
+        '未授予音频访问权限，仍可通过系统文件选择器导入',
+      );
     }
   }
 
@@ -5029,6 +5035,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       lyrics: playback.lyrics,
       lyricFontFamily: lyricFontFamily,
       usePlaybackTheme: renderedPlaybackTheme,
+      fallbackArtwork: currentAlbumArt,
       maxCoverSize: useSplitLayout
           ? 520
           : isTablet
@@ -5173,6 +5180,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required List<LyricLine> lyrics,
     required String? lyricFontFamily,
     required bool usePlaybackTheme,
+    required Uint8List? fallbackArtwork,
     required double maxCoverSize,
   }) {
     final activeLyricColor = context.watch<ThemeProvider>().currentSeedColor;

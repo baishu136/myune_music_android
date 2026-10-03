@@ -7,6 +7,7 @@ import 'dart:collection';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
+import 'package:flutter/services.dart' show PlatformException;
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -291,6 +292,16 @@ class PlaylistContentNotifier extends ChangeNotifier
     return null;
   }
 
+  // 歌单歌曲列表可能来自 const/fixed-length 列表（例如恢复排序缓存）。
+  // 所有后续增删操作前统一复制为可变列表，避免运行时抛出
+  // "Cannot add to a fixed-length list"。
+  void _makePlaylistSongsMutable(Playlist playlist) {
+    final songs = playlist.songs;
+    if (songs != null) {
+      playlist.songs = List<Song>.from(songs);
+    }
+  }
+
   bool isFavorite(Song song) {
     final playlist = favoritePlaylist;
     if (playlist == null) return false;
@@ -314,12 +325,14 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     if (existingIndex >= 0) {
       playlist.songFilePaths.removeAt(existingIndex);
+      _makePlaylistSongsMutable(playlist);
       playlist.songs?.removeWhere(
         (item) => p.normalize(item.filePath).toLowerCase() == target,
       );
       _infoStreamController.add('已取消收藏：${song.title}');
     } else {
       playlist.songFilePaths.add(song.filePath);
+      _makePlaylistSongsMutable(playlist);
       playlist.songs?.add(song);
       _infoStreamController.add('已收藏：${song.title}');
     }
@@ -345,6 +358,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     for (final song in songs) {
       if (!existing.add(song.normalizedPath.toLowerCase())) continue;
       playlist.songFilePaths.add(song.filePath);
+      _makePlaylistSongsMutable(playlist);
       playlist.songs?.add(song);
       added++;
     }
@@ -1199,6 +1213,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   // --- 当前歌单的歌曲 ---
   List<Song> _currentPlaylistSongs = []; // 当前选中歌单下的所有歌曲
   bool _isLoadingSongs = false; // 是否正在加载歌曲
+  bool _isPickingAudioImport = false;
 
   List<Song> get currentPlaylistSongs => _currentPlaylistSongs;
   bool get isLoadingSongs => _isLoadingSongs;
@@ -3409,36 +3424,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     final bool allowAnyFormat = _settingsProvider.allowAnyFormat;
 
-    FilePickerResult? result;
-    if (allowAnyFormat) {
-      result = await FilePicker.platform.pickFiles(
-        type: FileType.any,
-        allowMultiple: true,
-        lockParentWindow: true,
-      );
-    } else {
-      result = await FilePicker.platform.pickFiles(
-        type: FileType.custom,
-        allowedExtensions: [
-          'wav',
-          'wady',
-          'wavarc',
-          'flac',
-          'alac',
-          'ape',
-          'mp3',
-          'aac',
-          'm4a',
-          'ogg',
-          'opus',
-          'wma',
-          'aiff',
-          'pcm',
-        ],
-        allowMultiple: true,
-        lockParentWindow: true,
-      );
-    }
+    final result = await _pickSongFiles(allowAnyFormat: allowAnyFormat);
 
     if (result == null) {
       return false; // 用户取消
@@ -3447,24 +3433,41 @@ class PlaylistContentNotifier extends ChangeNotifier
     final currentPlaylist = _playlists[_selectedIndex];
     final List<String> newSongPaths = [];
     final selectedSongPaths = <String>[];
+    var skippedUnsupportedFiles = 0;
 
     for (final platformFile in result.files) {
-      if (platformFile.path != null) {
-        final pathToAdd = p.normalize(platformFile.path!);
-        selectedSongPaths.add(pathToAdd);
-        if (!currentPlaylist.songFilePaths.contains(pathToAdd)) {
-          newSongPaths.add(pathToAdd);
-        }
+      final selectedPath = platformFile.path;
+      if (selectedPath == null || selectedPath.isEmpty) continue;
+      final pathToAdd = p.normalize(selectedPath);
+      if (!allowAnyFormat &&
+          !_supportedAudioExtensions.contains(
+            p.extension(platformFile.name).toLowerCase(),
+          )) {
+        skippedUnsupportedFiles++;
+        continue;
       }
+      selectedSongPaths.add(pathToAdd);
+      if (!currentPlaylist.songFilePaths.any(
+        (path) => _normalizePath(path).toLowerCase() ==
+            _normalizePath(pathToAdd).toLowerCase(),
+      )) {
+        newSongPaths.add(pathToAdd);
+      }
+    }
+    if (selectedSongPaths.isEmpty) {
+      _infoStreamController.add(
+        skippedUnsupportedFiles > 0
+            ? '所选文件不是支持的音频格式'
+            : '无法读取所选文件，请改从本机存储中选择',
+      );
+      return false;
     }
     final restoredHiddenSongs = await _unhideImportedSongPaths(
       selectedSongPaths,
     );
     // 如果不为空，说明有新歌曲被添加
     if (newSongPaths.isNotEmpty) {
-      // 后台异步处理歌曲添加
-      _processSongsInBackground(currentPlaylist, newSongPaths);
-      return true; // 真的有添加
+      return _processSongsInBackground(currentPlaylist, newSongPaths);
     }
     // 如果确实选择了文件，但 newSongPaths 为空，说明选择是重复歌曲
     else if (result.files.isNotEmpty) {
@@ -3489,10 +3492,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       return false;
     }
 
-    final folderPath = await FilePicker.platform.getDirectoryPath(
-      dialogTitle: '选择音乐文件夹',
-      lockParentWindow: true,
-    );
+    final folderPath = await _pickSongFolder();
     if (folderPath == null) return false;
 
     final directory = Directory(folderPath);
@@ -3555,11 +3555,93 @@ class PlaylistContentNotifier extends ChangeNotifier
       return false;
     }
 
-    await _processSongsInBackground(currentPlaylist, newSongPaths);
+    return _processSongsInBackground(currentPlaylist, newSongPaths);
+  }
+
+  Future<FilePickerResult?> _pickSongFiles({
+    required bool allowAnyFormat,
+  }) async {
+    if (!_beginAudioImportPicker()) return null;
+    try {
+      // Android may reject custom extensions without a registered MIME type.
+      // Pick broadly there and validate extensions in Dart after selection.
+      if (allowAnyFormat || Platform.isAndroid) {
+        return await FilePicker.platform.pickFiles(
+          type: FileType.any,
+          allowMultiple: true,
+          lockParentWindow: true,
+        );
+      }
+      return await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: const [
+          'wav',
+          'wady',
+          'wavarc',
+          'flac',
+          'alac',
+          'ape',
+          'mp3',
+          'aac',
+          'm4a',
+          'ogg',
+          'opus',
+          'wma',
+          'aiff',
+          'pcm',
+        ],
+        allowMultiple: true,
+        lockParentWindow: true,
+      );
+    } on PlatformException catch (error) {
+      await _reportAudioPickerError(error);
+      return null;
+    } catch (error) {
+      _errorStreamController.add('无法打开系统文件选择器，请重试');
+      await _writeErrorToLog('导入歌曲时打开文件选择器失败', error);
+      return null;
+    } finally {
+      _isPickingAudioImport = false;
+    }
+  }
+
+  Future<String?> _pickSongFolder() async {
+    if (!_beginAudioImportPicker()) return null;
+    try {
+      return await FilePicker.platform.getDirectoryPath(
+        dialogTitle: '选择音乐文件夹',
+        lockParentWindow: true,
+      );
+    } on PlatformException catch (error) {
+      await _reportAudioPickerError(error);
+      return null;
+    } catch (error) {
+      _errorStreamController.add('无法打开系统文件选择器，请重试');
+      await _writeErrorToLog('导入文件夹时打开文件选择器失败', error);
+      return null;
+    } finally {
+      _isPickingAudioImport = false;
+    }
+  }
+
+  bool _beginAudioImportPicker() {
+    if (_isPickingAudioImport || _isLoadingSongs) {
+      _infoStreamController.add('已有导入任务正在进行，请稍候');
+      return false;
+    }
+    _isPickingAudioImport = true;
     return true;
   }
 
-  Future<void> _processSongsInBackground(
+  Future<void> _reportAudioPickerError(PlatformException error) async {
+    final message = error.code == 'already_active'
+        ? '文件选择器已打开，请先完成当前选择'
+        : '无法打开系统文件选择器，请重试（${error.code}）';
+    _errorStreamController.add(message);
+    await _writeErrorToLog('导入歌曲时打开文件选择器失败', error);
+  }
+
+  Future<bool> _processSongsInBackground(
     Playlist currentPlaylist,
     List<String> newSongPaths,
   ) async {
@@ -3592,6 +3674,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 更新歌曲对象列表
       if (currentPlaylist.songs != null) {
+        _makePlaylistSongsMutable(currentPlaylist);
         currentPlaylist.songs!.addAll(parsedSongs);
       } else {
         // 如果之前没有解析过歌曲，则全部重新解析
@@ -3608,6 +3691,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       await _updateAllSongsList();
 
       _infoStreamController.add('成功添加 ${newSongPaths.length} 首歌曲');
+      return true;
     } catch (e, stackTrace) {
       _errorStreamController.add('添加歌曲时发生错误: $e');
       _writeErrorToLog('添加歌曲时发生错误', e);
@@ -3622,6 +3706,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       // 重新加载播放列表
       await _loadCurrentPlaylistSongs();
       await _updateAllSongsList();
+      return false;
     } finally {
       _isLoadingSongs = false;
       notifyListeners();
@@ -3781,6 +3866,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 更新播放列表的歌曲对象列表（仅在已加载时维护）
       if (playlist.songs != null) {
+        _makePlaylistSongsMutable(playlist);
         playlist.songs!.removeWhere(
           (song) => removedPathsNormalized.contains(
             p.normalize(song.filePath).toLowerCase(),
@@ -3872,6 +3958,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     playlist.songFilePaths.addAll(addedPaths);
 
     if (playlist.songs != null) {
+      _makePlaylistSongsMutable(playlist);
       playlist.songs!.removeWhere(
         (song) => removedPathsNormalized.contains(
           p.normalize(song.filePath).toLowerCase(),
@@ -4025,6 +4112,7 @@ class PlaylistContentNotifier extends ChangeNotifier
           );
           playlist.songFilePaths.addAll(diff.added);
           if (playlist.songs != null) {
+            _makePlaylistSongsMutable(playlist);
             playlist.songs!.removeWhere(
               (song) => removedKeys.contains(
                 p.normalize(song.filePath).toLowerCase(),
@@ -4293,7 +4381,7 @@ class PlaylistContentNotifier extends ChangeNotifier
             knownSong: knownSongs[_normalizePath(filePath)],
           ),
         )
-        .toList(growable: false);
+        .toList();
     unawaited(_verifySongMetadataInBackground(playlist.songFilePaths));
   }
 
@@ -4373,6 +4461,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       if (removed > 0) {
         // 同步更新 songs 列表
         if (playlist.songs != null) {
+          _makePlaylistSongsMutable(playlist);
           playlist.songs!.removeWhere(
             (song) => removedNormalized.contains(
               p.normalize(song.filePath).toLowerCase(),
@@ -8072,6 +8161,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     // 如果目标歌单已经解析过歌曲，则同时解析并添加新歌曲
     if (targetPlaylist.songs != null) {
+      _makePlaylistSongsMutable(targetPlaylist);
       final List<Song> newSongs = [];
       for (final path in newSongPaths) {
         final song = await _parseSongMetadata(path);
@@ -8126,6 +8216,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     // 如果歌单已解析过歌曲，则解析并添加新歌曲
     if (targetPlaylist.songs != null) {
+      _makePlaylistSongsMutable(targetPlaylist);
       final parsedSongs = await Future.wait(
         newPaths.map((path) => _parseSongMetadata(path)),
       );
@@ -8174,6 +8265,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       targetPlaylist.songFilePaths.addAll(newPaths);
 
       if (targetPlaylist.songs != null) {
+        _makePlaylistSongsMutable(targetPlaylist);
         final parsedSongs = await Future.wait(
           newPaths.map((path) => _parseSongMetadata(path)),
         );

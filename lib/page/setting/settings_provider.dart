@@ -875,6 +875,30 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setBool(_sleepTimerFinishCurrentTrackKey, value);
   }
 
+  Future<void> setEnableKaraokeLyrics(bool value) async {
+    if (_enableKaraokeLyrics == value) return;
+    _enableKaraokeLyrics = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_enableKaraokeLyricsKey, value);
+  }
+
+  Future<void> setKaraokeLyricsMode(KaraokeLyricsMode value) async {
+    if (_karaokeLyricsMode == value) return;
+    _karaokeLyricsMode = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_karaokeLyricsModeKey, value.name);
+  }
+
+  Future<void> setSleepTimerFinishCurrentTrack(bool value) async {
+    if (_sleepTimerFinishCurrentTrack == value) return;
+    _sleepTimerFinishCurrentTrack = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_sleepTimerFinishCurrentTrackKey, value);
+  }
+
   Future<void> setHighlightActiveLyric(bool value) async {
     if (_highlightActiveLyric == value) return;
     _highlightActiveLyric = value;
