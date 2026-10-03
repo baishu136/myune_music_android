@@ -33,6 +33,15 @@ android {
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt')
         }
     }
+
+    packaging {
+        jniLibs {
+            // Compress the sideload APK without removing codecs or changing ELF.
+            // Android extracts libraries on install, potentially increasing disk
+            // usage. This reduces download size, not RAM usage or frame time.
+            useLegacyPackaging = true
+        }
+    }
 }
 
 flutter { source = "../.." }

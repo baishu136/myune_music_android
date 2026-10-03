@@ -187,7 +187,7 @@ class ThemeProvider with ChangeNotifier {
   Color? _dynamicSourceColor;
   bool _animateThemeChanges = true;
 
-  ThemeMode _themeMode = ThemeMode.system;
+  ThemeMode _themeMode = ThemeMode.dark;
   ThemeMode get themeMode => _themeMode;
   ThemeMode get effectiveThemeMode => _themeMode;
   bool get isDarkMode => effectiveThemeMode == ThemeMode.dark;
@@ -427,7 +427,7 @@ class ThemeProvider with ChangeNotifier {
       case 'system':
         return ThemeMode.system;
       default:
-        return ThemeMode.system;
+        return ThemeMode.dark;
     }
   }
 

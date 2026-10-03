@@ -2,6 +2,17 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/app_version.dart';
 
 void main() {
+  test('1.0.0 Android display version uses the current release build', () {
+    expect(
+      AppVersion.format(version: '1.0.0', buildNumber: '353', android: true),
+      '1.0.0-android.353',
+    );
+    expect(
+      AppVersion.format(version: '1.0.0', buildNumber: '2353', android: true),
+      '1.0.0-android.353',
+    );
+  });
+
   test('Android display version follows package metadata', () {
     expect(
       AppVersion.format(version: '0.9.8', buildNumber: '114', android: true),

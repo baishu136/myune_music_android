@@ -5,24 +5,53 @@ import 'package:myune_music/page/setting/settings_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test(
+    'lyric size restores safely and all changes respect the 36 ceiling',
+    () async {
+      SharedPreferences.setMockInitialValues({'fontSize': 48.0});
+      final settings = SettingsProvider();
+      await settings.initializationFuture;
+      expect(settings.fontSize, 36);
+      await settings.setDesktopLyricsFontSize(48);
+      expect(settings.desktopLyricsFontSize, 36);
+      settings.previewFontSize(34);
+      expect(settings.fontSize, 34);
+      settings.previewFontSize(80);
+      expect(settings.fontSize, 36);
+      settings.previewFontSize(double.nan);
+      expect(settings.fontSize, SettingsProvider.defaultLyricFontSize);
+      settings.previewFontSize(1);
+      expect(settings.fontSize, 12);
+      settings.setFontSize(36);
+      await Future<void>.delayed(Duration.zero);
+      expect((await SharedPreferences.getInstance()).getDouble('fontSize'), 36);
+      settings.dispose();
+    },
+  );
   test('desktop lyrics preview uses the requested two-line sample', () {
     expect(desktopLyricsPreviewText, '桌面歌词\nZhuo Mian Ge Ci');
   });
 
   test(
-    'lyric display settings default to regular centered presentation',
+    'lyric display settings default to left-aligned bold highlighted presentation',
     () async {
       SharedPreferences.setMockInitialValues({});
       final settings = SettingsProvider();
       await settings.initializationFuture;
 
-      expect(settings.lyricAlignment, TextAlign.center);
+      expect(settings.lyricAlignment, TextAlign.left);
+      expect(settings.lyricScrollEffect, LyricScrollEffect.standard);
       expect(settings.enableLyricElasticScroll, isFalse);
+      expect(settings.enableKaraokeLyrics, isFalse);
+      expect(settings.karaokeLyricsMode, KaraokeLyricsMode.timedOnly);
+      expect(settings.sleepTimerFinishCurrentTrack, isFalse);
       expect(settings.enableLyricBlur, isFalse);
-      expect(settings.highlightActiveLyric, isFalse);
-      expect(settings.lyricFontWeightIndex, 5);
-      expect(settings.lyricFontWeight, FontWeight.w600);
+      expect(settings.highlightActiveLyric, isTrue);
+      expect(settings.lyricFontWeightIndex, 7);
+      expect(settings.lyricFontWeight, FontWeight.w800);
       expect(settings.desktopLyricsOutlineEnabled, isFalse);
+      expect(settings.desktopLyricsOpacity, 1.0);
+      expect(settings.desktopLyricsFontWeight, 600);
       expect(settings.desktopLyricsOutlineWidth, 1.15);
       expect(settings.desktopLyricsOutlineColor, 0xFFFFFFFF);
       expect(settings.desktopLyricsOutlineOpacity, 1.0);
@@ -34,12 +63,17 @@ void main() {
     SharedPreferences.setMockInitialValues({
       'lyricAlignment': TextAlign.right.toString(),
       'enableLyricElasticScroll': true,
+      'enableKaraokeLyrics': false,
+      'karaokeLyricsMode': 'all',
+      'sleepTimerFinishCurrentTrack': true,
       'enableLyricBlur': true,
       'highlightActiveLyric': true,
       'lyricFontWeight': 7,
       'duetLyricLayout': true,
       'lyricBlurStrength': 3.5,
       'desktopLyricsOutlineEnabled': true,
+      'desktopLyricsOpacity': 0.55,
+      'desktopLyricsFontWeight': 800,
       'desktopLyricsOutlineWidth': 2.4,
       'desktopLyricsOutlineColor': 0xFF00AAFF,
       'desktopLyricsOutlineOpacity': 0.6,
@@ -49,12 +83,18 @@ void main() {
     await settings.initializationFuture;
 
     expect(settings.lyricAlignment, TextAlign.right);
+    expect(settings.lyricScrollEffect, LyricScrollEffect.elastic);
     expect(settings.enableLyricElasticScroll, isTrue);
+    expect(settings.enableKaraokeLyrics, isFalse);
+    expect(settings.karaokeLyricsMode, KaraokeLyricsMode.all);
+    expect(settings.sleepTimerFinishCurrentTrack, isTrue);
     expect(settings.enableLyricBlur, isTrue);
     expect(settings.highlightActiveLyric, isTrue);
     expect(settings.lyricFontWeightIndex, 7);
     expect(settings.lyricFontWeight, FontWeight.w800);
     expect(settings.desktopLyricsOutlineEnabled, isTrue);
+    expect(settings.desktopLyricsOpacity, 0.55);
+    expect(settings.desktopLyricsFontWeight, 800);
     expect(settings.desktopLyricsOutlineWidth, 2.4);
     expect(settings.desktopLyricsOutlineColor, 0xFF00AAFF);
     expect(settings.desktopLyricsOutlineOpacity, 0.6);
@@ -66,6 +106,52 @@ void main() {
     expect(prefs.containsKey('duetLyricLayout'), isFalse);
     expect(prefs.containsKey('lyricBlurStrength'), isFalse);
   });
+
+  test('karaoke and sleep timer preferences are persisted', () async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = SettingsProvider();
+    await settings.initializationFuture;
+
+    await settings.setEnableKaraokeLyrics(true);
+    await settings.setKaraokeLyricsMode(KaraokeLyricsMode.all);
+    await settings.setSleepTimerFinishCurrentTrack(true);
+
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getBool('enableKaraokeLyrics'), isTrue);
+    expect(prefs.getString('karaokeLyricsMode'), 'all');
+    expect(prefs.getBool('sleepTimerFinishCurrentTrack'), isTrue);
+  });
+
+  test(
+    'the three scroll effects persist and override the old elastic flag',
+    () async {
+      SharedPreferences.setMockInitialValues({
+        'enableLyricElasticScroll': true,
+      });
+      final settings = SettingsProvider();
+      await settings.initializationFuture;
+      expect(settings.lyricScrollEffect, LyricScrollEffect.elastic);
+
+      for (final effect in [
+        LyricScrollEffect.standard,
+        LyricScrollEffect.dynamic,
+        LyricScrollEffect.elastic,
+      ]) {
+        await settings.setLyricScrollEffect(effect);
+        final prefs = await SharedPreferences.getInstance();
+        expect(prefs.getString('lyricScrollEffect'), effect.name);
+        expect(
+          settings.enableLyricElasticScroll,
+          effect == LyricScrollEffect.elastic,
+        );
+        final restored = SettingsProvider();
+        await restored.initializationFuture;
+        expect(restored.lyricScrollEffect, effect);
+        restored.dispose();
+      }
+      settings.dispose();
+    },
+  );
 
   test('desktop lyric custom colors keep five newest unique colors', () async {
     SharedPreferences.setMockInitialValues({});
@@ -99,5 +185,20 @@ void main() {
       'ff000004',
       'ff000002',
     ]);
+  });
+
+  test('desktop lyric opacity and weight are clamped and persisted', () async {
+    SharedPreferences.setMockInitialValues({});
+    final settings = SettingsProvider();
+    await settings.initializationFuture;
+
+    await settings.setDesktopLyricsOpacity(0.05);
+    await settings.setDesktopLyricsFontWeight(765);
+
+    expect(settings.desktopLyricsOpacity, 0.2);
+    expect(settings.desktopLyricsFontWeight, 800);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getDouble('desktopLyricsOpacity'), 0.2);
+    expect(prefs.getInt('desktopLyricsFontWeight'), 800);
   });
 }

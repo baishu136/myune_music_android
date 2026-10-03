@@ -118,19 +118,17 @@ Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手
 
 ## 📸 软件截图
 
-### 播放页：封面、歌曲信息与歌词
+### 音乐库
 
-![安卓播放页：封面、歌曲信息与歌词](screenshot/android-playback-overview.jpg)
+![安卓音乐库与歌曲列表](screenshot/android-library-overview.png)
 
-### 自定义背景与历史背景
+### 播放页
 
-<p align="center">
-  <img src="screenshot/android-background-history.png" width="420" alt="安卓自定义背景与历史背景">
-</p>
+![安卓播放页：封面、歌曲信息与播放控制](screenshot/android-playback-overview.png)
 
-### 音乐库、歌单、歌手、专辑与个性化设置
+### 全屏歌词
 
-![安卓音乐库、歌单、歌手、专辑与个性化设置](screenshot/android-interface-overview.jpg)
+![安卓全屏歌词与逐字高亮](screenshot/android-lyrics-overview.png)
 
 
 ## 🚀 快速开始
@@ -154,10 +152,12 @@ flutter run
 
 ### 构建项目
 ```bash
-flutter build apk --release --split-per-abi
+flutter build apk --release --target-platform android-arm64 --split-per-abi
 ```
 
-Windows 也可直接执行 `powershell -ExecutionPolicy Bypass -File tool/build_android_release.ps1`，脚本会在 `release` 目录输出常用的 arm64-v8a 与兼容旧设备的 armeabi-v7a 安装包。
+Windows 也可直接执行 `powershell -ExecutionPolicy Bypass -File tool/build_android_release.ps1`，脚本仅构建 ARM64 Release，在 `dist` 输出 `Myune-Music-版本-android.构建号-arm64-v8a.apk` 并打印 SHA256；不构建其他 ABI。
+
+原生库使用 APK 无损压缩，保留完整字体和解码器；下载包更小，但安装时解压库可能增加设备存储占用，不代表运行内存或性能提升。可用 `python tool/analyze_android_apk.py 新包.apk --baseline 旧包.apk --require-compressed-native` 检查体积、ABI、ELF 对齐和资源完整性（Python 标准库，无额外依赖）。签名与 ZIP 对齐仍需 Android SDK 的 `apksigner verify` / `zipalign -c -P 16 4` 检查。
 
 ## 🧱 使用的依赖与致谢
 

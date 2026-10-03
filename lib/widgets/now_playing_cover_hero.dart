@@ -1,4 +1,13 @@
+import 'dart:typed_data';
+
 import 'package:flutter/material.dart';
+
+const nowPlayingRouteTransitionDuration = Duration(milliseconds: 620);
+
+Uint8List? chooseNowPlayingArtwork({
+  required Uint8List? prepared,
+  required Uint8List? fallback,
+}) => prepared == null || prepared.isEmpty ? fallback : prepared;
 
 /// The cover only participates in the route Hero while the cover page is the
 /// visible playback surface. A retained, transparent cover must not fly back

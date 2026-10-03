@@ -9,9 +9,8 @@ class FramePerformanceMonitor {
 
   static const int _sampleSize = 240;
   static bool _started = false;
-  static final List<double> _frameTimesMs = <double>[];
-  static double _buildTotalMs = 0;
-  static double _rasterTotalMs = 0;
+  static final List<double> _buildTimesMs = <double>[];
+  static final List<double> _rasterTimesMs = <double>[];
 
   static void start() {
     if (_started || !(kDebugMode || kProfileMode)) return;
@@ -21,26 +20,27 @@ class FramePerformanceMonitor {
 
   static void _record(List<FrameTiming> timings) {
     for (final timing in timings) {
-      _frameTimesMs.add(timing.totalSpan.inMicroseconds / 1000);
-      _buildTotalMs += timing.buildDuration.inMicroseconds / 1000;
-      _rasterTotalMs += timing.rasterDuration.inMicroseconds / 1000;
+      _buildTimesMs.add(timing.buildDuration.inMicroseconds / 1000);
+      _rasterTimesMs.add(timing.rasterDuration.inMicroseconds / 1000);
     }
-    if (_frameTimesMs.length < _sampleSize) return;
+    if (_buildTimesMs.length < _sampleSize) return;
 
-    final sorted = List<double>.of(_frameTimesMs)..sort();
-    final count = _frameTimesMs.length;
-    final total = _frameTimesMs.fold<double>(0, (sum, value) => sum + value);
-    final p95 = sorted[((count - 1) * .95).round()];
-    final jankFrames = _frameTimesMs.where((value) => value > 16.67).length;
+    final build = List<double>.of(_buildTimesMs)..sort();
+    final raster = List<double>.of(_rasterTimesMs)..sort();
+    final count = build.length;
+    final p95Index = ((count - 1) * .95).round();
+    final buildOverBudget = build.where((value) => value > 16.67).length;
+    final rasterOverBudget = raster.where((value) => value > 16.67).length;
     debugPrint(
-      '[FramePerf] frames=$count avg=${(total / count).toStringAsFixed(2)}ms '
-      'p95=${p95.toStringAsFixed(2)}ms max=${sorted.last.toStringAsFixed(2)}ms '
-      'build=${(_buildTotalMs / count).toStringAsFixed(2)}ms '
-      'raster=${(_rasterTotalMs / count).toStringAsFixed(2)}ms '
-      'over16.67ms=$jankFrames',
+      '[FramePerf] frames=$count '
+      'buildP95=${build[p95Index].toStringAsFixed(2)}ms '
+      'buildMax=${build.last.toStringAsFixed(2)}ms '
+      'buildOver16.67=$buildOverBudget '
+      'rasterP95=${raster[p95Index].toStringAsFixed(2)}ms '
+      'rasterMax=${raster.last.toStringAsFixed(2)}ms '
+      'rasterOver16.67=$rasterOverBudget',
     );
-    _frameTimesMs.clear();
-    _buildTotalMs = 0;
-    _rasterTotalMs = 0;
+    _buildTimesMs.clear();
+    _rasterTimesMs.clear();
   }
 }

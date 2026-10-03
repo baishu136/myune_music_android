@@ -77,16 +77,16 @@ void main() {
     },
   );
 
-  test('network lyric translation defaults on and is persisted', () async {
+  test('network lyric translation defaults off and is persisted', () async {
     SharedPreferences.setMockInitialValues({});
     final settings = SettingsProvider();
     await settings.initializationFuture;
-    expect(settings.enableLyricTranslation, isTrue);
+    expect(settings.enableLyricTranslation, isFalse);
 
-    await settings.setEnableLyricTranslation(false);
+    await settings.setEnableLyricTranslation(true);
     final restored = SettingsProvider();
     await restored.initializationFuture;
-    expect(restored.enableLyricTranslation, isFalse);
+    expect(restored.enableLyricTranslation, isTrue);
   });
 
   test('lyric source fallback defaults off and is persisted', () async {
@@ -147,18 +147,11 @@ void main() {
     );
   });
 
-  test(
-    'playback page initial view defaults to cover and is persisted',
-    () async {
-      SharedPreferences.setMockInitialValues({});
-      final settings = SettingsProvider();
-      await settings.initializationFuture;
-      expect(settings.playbackInitialView, PlaybackInitialView.cover);
-
-      await settings.setPlaybackInitialView(PlaybackInitialView.lyrics);
-      final restored = SettingsProvider();
-      await restored.initializationFuture;
-      expect(restored.playbackInitialView, PlaybackInitialView.lyrics);
-    },
-  );
+  test('retired lyrics-first preference is removed during migration', () async {
+    SharedPreferences.setMockInitialValues({'playbackInitialView': 'lyrics'});
+    final settings = SettingsProvider();
+    await settings.initializationFuture;
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.containsKey('playbackInitialView'), isFalse);
+  });
 }

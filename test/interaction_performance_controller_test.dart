@@ -8,6 +8,25 @@ void main() {
     controller.pulse(InteractionPhase.idle);
   });
 
+  test(
+    'short scroll pulses cannot end a route protection window early',
+    () async {
+      controller.pulse(
+        InteractionPhase.transition,
+        settleAfter: const Duration(milliseconds: 300),
+      );
+      controller.pulse(
+        InteractionPhase.interacting,
+        settleAfter: const Duration(milliseconds: 1),
+      );
+      await controller.waitForIdle(maxWait: const Duration(milliseconds: 100));
+      expect(controller.isCritical, isTrue);
+      expect(controller.phase, InteractionPhase.transition);
+      await controller.waitForIdle(maxWait: const Duration(milliseconds: 600));
+      expect(controller.isCritical, isFalse);
+    },
+  );
+
   test('interaction pulse settles without a per-frame UI listener', () async {
     controller.pulse(
       InteractionPhase.fling,
@@ -17,6 +36,30 @@ void main() {
     expect(controller.isCritical, isTrue);
     await controller.waitForIdle(maxWait: const Duration(milliseconds: 200));
     expect(controller.phase, InteractionPhase.idle);
+  });
+
+  test('visual animation defers idle work without freezing fluid motion', () {
+    controller.pulse(
+      InteractionPhase.visualAnimation,
+      settleAfter: const Duration(milliseconds: 20),
+    );
+
+    expect(controller.isCritical, isTrue);
+    expect(controller.blocksFluidAnimation, isFalse);
+  });
+
+  test('visual animation cannot downgrade active transition protection', () {
+    controller.pulse(
+      InteractionPhase.transition,
+      settleAfter: const Duration(milliseconds: 100),
+    );
+    controller.pulse(
+      InteractionPhase.visualAnimation,
+      settleAfter: const Duration(milliseconds: 10),
+    );
+
+    expect(controller.phase, InteractionPhase.transition);
+    expect(controller.blocksFluidAnimation, isTrue);
   });
 
   test(

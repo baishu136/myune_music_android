@@ -18,4 +18,34 @@ void main() {
     );
     expect(playbackSleepFadeFactor(Duration.zero), 0);
   });
+
+  test(
+    'finish-current-track mode only waits for an actively requested song',
+    () {
+      expect(
+        shouldDelayPlaybackSleepUntilTrackEnd(
+          enabled: true,
+          hasPlaybackIntent: true,
+          hasCurrentSong: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldDelayPlaybackSleepUntilTrackEnd(
+          enabled: false,
+          hasPlaybackIntent: true,
+          hasCurrentSong: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldDelayPlaybackSleepUntilTrackEnd(
+          enabled: true,
+          hasPlaybackIntent: false,
+          hasCurrentSong: true,
+        ),
+        isFalse,
+      );
+    },
+  );
 }

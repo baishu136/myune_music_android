@@ -5,7 +5,7 @@ import 'package:flutter/services.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
-enum PlaybackInitialView { cover, lyrics }
+import '../../models/fluid_background_state.dart';
 
 enum LibraryViewMode { list, indexed }
 
@@ -14,6 +14,39 @@ enum PlaylistViewMode { cards, split }
 enum GroupViewMode { list, indexedGrid }
 
 enum GroupCollectionSortMode { name, songCount, playCount }
+
+enum KaraokeLyricsMode { timedOnly, all }
+
+/// The three playback-page lyric trajectories. Karaoke glyph motion is separate.
+enum LyricScrollEffect { standard, dynamic, elastic }
+
+LyricScrollEffect decodeLyricScrollEffect(
+  String? value, {
+  bool legacyElastic = false,
+}) => LyricScrollEffect.values.firstWhere(
+  (effect) => effect.name == value,
+  orElse: () =>
+      legacyElastic ? LyricScrollEffect.elastic : LyricScrollEffect.standard,
+);
+
+KaraokeLyricsMode decodeKaraokeLyricsMode(String? value) =>
+    KaraokeLyricsMode.values.firstWhere(
+      (mode) => mode.name == value,
+      orElse: () => KaraokeLyricsMode.timedOnly,
+    );
+
+PlaybackArtworkBackgroundStyle decodePlaybackArtworkBackgroundStyle(
+  String? value,
+) => PlaybackArtworkBackgroundStyle.values.firstWhere(
+  (style) => style.name == value,
+  orElse: () => PlaybackArtworkBackgroundStyle.fluid,
+);
+
+FluidBackgroundQuality decodeFluidBackgroundQuality(String? value) =>
+    FluidBackgroundQuality.values.firstWhere(
+      (quality) => quality.name == value,
+      orElse: () => FluidBackgroundQuality.automatic,
+    );
 
 GroupViewMode _decodeGroupViewMode(
   String? storedValue, {
@@ -30,6 +63,11 @@ GroupViewMode _decodeGroupViewMode(
 
 class SettingsProvider with ChangeNotifier {
   static const double defaultLyricFontSize = 20.0;
+  static const double minLyricFontSize = 12.0;
+  static const double maxLyricFontSize = 36.0;
+  static double normalizedLyricFontSize(double size) => size.isFinite
+      ? size.clamp(minLyricFontSize, maxLyricFontSize)
+      : defaultLyricFontSize;
   static const _enableGlobalHotkeysKey = 'enableGlobalHotkeys';
   static const _playPauseHotKeyKey = 'playPauseHotKey';
   static const _nextTrackHotKeyKey = 'nextTrackHotKey';
@@ -60,11 +98,16 @@ class SettingsProvider with ChangeNotifier {
   static const _minimizeToTrayKey = 'minimizeToTray'; // 最小化到托盘设置的 key
   static const _enableLyricBlurKey = 'enableLyricBlur'; // 歌词模糊效果设置的 key
   static const _enableLyricElasticScrollKey = 'enableLyricElasticScroll';
+  static const _lyricScrollEffectKey = 'lyricScrollEffect';
+  static const _enableKaraokeLyricsKey = 'enableKaraokeLyrics';
+  static const _playbackImmersiveEnabledKey = 'playbackImmersiveEnabled';
+  static const _karaokeLyricsModeKey = 'karaokeLyricsMode';
+  static const _sleepTimerFinishCurrentTrackKey =
+      'sleepTimerFinishCurrentTrack';
   static const _highlightActiveLyricKey = 'highlightActiveLyric';
   static const _lyricFontWeightKey = 'lyricFontWeight';
   static const _playbackLyricGlowEnabledKey = 'playbackLyricGlowEnabled';
   static const _playbackLyricGlowRadiusKey = 'playbackLyricGlowRadius';
-  static const _playbackInitialViewKey = 'playbackInitialView';
   static const _showTaskbarProgressKey =
       'showTaskbarProgress'; // 任务栏进度显示设置的 key
   static const _hiddenPagesKey = 'hiddenPages'; // 隐藏页面设置的 key
@@ -99,6 +142,9 @@ class SettingsProvider with ChangeNotifier {
       'playbackAlbumArtBackgroundBlur';
   static const _followAlbumArtOnHomeKey = 'followAlbumArtOnHome';
   static const _followAlbumArtOnPlaybackKey = 'followAlbumArtOnPlayback';
+  static const _playbackArtworkBackgroundStyleKey =
+      'playbackArtworkBackgroundStyle';
+  static const _fluidBackgroundQualityKey = 'fluidBackgroundQuality';
   static const _libraryViewModeKey = 'libraryViewMode';
   static const _playlistViewModeKey = 'playlistViewMode';
   static const _artistGroupGridViewKey = 'artistGroupGridView';
@@ -116,6 +162,8 @@ class SettingsProvider with ChangeNotifier {
   static const _desktopLyricsColorKey = 'desktopLyricsColor';
   static const _desktopLyricsCustomColorsKey = 'desktopLyricsCustomColors';
   static const _desktopLyricsFontSizeKey = 'desktopLyricsFontSize';
+  static const _desktopLyricsOpacityKey = 'desktopLyricsOpacity';
+  static const _desktopLyricsFontWeightKey = 'desktopLyricsFontWeight';
   static const _desktopLyricsOutlineEnabledKey = 'desktopLyricsOutlineEnabled';
   static const _desktopLyricsOutlineWidthKey = 'desktopLyricsOutlineWidth';
   static const _desktopLyricsOutlineColorKey = 'desktopLyricsOutlineColor';
@@ -123,7 +171,7 @@ class SettingsProvider with ChangeNotifier {
 
   int _maxLinesPerLyric = 2;
   double _fontSize = defaultLyricFontSize;
-  TextAlign _lyricAlignment = TextAlign.center; // 默认居中对齐
+  TextAlign _lyricAlignment = TextAlign.left; // 默认左侧对齐
   bool _useBlurBackground = true; // 默认启用模糊背景
   bool _useDynamicColor = true; // 默认启用动态颜色
   bool _allowAnyFormat = false; // 默认不允许任何格式
@@ -132,12 +180,15 @@ class SettingsProvider with ChangeNotifier {
   bool _addLyricPadding = true; // 默认启用歌词上下补位
   bool _minimizeToTray = false; // 默认不启用最小化到托盘
   bool _enableLyricBlur = false;
-  bool _enableLyricElasticScroll = false;
-  bool _highlightActiveLyric = false;
-  int _lyricFontWeightIndex = 5;
+  LyricScrollEffect _lyricScrollEffect = LyricScrollEffect.standard;
+  bool _enableKaraokeLyrics = false;
+  bool _playbackImmersiveEnabled = false;
+  KaraokeLyricsMode _karaokeLyricsMode = KaraokeLyricsMode.timedOnly;
+  bool _sleepTimerFinishCurrentTrack = false;
+  bool _highlightActiveLyric = true;
+  int _lyricFontWeightIndex = 7; // W800，FontWeight.values 使用零基索引
   bool _playbackLyricGlowEnabled = false;
   double _playbackLyricGlowRadius = 8.0;
-  PlaybackInitialView _playbackInitialView = PlaybackInitialView.cover;
   bool _showAlbumName = false; // 默认不显示专辑名称
   bool _enableDynamicBackground = false; // 默认不启用动态背景
   bool _audioDeviceIsAuto = true; // 默认音频设备为自动
@@ -145,7 +196,7 @@ class SettingsProvider with ChangeNotifier {
   String? _audioDeviceDesc; // 音频设备描述
   bool _ignorePlaybackErrors = false; // 默认不忽略播放错误
   bool _pauseOnAudioInterruption = true; // 默认在其他应用占用音频焦点时暂停
-  bool _preferExternalLyrics = false; // 默认不优先读取外置LRC歌词
+  bool _preferExternalLyrics = true; // 默认优先读取同名外置LRC歌词
   bool _autoAdjustLyricLayout = false; // 默认不自动调节歌词布局
   bool _enableLoudness = false;
   bool _enableReplayGain = false;
@@ -156,16 +207,20 @@ class SettingsProvider with ChangeNotifier {
   String? _playbackThemeImagePath;
   bool _homeThemeImageEnabled = false;
   bool _playbackThemeImageEnabled = false;
-  double _homeThemeImageDim = 0.62;
-  double _playbackThemeImageDim = 0.68;
-  double _homeThemeImageBlur = 22.0;
-  double _playbackThemeImageBlur = 22.0;
-  double _homeAlbumArtBackgroundDim = 0.52;
-  double _playbackAlbumArtBackgroundDim = 0.52;
+  double _homeThemeImageDim = 0.2;
+  double _playbackThemeImageDim = 0.2;
+  double _homeThemeImageBlur = 0.0;
+  double _playbackThemeImageBlur = 0.0;
+  double _homeAlbumArtBackgroundDim = 0.3;
+  double _playbackAlbumArtBackgroundDim = 0.3;
   double _homeAlbumArtBackgroundBlur = 40.0;
   double _playbackAlbumArtBackgroundBlur = 40.0;
   bool _followAlbumArtOnHome = false;
-  bool _followAlbumArtOnPlayback = false;
+  bool _followAlbumArtOnPlayback = true;
+  PlaybackArtworkBackgroundStyle _playbackArtworkBackgroundStyle =
+      PlaybackArtworkBackgroundStyle.fluid;
+  FluidBackgroundQuality _fluidBackgroundQuality =
+      FluidBackgroundQuality.automatic;
   LibraryViewMode _libraryViewMode = LibraryViewMode.list;
   PlaylistViewMode _playlistViewMode = PlaylistViewMode.cards;
   GroupViewMode _artistGroupViewMode = GroupViewMode.list;
@@ -181,6 +236,8 @@ class SettingsProvider with ChangeNotifier {
   int _desktopLyricsColor = 0xFF00A9D6;
   List<int> _desktopLyricsCustomColors = <int>[];
   double _desktopLyricsFontSize = 22.0;
+  double _desktopLyricsOpacity = 1.0;
+  int _desktopLyricsFontWeight = 600;
   bool _desktopLyricsOutlineEnabled = false;
   double _desktopLyricsOutlineWidth = 1.15;
   int _desktopLyricsOutlineColor = 0xFFFFFFFF;
@@ -195,10 +252,10 @@ class SettingsProvider with ChangeNotifier {
 
   bool _showTaskbarProgress = false;
   bool _enableOnlineLyrics = false; // 默认不启用从网络获取歌词
-  bool _enableLyricTranslation = true; // 默认显示网络歌词翻译
+  bool _enableLyricTranslation = false; // 默认不显示网络歌词翻译
   bool _enableLyricSourceFallback = false; // 默认仅使用用户选择的歌词源
-  String _primaryLyricSource = 'qq'; // 默认主要歌词源为qq音乐
-  String _secondaryLyricSource = 'netease'; // 默认备用歌词源为网易云音乐
+  String _primaryLyricSource = 'netease'; // 默认主要歌词源为网易云音乐
+  String _secondaryLyricSource = 'qq'; // 与网易优先的回退顺序一致；回退默认关闭
 
   // 隐藏页面列表，默认为空（都不隐藏）
   List<String> _hiddenPages = [];
@@ -223,7 +280,6 @@ class SettingsProvider with ChangeNotifier {
   FontWeight get lyricFontWeight => FontWeight.values[_lyricFontWeightIndex];
   bool get playbackLyricGlowEnabled => _playbackLyricGlowEnabled;
   double get playbackLyricGlowRadius => _playbackLyricGlowRadius;
-  PlaybackInitialView get playbackInitialView => _playbackInitialView;
   bool get showTaskbarProgress => _showTaskbarProgress; // 获取任务栏进度显示设置
   bool get showAlbumName => _showAlbumName; // 获取显示专辑名称设置
   bool get enableDynamicBackground => _enableDynamicBackground; // 获取动态背景设置
@@ -246,7 +302,14 @@ class SettingsProvider with ChangeNotifier {
 
   bool get preferExternalLyrics => _preferExternalLyrics; // 获取优先读取外置LRC歌词设置
   bool get autoAdjustLyricLayout => _autoAdjustLyricLayout; // 获取是否自动调节歌词布局
-  bool get enableLyricElasticScroll => _enableLyricElasticScroll;
+  LyricScrollEffect get lyricScrollEffect => _lyricScrollEffect;
+  // Other lyric surfaces still consume the former boolean preference.
+  bool get enableLyricElasticScroll =>
+      _lyricScrollEffect == LyricScrollEffect.elastic;
+  bool get enableKaraokeLyrics => _enableKaraokeLyrics;
+  bool get playbackImmersiveEnabled => _playbackImmersiveEnabled;
+  KaraokeLyricsMode get karaokeLyricsMode => _karaokeLyricsMode;
+  bool get sleepTimerFinishCurrentTrack => _sleepTimerFinishCurrentTrack;
   bool get enableLoudness => _enableLoudness;
   bool get enableReplayGain => _enableReplayGain;
   bool get enableGaplessPlayback => _enableGaplessPlayback;
@@ -265,6 +328,9 @@ class SettingsProvider with ChangeNotifier {
   double get playbackAlbumArtBackgroundBlur => _playbackAlbumArtBackgroundBlur;
   bool get followAlbumArtOnHome => _followAlbumArtOnHome;
   bool get followAlbumArtOnPlayback => _followAlbumArtOnPlayback;
+  PlaybackArtworkBackgroundStyle get playbackArtworkBackgroundStyle =>
+      _playbackArtworkBackgroundStyle;
+  FluidBackgroundQuality get fluidBackgroundQuality => _fluidBackgroundQuality;
   LibraryViewMode get libraryViewMode => _libraryViewMode;
   PlaylistViewMode get playlistViewMode => _playlistViewMode;
   GroupViewMode get artistGroupViewMode => _artistGroupViewMode;
@@ -285,6 +351,8 @@ class SettingsProvider with ChangeNotifier {
   List<int> get desktopLyricsCustomColors =>
       List<int>.unmodifiable(_desktopLyricsCustomColors);
   double get desktopLyricsFontSize => _desktopLyricsFontSize;
+  double get desktopLyricsOpacity => _desktopLyricsOpacity;
+  int get desktopLyricsFontWeight => _desktopLyricsFontWeight;
   bool get desktopLyricsOutlineEnabled => _desktopLyricsOutlineEnabled;
   double get desktopLyricsOutlineWidth => _desktopLyricsOutlineWidth;
   int get desktopLyricsOutlineColor => _desktopLyricsOutlineColor;
@@ -322,8 +390,9 @@ class SettingsProvider with ChangeNotifier {
   Future<void> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
     _maxLinesPerLyric = _readPreference<int>(prefs, _prefsKey) ?? 2;
-    _fontSize =
-        _readDoublePreference(prefs, _fontSizeKey) ?? defaultLyricFontSize;
+    _fontSize = normalizedLyricFontSize(
+      _readDoublePreference(prefs, _fontSizeKey) ?? defaultLyricFontSize,
+    );
     _useBlurBackground =
         _readPreference<bool>(prefs, _useBlurBackgroundKey) ?? true;
     _useDynamicColor =
@@ -338,7 +407,7 @@ class SettingsProvider with ChangeNotifier {
     _enableOnlineLyrics =
         _readPreference<bool>(prefs, _enableOnlineLyricsKey) ?? false;
     _enableLyricTranslation =
-        _readPreference<bool>(prefs, _enableLyricTranslationKey) ?? true;
+        _readPreference<bool>(prefs, _enableLyricTranslationKey) ?? false;
     _enableLyricSourceFallback =
         _readPreference<bool>(prefs, _enableLyricSourceFallbackKey) ?? false;
     _lyricVerticalSpacing =
@@ -350,12 +419,22 @@ class SettingsProvider with ChangeNotifier {
         _readPreference<bool>(prefs, _minimizeToTrayKey) ?? false; // 加载最小化到托盘设置
     _enableLyricBlur =
         _readPreference<bool>(prefs, _enableLyricBlurKey) ?? false;
-    _enableLyricElasticScroll =
-        _readPreference<bool>(prefs, _enableLyricElasticScrollKey) ?? false;
+    _lyricScrollEffect = decodeLyricScrollEffect(
+      _readPreference<String>(prefs, _lyricScrollEffectKey),
+      legacyElastic:
+          _readPreference<bool>(prefs, _enableLyricElasticScrollKey) ?? false,
+    );
+    _enableKaraokeLyrics =
+        _readPreference<bool>(prefs, _enableKaraokeLyricsKey) ?? false;
+    _karaokeLyricsMode = decodeKaraokeLyricsMode(
+      _readPreference<String>(prefs, _karaokeLyricsModeKey),
+    );
+    _sleepTimerFinishCurrentTrack =
+        _readPreference<bool>(prefs, _sleepTimerFinishCurrentTrackKey) ?? false;
     _highlightActiveLyric =
-        _readPreference<bool>(prefs, _highlightActiveLyricKey) ?? false;
+        _readPreference<bool>(prefs, _highlightActiveLyricKey) ?? true;
     _lyricFontWeightIndex =
-        (_readPreference<int>(prefs, _lyricFontWeightKey) ?? 5)
+        (_readPreference<int>(prefs, _lyricFontWeightKey) ?? 7)
             .clamp(0, 8)
             .toInt();
     await prefs.remove('duetLyricLayout');
@@ -365,17 +444,17 @@ class SettingsProvider with ChangeNotifier {
     _playbackLyricGlowRadius =
         (_readDoublePreference(prefs, _playbackLyricGlowRadiusKey) ?? 8.0)
             .clamp(2.0, 20.0);
-    _playbackInitialView =
-        _readPreference<String>(prefs, _playbackInitialViewKey) ==
-            PlaybackInitialView.lyrics.name
-        ? PlaybackInitialView.lyrics
-        : PlaybackInitialView.cover;
+    // The playback page now always opens on artwork. Remove the retired
+    // preference so older installations cannot restore the lyrics-first mode.
+    await prefs.remove('playbackInitialView');
+    _playbackImmersiveEnabled =
+        _readPreference<bool>(prefs, _playbackImmersiveEnabledKey) ?? false;
     _primaryLyricSource =
         _readPreference<String>(prefs, _primaryLyricSourceKey) ??
-        'qq'; // 加载主要歌词源设置
+        'netease'; // 加载主要歌词源设置
     _secondaryLyricSource =
         _readPreference<String>(prefs, _secondaryLyricSourceKey) ??
-        'netease'; // 加载备用歌词源设置
+        'qq'; // 加载备用歌词源设置
     _showTaskbarProgress =
         _readPreference<bool>(prefs, _showTaskbarProgressKey) ??
         false; // 加载任务栏进度显示设置
@@ -390,7 +469,7 @@ class SettingsProvider with ChangeNotifier {
     _pauseOnAudioInterruption =
         _readPreference<bool>(prefs, _pauseOnAudioInterruptionKey) ?? true;
     _preferExternalLyrics =
-        _readPreference<bool>(prefs, _preferExternalLyricsKey) ?? false;
+        _readPreference<bool>(prefs, _preferExternalLyricsKey) ?? true;
     _autoAdjustLyricLayout = false;
     await prefs.remove(_enableDynamicBackgroundKey);
     await prefs.remove(_autoAdjustLyricLayoutKey);
@@ -437,29 +516,30 @@ class SettingsProvider with ChangeNotifier {
     await prefs.remove('notificationThemeImagePath');
     await prefs.remove('notificationThemeImageEnabled');
     _homeThemeImageDim =
-        (_readDoublePreference(prefs, _homeThemeImageDimKey) ?? 0.62).clamp(
+        (_readDoublePreference(prefs, _homeThemeImageDimKey) ?? 0.2).clamp(
           0.2,
           0.9,
         );
     _playbackThemeImageDim =
-        (_readDoublePreference(prefs, _playbackThemeImageDimKey) ?? 0.68).clamp(
+        (_readDoublePreference(prefs, _playbackThemeImageDimKey) ?? 0.2).clamp(
           0.2,
           0.9,
         );
     _homeThemeImageBlur =
-        (_readDoublePreference(prefs, _homeThemeImageBlurKey) ?? 22.0).clamp(
+        (_readDoublePreference(prefs, _homeThemeImageBlurKey) ?? 0.0).clamp(
           0.0,
           40.0,
         );
     _playbackThemeImageBlur =
-        (_readDoublePreference(prefs, _playbackThemeImageBlurKey) ?? 22.0)
-            .clamp(0.0, 40.0);
+        (_readDoublePreference(prefs, _playbackThemeImageBlurKey) ?? 0.0).clamp(
+          0.0,
+          40.0,
+        );
     _homeAlbumArtBackgroundDim =
-        (_readDoublePreference(prefs, _homeAlbumArtBackgroundDimKey) ?? 0.52)
+        (_readDoublePreference(prefs, _homeAlbumArtBackgroundDimKey) ?? 0.3)
             .clamp(0.2, 0.9);
     _playbackAlbumArtBackgroundDim =
-        (_readDoublePreference(prefs, _playbackAlbumArtBackgroundDimKey) ??
-                0.52)
+        (_readDoublePreference(prefs, _playbackAlbumArtBackgroundDimKey) ?? 0.3)
             .clamp(0.2, 0.9);
     _homeAlbumArtBackgroundBlur =
         (_readDoublePreference(prefs, _homeAlbumArtBackgroundBlurKey) ?? 40.0)
@@ -471,7 +551,13 @@ class SettingsProvider with ChangeNotifier {
     _followAlbumArtOnHome =
         _readPreference<bool>(prefs, _followAlbumArtOnHomeKey) ?? false;
     _followAlbumArtOnPlayback =
-        _readPreference<bool>(prefs, _followAlbumArtOnPlaybackKey) ?? false;
+        _readPreference<bool>(prefs, _followAlbumArtOnPlaybackKey) ?? true;
+    _playbackArtworkBackgroundStyle = decodePlaybackArtworkBackgroundStyle(
+      _readPreference<String>(prefs, _playbackArtworkBackgroundStyleKey),
+    );
+    _fluidBackgroundQuality = decodeFluidBackgroundQuality(
+      _readPreference<String>(prefs, _fluidBackgroundQualityKey),
+    );
     _libraryViewMode =
         _readPreference<String>(prefs, _libraryViewModeKey) ==
             LibraryViewMode.indexed.name
@@ -524,8 +610,21 @@ class SettingsProvider with ChangeNotifier {
             .whereType<int>()
             .take(5)
             .toList(growable: true);
-    _desktopLyricsFontSize =
+    final desktopSize =
         _readDoublePreference(prefs, _desktopLyricsFontSizeKey) ?? 22.0;
+    _desktopLyricsFontSize = desktopSize.isFinite
+        ? desktopSize.clamp(16.0, maxLyricFontSize)
+        : 22.0;
+    _desktopLyricsOpacity =
+        (_readDoublePreference(prefs, _desktopLyricsOpacityKey) ?? 1.0).clamp(
+          0.2,
+          1.0,
+        );
+    _desktopLyricsFontWeight =
+        (_readPreference<int>(prefs, _desktopLyricsFontWeightKey) ?? 600).clamp(
+          300,
+          900,
+        );
     _desktopLyricsOutlineEnabled =
         _readPreference<bool>(prefs, _desktopLyricsOutlineEnabledKey) ?? false;
     _desktopLyricsOutlineWidth =
@@ -564,9 +663,9 @@ class SettingsProvider with ChangeNotifier {
     _lyricAlignment = alignmentString != null
         ? TextAlign.values.firstWhere(
             (e) => e.toString() == alignmentString,
-            orElse: () => TextAlign.center,
+            orElse: () => TextAlign.left,
           )
-        : TextAlign.center;
+        : TextAlign.left;
 
     _enableGlobalHotkeys =
         _readPreference<bool>(prefs, _enableGlobalHotkeysKey) ?? true;
@@ -609,7 +708,7 @@ class SettingsProvider with ChangeNotifier {
 
   /// 更新歌词字号但暂不写入磁盘，供连续缩放手势预览使用。
   void previewFontSize(double size) {
-    final next = size.clamp(12.0, 32.0);
+    final next = normalizedLyricFontSize(size);
     if ((_fontSize - next).abs() < 0.01) return;
     _fontSize = next;
     notifyListeners();
@@ -732,12 +831,48 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setBool(_enableLyricBlurKey, value);
   }
 
-  void setEnableLyricElasticScroll(bool value) async {
-    if (_enableLyricElasticScroll == value) return;
-    _enableLyricElasticScroll = value;
+  Future<void> setLyricScrollEffect(LyricScrollEffect value) async {
+    if (_lyricScrollEffect == value) return;
+    _lyricScrollEffect = value;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
-    await prefs.setBool(_enableLyricElasticScrollKey, value);
+    await prefs.setString(_lyricScrollEffectKey, value.name);
+  }
+
+  Future<void> setEnableLyricElasticScroll(bool value) => setLyricScrollEffect(
+    value ? LyricScrollEffect.elastic : LyricScrollEffect.standard,
+  );
+
+  Future<void> setEnableKaraokeLyrics(bool value) async {
+    if (_enableKaraokeLyrics == value) return;
+    _enableKaraokeLyrics = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_enableKaraokeLyricsKey, value);
+  }
+
+  Future<void> setPlaybackImmersiveEnabled(bool value) async {
+    if (_playbackImmersiveEnabled == value) return;
+    _playbackImmersiveEnabled = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_playbackImmersiveEnabledKey, value);
+  }
+
+  Future<void> setKaraokeLyricsMode(KaraokeLyricsMode value) async {
+    if (_karaokeLyricsMode == value) return;
+    _karaokeLyricsMode = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_karaokeLyricsModeKey, value.name);
+  }
+
+  Future<void> setSleepTimerFinishCurrentTrack(bool value) async {
+    if (_sleepTimerFinishCurrentTrack == value) return;
+    _sleepTimerFinishCurrentTrack = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_sleepTimerFinishCurrentTrackKey, value);
   }
 
   Future<void> setHighlightActiveLyric(bool value) async {
@@ -965,14 +1100,6 @@ class SettingsProvider with ChangeNotifier {
     );
   }
 
-  Future<void> setPlaybackInitialView(PlaybackInitialView value) async {
-    if (_playbackInitialView == value) return;
-    _playbackInitialView = value;
-    notifyListeners();
-    final prefs = await SharedPreferences.getInstance();
-    await prefs.setString(_playbackInitialViewKey, value.name);
-  }
-
   Future<void> setHomeAlbumArtBackgroundDim(double value) async {
     _homeAlbumArtBackgroundDim = value.clamp(0.2, 0.9);
     notifyListeners();
@@ -1027,6 +1154,24 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_followAlbumArtOnPlaybackKey, value);
+  }
+
+  Future<void> setPlaybackArtworkBackgroundStyle(
+    PlaybackArtworkBackgroundStyle value,
+  ) async {
+    if (_playbackArtworkBackgroundStyle == value) return;
+    _playbackArtworkBackgroundStyle = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_playbackArtworkBackgroundStyleKey, value.name);
+  }
+
+  Future<void> setFluidBackgroundQuality(FluidBackgroundQuality value) async {
+    if (_fluidBackgroundQuality == value) return;
+    _fluidBackgroundQuality = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_fluidBackgroundQualityKey, value.name);
   }
 
   Future<void> setLibraryViewMode(LibraryViewMode value) async {
@@ -1193,12 +1338,32 @@ class SettingsProvider with ChangeNotifier {
   }
 
   Future<void> setDesktopLyricsFontSize(double value) async {
-    final next = value.clamp(16.0, 38.0);
+    final next = value.isFinite ? value.clamp(16.0, maxLyricFontSize) : 22.0;
     if ((_desktopLyricsFontSize - next).abs() < 0.01) return;
     _desktopLyricsFontSize = next;
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_desktopLyricsFontSizeKey, next);
+  }
+
+  Future<void> setDesktopLyricsOpacity(double value) async {
+    final next = value.clamp(0.2, 1.0);
+    if ((_desktopLyricsOpacity - next).abs() < 0.01) return;
+    _desktopLyricsOpacity = next;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_desktopLyricsOpacityKey, next);
+  }
+
+  Future<void> setDesktopLyricsFontWeight(int value) async {
+    final next = ((value.clamp(300, 900) / 100).round() * 100)
+        .clamp(300, 900)
+        .toInt();
+    if (_desktopLyricsFontWeight == next) return;
+    _desktopLyricsFontWeight = next;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setInt(_desktopLyricsFontWeightKey, next);
   }
 
   Future<void> setDesktopLyricsOutlineEnabled(bool value) async {

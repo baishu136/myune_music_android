@@ -30,6 +30,7 @@ import 'services/desktop_lyrics_controller.dart';
 import 'services/cover_override_service.dart';
 import 'services/fault_log_service.dart';
 import 'services/frame_performance_monitor.dart';
+import 'services/page_transition_work_observer.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -230,6 +231,7 @@ class _MyAppState extends State<MyApp> with TrayListener {
   bool _taskbarReady = false;
   bool _listenersBound = false;
   bool _startupProvidersMarked = false;
+  final _pageTransitionObserver = PageTransitionWorkObserver();
 
   @override
   void initState() {
@@ -501,6 +503,7 @@ class _MyAppState extends State<MyApp> with TrayListener {
           locale: const Locale('zh', 'CH'),
 
           debugShowCheckedModeBanner: false,
+          navigatorObservers: [_pageTransitionObserver],
           title: 'Myune music for Android',
           theme: themeProvider.lightThemeData,
           darkTheme: themeProvider.darkThemeData,

@@ -81,9 +81,9 @@ class LyricsSettingsDrawer extends StatelessWidget {
                 children: [
                   Slider(
                     value: settings.fontSize,
-                    min: 12.0,
-                    max: 32.0,
-                    divisions: 20,
+                    min: SettingsProvider.minLyricFontSize,
+                    max: SettingsProvider.maxLyricFontSize,
+                    divisions: 24,
                     label: settings.fontSize.toStringAsFixed(1),
                     onChanged: (value) {
                       context.read<SettingsProvider>().setFontSize(value);

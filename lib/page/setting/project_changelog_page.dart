@@ -8,6 +8,7 @@ class ProjectChangelogPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final entries = projectChangelogSince099;
     return Scaffold(
       backgroundColor: scheme.surface,
       appBar: AppBar(
@@ -16,10 +17,10 @@ class ProjectChangelogPage extends StatelessWidget {
       ),
       body: ListView.separated(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
-        itemCount: projectChangelogEntries.length,
+        itemCount: entries.length,
         separatorBuilder: (_, _) => const SizedBox(height: 12),
         itemBuilder: (context, index) {
-          final entry = projectChangelogEntries[index];
+          final entry = entries[index];
           return Card(
             elevation: 0,
             color: scheme.surfaceContainerLow,

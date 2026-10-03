@@ -5,7 +5,7 @@ import 'dart:async';
 ///
 /// This controller deliberately has no UI listeners: reporting interaction
 /// activity must not itself cause a widget rebuild.
-enum InteractionPhase { idle, interacting, fling, transition }
+enum InteractionPhase { idle, visualAnimation, interacting, fling, transition }
 
 enum InteractionWorkPriority {
   currentVisual,
@@ -58,6 +58,13 @@ class InteractionPerformanceController {
 
   InteractionPhase get phase => _phase;
   bool get isCritical => _phase != InteractionPhase.idle;
+  bool get blocksFluidAnimation =>
+      _phase != InteractionPhase.idle &&
+      _phase != InteractionPhase.visualAnimation;
+
+  void endPhase(InteractionPhase phase) {
+    if (_phase == phase) _setIdle();
+  }
 
   void pulse(
     InteractionPhase phase, {
@@ -67,11 +74,23 @@ class InteractionPerformanceController {
       _setIdle();
       return;
     }
-    _phase = phase;
+    final now = _clock.elapsedMicroseconds;
+    final previousDeadline = _lastPulseMicros + _settleAfterMicros;
+    final nextDeadline = now + settleAfter.inMicroseconds;
+    // Overlapping scroll notifications must not release route protection early.
+    // This changes only deferrable work; visible image requests remain urgent.
+    _phase =
+        isCritical &&
+            (_phase == InteractionPhase.transition ||
+                phase == InteractionPhase.visualAnimation)
+        ? _phase
+        : phase;
     _workDrainTimer?.cancel();
     _workDrainTimer = null;
-    _lastPulseMicros = _clock.elapsedMicroseconds;
-    _settleAfterMicros = settleAfter.inMicroseconds;
+    _lastPulseMicros = now;
+    _settleAfterMicros = previousDeadline > nextDeadline && isCritical
+        ? previousDeadline - now
+        : settleAfter.inMicroseconds;
     _settlePoll ??= Timer.periodic(
       const Duration(milliseconds: 48),
       (_) => _pollForIdle(),
@@ -152,6 +171,8 @@ class InteractionPerformanceController {
 
   void _setIdle() {
     _phase = InteractionPhase.idle;
+    _lastPulseMicros = 0;
+    _settleAfterMicros = 0;
     _settlePoll?.cancel();
     _settlePoll = null;
     final waiters = _idleWaiters.toList(growable: false);

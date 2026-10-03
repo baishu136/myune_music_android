@@ -170,7 +170,10 @@ void main() {
 
       await settings.setFollowAlbumArtOnHome(true);
       expect(settings.followAlbumArtOnHome, isTrue);
-      expect(settings.followAlbumArtOnPlayback, isFalse);
+      expect(settings.followAlbumArtOnPlayback, isTrue);
+
+      await settings.setFollowAlbumArtOnPlayback(false);
+      expect(settings.followAlbumArtOnHome, isTrue);
 
       await settings.setFollowAlbumArtOnPlayback(true);
       await settings.setHomeThemeImageBlur(8);
@@ -226,8 +229,8 @@ void main() {
 
     expect(settings.homeAlbumArtBackgroundBlur, 40);
     expect(settings.playbackAlbumArtBackgroundBlur, 40);
-    expect(settings.homeAlbumArtBackgroundDim, 0.52);
-    expect(settings.playbackAlbumArtBackgroundDim, 0.52);
+    expect(settings.homeAlbumArtBackgroundDim, 0.3);
+    expect(settings.playbackAlbumArtBackgroundDim, 0.3);
     expect(settings.playbackLyricGlowEnabled, isFalse);
     expect(settings.playbackLyricGlowRadius, 8);
   });

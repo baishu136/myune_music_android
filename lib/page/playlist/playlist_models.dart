@@ -89,8 +89,19 @@ class Playlist {
   final String id;
   String name;
   final bool isDefault;
-  List<String> songFilePaths;
-  List<Song>? songs; // 直接在歌单对象中存储已解析的歌曲
+  // Playlists are edited after restoration (import, refresh, reorder, remove).
+  // Own growable copies at every assignment boundary: a cached/fixed-length
+  // or unmodifiable input must not silently make those operations invalid.
+  List<String> _songFilePaths;
+  List<Song>? _songs;
+
+  List<String> get songFilePaths => _songFilePaths;
+  set songFilePaths(List<String> value) =>
+      _songFilePaths = List<String>.of(value);
+
+  List<Song>? get songs => _songs;
+  set songs(List<Song>? value) =>
+      _songs = value == null ? null : List<Song>.of(value);
 
   // 保存当前歌单播放歌曲的索引
   int? currentPlayingIndex;
@@ -98,7 +109,9 @@ class Playlist {
   // 标识是否为文件夹播放列表
   bool isFolderBased;
   // 存储相关文件夹路径
-  List<String> folderPaths;
+  List<String> _folderPaths;
+  List<String> get folderPaths => _folderPaths;
+  set folderPaths(List<String> value) => _folderPaths = List<String>.of(value);
 
   Playlist({
     String? id,
@@ -106,12 +119,13 @@ class Playlist {
     this.isDefault = false,
     List<String>? songFilePaths,
     this.currentPlayingIndex,
-    this.songs,
+    List<Song>? songs,
     this.isFolderBased = false,
     List<String>? folderPaths,
   }) : id = id ?? const Uuid().v4(),
-       songFilePaths = songFilePaths ?? [],
-       folderPaths = folderPaths ?? [];
+       _songFilePaths = List<String>.of(songFilePaths ?? const []),
+       _songs = songs == null ? null : List<Song>.of(songs),
+       _folderPaths = List<String>.of(folderPaths ?? const []);
 
   Map<String, dynamic> toJson() {
     return {

@@ -32,8 +32,7 @@ class DesktopLyricsService : Service() {
         when (intent?.action) {
             ACTION_SHOW -> overlay.showOrUpdate(intent.toOverlayValues())
             ACTION_HIDE -> {
-                overlay.hide()
-                stopSelf()
+                overlay.hide { stopSelf(startId) }
             }
             ACTION_LOCK -> overlay.setLocked(intent.getBooleanExtra(EXTRA_LOCKED, false))
         }
@@ -42,7 +41,7 @@ class DesktopLyricsService : Service() {
 
     override fun onDestroy() {
         if (instance === this) instance = null
-        overlay.hide()
+        overlay.dispose()
         super.onDestroy()
     }
 
@@ -63,6 +62,8 @@ class DesktopLyricsService : Service() {
         private const val EXTRA_LOCKED = "isLocked"
         private const val EXTRA_COLOR = "color"
         private const val EXTRA_FONT_SIZE = "fontSize"
+        private const val EXTRA_OPACITY = "opacity"
+        private const val EXTRA_FONT_WEIGHT = "fontWeight"
         private const val EXTRA_DYNAMIC_COLOR = "dynamicColor"
 
         @Volatile
@@ -107,8 +108,7 @@ class DesktopLyricsService : Service() {
         fun hide(context: Context) {
             instance?.let { service ->
                 service.applyOnMain {
-                    service.overlay.hide()
-                    service.stopSelf()
+                    service.overlay.hide { service.stopSelf() }
                 }
                 return
             }
@@ -135,6 +135,8 @@ class DesktopLyricsService : Service() {
             putExtra(EXTRA_LOCKED, values[EXTRA_LOCKED] as? Boolean ?: false)
             putExtra(EXTRA_COLOR, (values[EXTRA_COLOR] as? Number)?.toInt() ?: 0xFF00A9D6.toInt())
             putExtra(EXTRA_FONT_SIZE, (values[EXTRA_FONT_SIZE] as? Number)?.toFloat() ?: 22f)
+            putExtra(EXTRA_OPACITY, (values[EXTRA_OPACITY] as? Number)?.toFloat() ?: 1f)
+            putExtra(EXTRA_FONT_WEIGHT, (values[EXTRA_FONT_WEIGHT] as? Number)?.toInt() ?: 600)
             putExtra(EXTRA_DYNAMIC_COLOR, values[EXTRA_DYNAMIC_COLOR] as? Boolean ?: false)
         }
 
@@ -146,6 +148,8 @@ class DesktopLyricsService : Service() {
             EXTRA_LOCKED to getBooleanExtra(EXTRA_LOCKED, false),
             EXTRA_COLOR to getIntExtra(EXTRA_COLOR, 0xFF00A9D6.toInt()),
             EXTRA_FONT_SIZE to getFloatExtra(EXTRA_FONT_SIZE, 22f),
+            EXTRA_OPACITY to getFloatExtra(EXTRA_OPACITY, 1f),
+            EXTRA_FONT_WEIGHT to getIntExtra(EXTRA_FONT_WEIGHT, 600),
             EXTRA_DYNAMIC_COLOR to getBooleanExtra(EXTRA_DYNAMIC_COLOR, false),
         )
     }
