@@ -32,8 +32,6 @@ part 'karaoke_media_clock.dart';
 part 'karaoke_paint_cache.dart';
 part 'karaoke_prewarm.dart';
 
-part 'karaoke_media_clock.dart';
-
 const int mobileLyricsTopEdgeAlpha = 0x00;
 const int mobileLyricsTopFadeSoftAlpha = 0x24;
 const int mobileLyricsTopFadeMidAlpha = 0x68;
@@ -1283,10 +1281,6 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     final previousTick = _lastTick;
     _lastTick = elapsed;
     if (previousTick == null) return;
-    InteractionPerformanceController.instance.pulse(
-      InteractionPhase.visualAnimation,
-      settleAfter: const Duration(milliseconds: 80),
-    );
     final frameSeconds =
         (elapsed - previousTick).inMicroseconds /
         Duration.microsecondsPerSecond;
@@ -1881,9 +1875,6 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     _layoutWidth = width;
     _viewportHeight = viewport;
     _layoutFontSize = widget.fontSize;
-    _motion.updateDynamics(
-      frequency: mobileLyricsScrollFrequencyForFontSize(widget.fontSize),
-    );
     _layoutFontFamily = widget.fontFamily;
     _layoutTextAlign = widget.textAlign;
     _layoutDirection = direction;
@@ -2630,7 +2621,6 @@ class _LyricLineItem extends StatelessWidget {
     required this.nextTimestamp,
     required this.browseHighlighted,
     required this.lineBlurSuppressed,
-    required this.regularScrollMode,
     required this.isPlaying,
     required this.normalExit,
     required this.normalEntry,
@@ -2675,7 +2665,6 @@ class _LyricLineItem extends StatelessWidget {
   final Duration? nextTimestamp;
   final bool browseHighlighted;
   final bool lineBlurSuppressed;
-  final bool regularScrollMode;
   final bool isPlaying;
   final bool normalExit;
   final bool normalEntry;
@@ -2722,10 +2711,6 @@ class _LyricLineItem extends StatelessWidget {
       child: child,
     );
   }
-
-  Offset get _lyricLineOffset => !lineBlurSuppressed && !browseHighlighted
-      ? Offset(0, mobileLyricsKaraokeLineShift(relativeDistance))
-      : Offset.zero;
 
   Alignment get _alignment => switch (textAlign) {
     TextAlign.left || TextAlign.start => Alignment.centerLeft,
@@ -3583,43 +3568,6 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
     });
   }
 
-  double _measureHeight({
-    required double width,
-    required TextStyle style,
-    required TextAlign textAlign,
-    required TextDirection textDirection,
-    required TextScaler textScaler,
-    required Locale? locale,
-  }) {
-    final cachedStyle = _measureStyle;
-    final styleNeedsLayout =
-        cachedStyle == null ||
-        style.compareTo(cachedStyle) == RenderComparison.layout;
-    final unchanged =
-        (_measureWidth - width).abs() < .1 &&
-        !styleNeedsLayout &&
-        _measureTextAlign == textAlign &&
-        _measureTextDirection == textDirection &&
-        _measureTextScaler == textScaler &&
-        _measureLocale == locale;
-    if (unchanged) return _measuredHeight;
-    final measure = TextPainter(
-      text: TextSpan(text: _text, style: style),
-      textAlign: textAlign,
-      textDirection: textDirection,
-      textScaler: textScaler,
-      locale: locale,
-    )..layout(maxWidth: width);
-    _measureWidth = width;
-    _measuredHeight = measure.height;
-    _measureStyle = style;
-    _measureTextAlign = textAlign;
-    _measureTextDirection = textDirection;
-    _measureTextScaler = textScaler;
-    _measureLocale = locale;
-    return _measuredHeight;
-  }
-
   @override
   Widget build(BuildContext context) {
     final inheritedStyle = DefaultTextStyle.of(context).style;
@@ -3733,71 +3681,6 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
         );
       },
     );
-  }
-
-  @override
-  bool shouldRepaint(covariant _SinglePassKaraokePainter oldDelegate) {
-    final playedComparison = playedStyle.compareTo(oldDelegate.playedStyle);
-    final unplayedComparison = unplayedStyle.compareTo(
-      oldDelegate.unplayedStyle,
-    );
-    final layoutChanged =
-        text != oldDelegate.text ||
-        !identical(ranges, oldDelegate.ranges) ||
-        playedComparison == RenderComparison.layout ||
-        unplayedComparison == RenderComparison.layout ||
-        textAlign != oldDelegate.textAlign ||
-        textDirection != oldDelegate.textDirection ||
-        textScaler != oldDelegate.textScaler ||
-        locale != oldDelegate.locale;
-    final paintChanged =
-        playedStyle != oldDelegate.playedStyle ||
-        unplayedStyle != oldDelegate.unplayedStyle;
-    if (!layoutChanged) {
-      // Colour changes during an active-line jump must not reshape every
-      // grapheme. Preserve geometry and only rebuild the inexpensive paint
-      // spans; ordinary playback frames retain both geometry and paint caches.
-      _layoutWidth = oldDelegate._layoutWidth;
-      _layoutPainter = oldDelegate._layoutPainter;
-      _liftReferenceHeight = oldDelegate._liftReferenceHeight;
-      _lineCadenceUs = oldDelegate._lineCadenceUs;
-      _drawableRanges = oldDelegate._drawableRanges;
-      _orderedGlyphs = oldDelegate._orderedGlyphs;
-      _glyphLiftStartTimesUs = oldDelegate._glyphLiftStartTimesUs;
-      _glyphTimings = oldDelegate._glyphTimings;
-      _highlightFactorBuffer = oldDelegate._highlightFactorBuffer;
-      _glyphCadencesUs = oldDelegate._glyphCadencesUs;
-      _breakBeforeGlyph = oldDelegate._breakBeforeGlyph;
-      _nextTokenStarts = oldDelegate._nextTokenStarts;
-      _glyphTokenIndices = oldDelegate._glyphTokenIndices;
-      _tokenGlyphStarts = oldDelegate._tokenGlyphStarts;
-      _rawProgressBuffer = oldDelegate._rawProgressBuffer;
-      _ownFactorBuffer = oldDelegate._ownFactorBuffer;
-      _liftFactorBuffer = oldDelegate._liftFactorBuffer;
-      _groupBuffer = oldDelegate._groupBuffer;
-      _glyphLiftScratch = oldDelegate._glyphLiftScratch;
-      _glyphProgressScratch = oldDelegate._glyphProgressScratch;
-      _leadInByToken = oldDelegate._leadInByToken;
-      _glyphsByToken = oldDelegate._glyphsByToken;
-      _glyphBoxes = oldDelegate._glyphBoxes;
-      _tokenBounds = oldDelegate._tokenBounds;
-      _tokenDirections = oldDelegate._tokenDirections;
-      if (!paintChanged) {
-        _staticPainter = oldDelegate._staticPainter;
-        _completedPainter = oldDelegate._completedPainter;
-        _futurePainter = oldDelegate._futurePainter;
-        _paintGroups = oldDelegate._paintGroups;
-        _unplayedGlyphPainters = oldDelegate._unplayedGlyphPainters;
-        _maskGlyphPainters = oldDelegate._maskGlyphPainters;
-        _playedGlyphPainters = oldDelegate._playedGlyphPainters;
-      }
-    }
-    return layoutChanged ||
-        paintChanged ||
-        isExiting != oldDelegate.isExiting ||
-        exitAnimation != oldDelegate.exitAnimation ||
-        position != oldDelegate.position ||
-        positionListenable != oldDelegate.positionListenable;
   }
 }
 

@@ -1156,17 +1156,6 @@ void main() {
     expect(mobileLyricsScrollFrequencyForFontSize(36), 7.2);
   });
 
-  test('default lyric motion matches the 620 ms reference cadence', () {
-    expect(
-      mobileLyricsDefaultScrollTransitionDuration,
-      const Duration(milliseconds: 620),
-    );
-    expect(mobileLyricsDefaultScrollFrequency, 8.8);
-    expect(mobileLyricsScrollFrequencyForFontSize(20), 8.8);
-    expect(mobileLyricsScrollFrequencyForFontSize(28), closeTo(8, .001));
-    expect(mobileLyricsScrollFrequencyForFontSize(36), 7.2);
-  });
-
   testWidgets('next-song lyrics clear an in-flight elastic displacement', (
     tester,
   ) async {
@@ -2173,12 +2162,6 @@ void main() {
           ),
         )
         .style;
-    final browseSlide = tester.widget<AnimatedSlide>(
-      find.descendant(
-        of: find.byKey(ValueKey('mobile_lyric_$targetIndex')),
-        matching: find.byKey(const ValueKey('mobile_lyric_karaoke_line_shift')),
-      ),
-    );
     expect(browseStyle.color, browseColor);
     expect(
       find.descendant(
