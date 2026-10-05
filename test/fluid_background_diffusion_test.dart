@@ -276,7 +276,7 @@ void main() {
   });
 
   testWidgets(
-    'actual shader has broad light and a lit centre, not spotlights',
+    'actual shader keeps a lit centre, convergent territories and continuous motion',
     (tester) async {
       await tester.runAsync(() async {
         final program = await ui.FragmentProgram.fromAsset(
@@ -296,9 +296,31 @@ void main() {
           );
           final calibratedLuma = _meanLuma(calibrated, 32, 56, 64, 104);
           expect(calibratedLuma, inExclusiveRange(90, 175));
+          // Whole-cycle checkpoints use an actually extracted palette, not
+          // hand-picked shader colours. Bound catastrophic global desaturation
+          // without pretending complementary boundary lerps stay pure.
+          for (final seconds in [0, 24, 48, 72]) {
+            final pixels = await _render(
+              shader,
+              buildFluidPalette(_colourful.colors, fallbackSeed: Colors.blue),
+              phase: seconds.toDouble(),
+              label: 'production-${seconds}s',
+            );
+            var saturation = 0.0;
+            for (var i = 0; i < pixels.length; i += 4) {
+              saturation += HSLColor.fromColor(
+                Color.fromARGB(255, pixels[i], pixels[i + 1], pixels[i + 2]),
+              ).saturation;
+            }
+            final average = saturation / (96 * 160);
+            expect(average, greaterThan(.35));
+            debugPrint(
+              'Extracted synthetic palette @${seconds}s: mean HSL saturation=$average',
+            );
+          }
           const isolated = FluidPalette(
-            Colors.white,
             Colors.black,
+            Colors.white,
             Colors.black,
             Colors.black,
             baseColor: Colors.black,
@@ -307,7 +329,10 @@ void main() {
           final broad = await _render(shader, isolated, motion: 0);
           final peak = _meanLuma(broad, 23, 30, 31, 46);
           final distant = _meanLuma(broad, 78, 128, 86, 144);
-          expect(distant / peak, greaterThan(.20), reason: '$distant / $peak');
+          // An opaque blob must not spread into uncovered far canvas. White
+          // occupies the explicit blob1 slot, not the former fourth light ABI.
+          expect(peak, greaterThan(160));
+          expect(distant, lessThan(30));
           final dim0 = await _render(shader, _colourful, dim: 0);
           final dim6 = await _render(shader, _colourful, dim: .6);
           final capped = await _render(shader, _colourful, dim: 1);

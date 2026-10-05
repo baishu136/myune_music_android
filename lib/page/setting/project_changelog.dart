@@ -24,6 +24,45 @@ class ProjectChangelogEntry {
 /// 0.99 集中记录 0.9.8-android.129 之后的全部有效改动。
 const projectChangelogEntries = <ProjectChangelogEntry>[
   ProjectChangelogEntry(
+    version: '1.0.0-android.360',
+    date: '2026-10-04',
+    optimizations: ['流体背景改为地色、双漫游色斑及弱环境色的分层遮罩混合；采用约96秒慢周期与大尺度域扭曲。'],
+    fixes: ['暗色封面不再强制提亮，鲜艳封面锁定两个真实高彩对比色；音频能量和质量档位不再改变背景巡航速度。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.359',
+    date: '2026-10-04',
+    optimizations: ['中文、日文相邻字素的短时间戳间隙采用局部节奏限幅衔接，使小幅连续上浮更柔和；保留原高亮时间、长停顿及折行断链。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.358',
+    date: '2026-10-04',
+    fixes: ['流体背景改为归一化幂次主导混色，消除宽光场叠色趋白；取色前过滤无色高光，切歌时保留活力主色槽。'],
+    optimizations: ['鲜艳封面主色保持高彩度与受控明度，保留真实暖色、黑白影调及0.28慢速双层域扭曲。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.357',
+    date: '2026-10-04',
+    optimizations: ['逐字歌词恢复354版的小幅、缓慢上浮及原有换行表现，在此基础上加入全语种三阶轻柔连续跟随。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.356',
+    date: '2026-10-04',
+    optimizations: ['逐字位移严格固定为字号的6.5%，统一中英文与假名的三阶连续跟随波浪，到位保持；移除语种专属延迟与减幅。'],
+    fixes: ['修复假名及混排字符未接入波浪位移的问题，保留停顿、空白和折行断链及翻译静态显示。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.355',
+    date: '2026-10-04',
+    optimizations: ['逐字歌词改为下沉、四级波浪跟随上浮、到位保持；英文与中文采用独立跟随延迟，快速中文减幅。'],
+    fixes: ['逐字歌词退出后不再回退到行首姿态；为大幅位移预留固定空间，避免侵入翻译与裁切字母下伸部。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.354',
+    date: '2026-10-04',
+    fixes: ['修复部分 Android 12 及以上机型锁定桌面歌词后仍拦截下层点击的问题，同步处理淡出和前后台恢复。'],
+  ),
+  ProjectChangelogEntry(
     version: '1.0.0-android.353',
     date: '2026-10-03',
     features: ['常规设置的支持项目入口改为 GitHub Star 链接。'],

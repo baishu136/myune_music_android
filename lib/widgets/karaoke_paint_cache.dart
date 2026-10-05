@@ -428,6 +428,7 @@ class _KaraokePaintCache extends ChangeNotifier {
       drawable.add(range);
     }
     if (synthetic) _buildSyntheticRelays();
+    _buildFollowerTimeline();
     final untouched = <_KaraokePaintRange>[];
     var cursor = 0;
     for (final range in drawable) {
@@ -611,6 +612,42 @@ class _KaraokePaintCache extends ChangeNotifier {
   late final ui.Picture _baseMask;
   late final Float64List lifts;
   late final Float64List highlights;
+  late final KaraokeFollowerTimeline followerTimeline;
+
+  void _buildFollowerTimeline() {
+    final glyphs = <KaraokeFollowerGlyph>[];
+    _KaraokeUnit? previous;
+    var previousDrawable = false;
+    var previousCompact = false;
+    var chain = 0;
+    for (final token in tokens) {
+      for (final unit in token.units) {
+        final unitText = text.substring(unit.range.start, unit.range.end);
+        final drawable = unitText.trim().isNotEmpty;
+        final compact = karaokeHasCompactFollowerScript(unitText);
+        final before = previous;
+        final connected =
+            before != null &&
+            drawable &&
+            previousDrawable &&
+            before.range.end == unit.range.start &&
+            before.fragment.row == unit.fragment.row &&
+            before.fragment.direction == unit.fragment.direction &&
+            karaokeFollowerTimingConnected(
+              before.timing,
+              unit.timing,
+              karaokeDefaultMotion,
+              compactScript: previousCompact && compact,
+            );
+        if (!connected) chain++;
+        glyphs.add(KaraokeFollowerGlyph(timing: unit.timing, chain: chain));
+        previous = unit;
+        previousDrawable = drawable;
+        previousCompact = compact;
+      }
+    }
+    followerTimeline = KaraokeFollowerTimeline(glyphs, karaokeDefaultMotion);
+  }
 
   void _buildSyntheticRelays() {
     final group = <_KaraokeFragment>[];
@@ -1118,6 +1155,12 @@ class _KaraokePaintCache extends ChangeNotifier {
       }
       return;
     }
+    followerTimeline.writeOffsets(
+      mediaUs,
+      lineHeight,
+      lifts,
+      retention: retention,
+    );
     if (drawOriginal) {
       if (_originalNativeInk case final ink?) {
         _ink(
@@ -1170,10 +1213,6 @@ class _KaraokePaintCache extends ChangeNotifier {
       for (var u = 0; u < token.units.length; u++) {
         final index = token.firstUnit + u;
         final timing = token.units[u].timing;
-        final lift =
-            karaokeGlyphLiftAt(mediaUs, timing, karaokeDefaultMotion) *
-            retention;
-        lifts[index] = -liftHeight * lift;
         highlights[index] = karaokeGlyphHighlightAt(mediaUs, timing);
       }
       if (synthetic || _image == null || token.nativeShaping) {

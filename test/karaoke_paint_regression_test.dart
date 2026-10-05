@@ -7,8 +7,123 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
+import 'package:myune_music/widgets/karaoke_motion.dart';
 
 void main() {
+  testWidgets(
+    'Chinese and Japanese followers bridge short token gaps without moving highlight',
+    (tester) async {
+      await _fonts(tester);
+      for (final text in ['中文歌词', 'かなカナ', 'か\u3099くせい', '中か文ナ']) {
+        final ranges = karaokeGraphemeRanges(text);
+        final source = LyricLine(
+          timestamp: Duration.zero,
+          texts: [text, 'static translation'],
+          tokens: [
+            [
+              for (var i = 0; i < ranges.length; i++)
+                LyricToken(
+                  text: text.substring(ranges[i].start, ranges[i].end),
+                  start: Duration(milliseconds: i * 220),
+                  end: Duration(milliseconds: i * 220 + 190),
+                ),
+            ],
+            const [],
+          ],
+        );
+        await tester.pumpWidget(_host(text, sourceLine: source));
+        final dynamic painter = _painter(tester);
+        final dynamic cache = painter.cache;
+        await _warm(tester, cache);
+        final all = <dynamic>[
+          for (final dynamic token in cache.tokens) ...token.units as List,
+        ];
+        expect(all.length, ranges.length);
+        final int probe = all[1].timing.liftStartUs - 20000;
+        expect(cache.followerTimeline.ownAt(1, probe), 0);
+        final layouts = debugKaraokeTextLayoutCount;
+        final buffer = cache.lifts;
+        for (final hz in [60, 90, 120]) {
+          double previous = 0;
+          for (var frame = 0; frame < hz * 2; frame++) {
+            final us = (frame * 1000000 / hz).round();
+            final recorder = ui.PictureRecorder();
+            cache.paint(Canvas(recorder), us, 1.0, painter.colors);
+            recorder.endRecording().dispose();
+            expect(cache.lifts[1], lessThanOrEqualTo(previous + 1e-12));
+            expect((cache.lifts[1] - previous).abs(), lessThan(.2));
+            previous = cache.lifts[1] as double;
+            for (var i = 0; i < all.length; i++) {
+              expect(
+                cache.highlights[i],
+                karaokeGlyphHighlightAt(us, all[i].timing),
+              );
+              expect(all[i].timing.sourceTokenStartUs, i * 220000);
+              expect(all[i].timing.sourceTokenEndUs, i * 220000 + 190000);
+            }
+          }
+        }
+        final recorder = ui.PictureRecorder();
+        cache.paint(Canvas(recorder), probe, 1.0, painter.colors);
+        recorder.endRecording().dispose();
+        expect(
+          cache.lifts[1],
+          lessThan(0),
+          reason: '$text follows across a 30ms token gap',
+        );
+        expect(cache.lifts[1].abs(), lessThan(cache.liftHeight * .25));
+        expect(cache.drawTranslation, isTrue);
+        expect(identical(cache.lifts, buffer), isTrue);
+        expect(debugKaraokeTextLayoutCount, layouts);
+      }
+    },
+  );
+
+  testWidgets(
+    'gentle followers precede own motion in every script without relayout',
+    (tester) async {
+      await _fonts(tester);
+      for (final text in ['中文歌词', 'Follow', 'かなカナ', '中aか文']) {
+        await tester.pumpWidget(_host(text));
+        final dynamic painter = _painter(tester);
+        final dynamic cache = painter.cache;
+        await _warm(tester, cache);
+        final dynamic units = cache.tokens.first.units;
+        // CJK may have one token per character; flatten only outside paint.
+        final all = <dynamic>[
+          for (final dynamic token in cache.tokens) ...token.units as List,
+        ];
+        expect(all.length, greaterThanOrEqualTo(4));
+        final probe =
+            ((all[0].timing.liftStartUs as int) +
+                (all[1].timing.liftStartUs as int)) ~/
+            2;
+        expect(
+          karaokeGlyphLiftAt(probe, all[1].timing, karaokeDefaultMotion),
+          0,
+        );
+        final layouts = debugKaraokeTextLayoutCount;
+        final buffer = cache.lifts;
+        final recorder = ui.PictureRecorder();
+        cache.paint(Canvas(recorder), probe, 1.0, painter.colors);
+        recorder.endRecording().dispose();
+        expect(
+          cache.lifts[1],
+          lessThan(0),
+          reason: '$text: next glyph follows before own onset',
+        );
+        expect(
+          cache.lifts[1],
+          greaterThan(cache.lifts[0]),
+          reason: 'Follower is smaller than its leader',
+        );
+        expect(cache.lifts[1].abs(), lessThan(cache.liftHeight * .25));
+        expect(identical(cache.lifts, buffer), isTrue);
+        expect(debugKaraokeTextLayoutCount, layouts);
+        expect(units, isNotEmpty);
+      }
+    },
+  );
   testWidgets(
     'supplied Chinese timestamps and real pauses are not synthesized away',
     (tester) async {
@@ -41,6 +156,72 @@ void main() {
         cache.tokens[1].units.first.timing.highlightStartUs,
         greaterThan(2900000),
       );
+    },
+  );
+  testWidgets(
+    'production follower chains break at gaps, wraps and real pauses',
+    (tester) async {
+      await _fonts(tester);
+      for (final text in [
+        'Following softly',
+        'supercalifragilisticexpialidocious',
+        '中文 歌词',
+        'かな カナ',
+        '中文歌词中文歌词中文歌词中文歌词中文歌词',
+        'かなカナかなカナかなカナかなカナかなカナ',
+      ]) {
+        await tester.pumpWidget(_host(text));
+        final dynamic cache = _painter(tester).cache;
+        final all = <dynamic>[
+          for (final dynamic token in cache.tokens) ...token.units as List,
+        ];
+        var boundaries = 0;
+        for (var i = 1; i < all.length; i++) {
+          final before = all[i - 1], current = all[i];
+          final a = text.substring(before.range.start, before.range.end);
+          final b = text.substring(current.range.start, current.range.end);
+          if (a.trim().isNotEmpty &&
+              b.trim().isNotEmpty &&
+              before.fragment.row == current.fragment.row &&
+              before.range.end == current.range.start) {
+            continue;
+          }
+          boundaries++;
+          for (var us = 0; us < current.timing.liftStartUs; us += 16667) {
+            expect(cache.followerTimeline.liftAt(i, us), 0);
+          }
+        }
+        expect(boundaries, greaterThan(0));
+      }
+      final line = LyricLine(
+        timestamp: Duration.zero,
+        texts: ['中文歌'],
+        tokens: [
+          [
+            LyricToken(
+              text: '中',
+              start: Duration.zero,
+              end: const Duration(milliseconds: 400),
+            ),
+            LyricToken(
+              text: '文',
+              start: const Duration(milliseconds: 1300),
+              end: const Duration(milliseconds: 1700),
+            ),
+            LyricToken(
+              text: '歌',
+              start: const Duration(milliseconds: 1700),
+              end: const Duration(milliseconds: 2100),
+            ),
+          ],
+        ],
+      );
+      await tester.pumpWidget(_host('中文歌', sourceLine: line));
+      final dynamic cache = _painter(tester).cache;
+      expect(cache.synthetic, isFalse);
+      expect(cache.followerTimeline.ownAt(0, 1000000), 1);
+      expect(cache.followerTimeline.liftAt(1, 1000000), 0);
+      expect(cache.tokens[1].units.first.timing.sourceTokenStartUs, 1300000);
     },
   );
   testWidgets(

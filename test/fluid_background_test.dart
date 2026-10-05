@@ -29,13 +29,16 @@ void main() {
 
     expect(
       (powerSaving.framesPerSecond, powerSaving.motionPeriodSeconds),
-      (24, 6.5),
+      (24, fluidPhaseCycle),
     );
     expect(
       (automatic.framesPerSecond, automatic.motionPeriodSeconds),
-      (60, 5.5),
+      (60, fluidPhaseCycle),
     );
-    expect((smooth.framesPerSecond, smooth.motionPeriodSeconds), (120, 5.5));
+    expect(
+      (smooth.framesPerSecond, smooth.motionPeriodSeconds),
+      (120, fluidPhaseCycle),
+    );
   });
 
   test('unknown background preferences safely use the current defaults', () {
@@ -106,7 +109,7 @@ void main() {
     },
   );
 
-  test('fluid palette keeps four colours independent of artwork occupancy', () {
+  test('layer roles keep real dominant and contrasting pigments', () {
     final palette = buildWeightedFluidPalette(const [
       FluidColorSample(Color(0xFF1565C0), .94),
       FluidColorSample(Color(0xFFE65100), .03),
@@ -115,10 +118,10 @@ void main() {
     ], fallbackSeed: Colors.teal);
 
     expect(palette.colors, hasLength(4));
-    expect(palette.colors.toSet(), hasLength(4));
+    expect(palette.colors.toSet().length, greaterThanOrEqualTo(2));
     final hues = palette.colors.map((color) => HSLColor.fromColor(color).hue);
-    expect(hues.any((hue) => hue > 260 && hue < 320), isTrue);
-    expect(hues.any((hue) => hue > 80 && hue < 160), isTrue);
+    expect(hues.any((hue) => hue > 190 && hue < 240), isTrue);
+    expect(hues.any((hue) => hue > 10 && hue < 40), isTrue);
   });
 
   test('incoming palette slots align to the nearest current colours', () {
@@ -238,7 +241,7 @@ void main() {
     }
   });
 
-  testWidgets('rhythm energy changes motion speed with a smooth envelope', (
+  testWidgets('rhythm energy changes warp amplitude with a smooth envelope', (
     tester,
   ) async {
     final controller = FluidBackgroundController(

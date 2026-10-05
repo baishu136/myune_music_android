@@ -144,7 +144,7 @@ class _SceneState extends State<_Scene> {
   Widget build(BuildContext context) => FluidPlaybackBackground(
     artworkBytes: widget.covers[index],
     artworkIdentity: 'fluid-$index',
-    artworkCacheGeneration: 347,
+    artworkCacheGeneration: 358,
     fallbackSeed: Colors.teal,
     dim: .3,
     quality: FluidBackgroundQuality.smooth,

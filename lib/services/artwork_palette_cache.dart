@@ -119,18 +119,24 @@ List<FluidColorSample> _sampleArtwork(Uint8List rgba) {
   for (var i = 0; i + 3 < rgba.length; i += 4) {
     if (rgba[i + 3] < 128) continue;
     final r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
+    pixels++;
+    // Reject paper/achromatic highlights BEFORE quantization. Their area still
+    // counts in occupancy, so a tiny warm speck does not become a major accent.
+    if (_isAchromaticHighlight(r / 255, g / 255, b / 255)) continue;
     final slot = (((r >> 4) << 8) | ((g >> 4) << 4) | (b >> 4)) * 4;
     bins[slot] += r;
     bins[slot + 1] += g;
     bins[slot + 2] += b;
     bins[slot + 3]++;
-    pixels++;
   }
   if (pixels == 0) return const [];
   final occupied = <int>[];
   for (var slot = 0; slot < bins.length; slot += 4) {
     if (bins[slot + 3] > 0) occupied.add(slot);
   }
+  // An entirely white image is real achromatic artwork, not missing artwork.
+  // Keep a neutral fallback rather than importing the app's coloured seed.
+  if (occupied.isEmpty) return const [FluidColorSample(Color(0xFF616161), 1)];
   occupied.sort((a, b) => bins[b + 3].compareTo(bins[a + 3]));
   // A warm region can be spread across many small histogram bins. Pool only
   // real 20–55° pixels on the worker so its total area survives top-32 pruning;
@@ -218,6 +224,16 @@ List<FluidColorSample> _sampleArtwork(Uint8List rgba) {
 
 const _significantWarmShare = .03;
 
+bool _isAchromaticHighlight(double r, double g, double b) {
+  final maximum = r > g ? (r > b ? r : b) : (g > b ? g : b);
+  final minimum = r < g ? (r < b ? r : b) : (g < b ? g : b);
+  final lightness = (maximum + minimum) / 2;
+  if (lightness <= .88) return false;
+  final delta = maximum - minimum;
+  final saturation = delta == 0 ? 0.0 : delta / (2 - maximum - minimum);
+  return saturation < .20;
+}
+
 bool _isWarmAccent(Color color) {
   final hsl = HSLColor.fromColor(color);
   return hsl.hue >= 20 &&
@@ -252,6 +268,16 @@ FluidPalette buildWeightedFluidPalette(
   List<FluidColorSample> extracted, {
   required Color fallbackSeed,
 }) {
+  if (extracted.isEmpty) return FluidPalette.fallback(fallbackSeed);
+  final pigments = extracted
+      .where((s) => !_isAchromaticHighlight(s.color.r, s.color.g, s.color.b))
+      .toList(growable: false);
+  if (pigments.isEmpty) {
+    return buildWeightedFluidPalette(const [
+      FluidColorSample(Color(0xFF616161), 1),
+    ], fallbackSeed: fallbackSeed);
+  }
+  extracted = pigments;
   final profile = _classifyArtwork(extracted);
   final selected = _selectDominantFluidColors(
     extracted.map((sample) => sample.color).toList(growable: false),
@@ -264,7 +290,6 @@ FluidPalette buildWeightedFluidPalette(
   while (retained.length < 4) {
     retained.add(retained[retained.length % selected.length]);
   }
-  if (extracted.isEmpty) return FluidPalette.fallback(fallbackSeed);
   final warm = _significantWarmAccent(extracted, profile);
   if (warm != null) {
     var replace = retained.indexWhere(
@@ -298,6 +323,72 @@ FluidPalette buildWeightedFluidPalette(
     retained.removeAt(replace);
     retained.insert(2, warm);
   }
+  // Blob 1 must contain a real, substantial vivid pigment, not
+  // whichever grey happened to land second after hue sorting. Only boost c1;
+  // leave genuine shadows/neutral auxiliaries and the real warm c2 unchanged.
+  var vividAccentLocked = false;
+  if (profile.vivid && !profile.dark && !profile.monochrome) {
+    var hero = -1;
+    var bestScore = 0.0;
+    for (var i = 0; i < retained.length; i++) {
+      if (warm != null && i == 2) continue;
+      final hsl = HSLColor.fromColor(retained[i]);
+      if (hsl.saturation < .20 || hsl.lightness < .08) continue;
+      var score = 0.0;
+      for (final sample in extracted) {
+        final normalized = _normalizeFluidColor(sample.color, profile);
+        if (_colorDistance(retained[i], normalized) < .10) {
+          score +=
+              sample.proportion.clamp(0.0, 1.0) *
+              HSLColor.fromColor(sample.color).saturation;
+        }
+      }
+      if (score > bestScore) {
+        hero = i;
+        bestScore = score;
+      }
+    }
+    if (hero >= 0) {
+      final color = retained[hero];
+      retained[hero] = retained[1];
+      retained[1] = HSLColor.fromColor(color)
+          .withSaturation(HSLColor.fromColor(color).saturation.clamp(.70, .95))
+          .withLightness(HSLColor.fromColor(color).lightness.clamp(.35, .55))
+          .toColor();
+      vividAccentLocked = true;
+    }
+  }
+  // Assign a real contrasting pigment to blob 2, rather than leaving whichever
+  // auxiliary grey happens to occupy slot 3. Pool/selection happens per cover,
+  // never in paint. A single-hue or monochrome cover does not invent a hue.
+  final lead = HSLColor.fromColor(retained[1]);
+  Color? contrast;
+  var contrastScore = -1.0;
+  for (final sample in extracted) {
+    final hsl = HSLColor.fromColor(sample.color);
+    if (sample.proportion < .01 || hsl.saturation < .20 || hsl.lightness < .025) {
+      continue;
+    }
+    final rawHue = (lead.hue - hsl.hue).abs();
+    final hueDistance = (rawHue > 180 ? 360 - rawHue : rawHue) / 180;
+    final score =
+        hueDistance * .70 + hsl.saturation * .20 + sample.proportion * .10;
+    if (score > contrastScore) {
+      contrastScore = score;
+      contrast = _normalizeFluidColor(sample.color, profile);
+    }
+  }
+  if (contrast != null && !profile.monochrome) retained[3] = contrast;
+  if (profile.vivid && !profile.dark && !profile.monochrome) {
+    for (final slot in [1, 3]) {
+      final hsl = HSLColor.fromColor(retained[slot]);
+      if (hsl.saturation < .20 || hsl.lightness < .08) continue;
+      retained[slot] = hsl
+          .withSaturation(hsl.saturation.clamp(.75, .85))
+          .withLightness(hsl.lightness.clamp(.35, .55))
+          .toColor();
+    }
+  }
   var darkest = retained.first;
   for (final color in retained) {
     if (HSLColor.fromColor(color).lightness <
@@ -306,10 +397,15 @@ FluidPalette buildWeightedFluidPalette(
     }
   }
   final baseHsl = HSLColor.fromColor(darkest);
+  final canvasHsl = profile.dark ? baseHsl : HSLColor.fromColor(retained[1]);
   final base = profile.monochrome
       ? HSLColor.fromAHSL(1, 0, 0, profile.dark ? 0 : .045).toColor()
-      : baseHsl
-            .withLightness(baseHsl.lightness * (profile.dark ? .45 : .30))
+      : canvasHsl
+            .withLightness(
+              profile.dark
+                  ? (canvasHsl.lightness * .08).clamp(0.0, .012)
+                  : (canvasHsl.lightness * .50).clamp(.12, .26),
+            )
             .toColor();
   return FluidPalette(
     retained[0],
@@ -318,11 +414,11 @@ FluidPalette buildWeightedFluidPalette(
     retained[3],
     baseColor: base,
     warmAccentLocked: warm != null,
+    vividAccentLocked: vividAccentLocked,
+    layeredRolesLocked: true,
     glowStrength: profile.dark
         ? (profile.monochrome ? .28 : (profile.vivid ? .70 : .55))
-        // Wide unsquared fields overlap far more than the old spotlights.
-        // Calibrate their total energy here (once per cover), not with another
-        // black layer. .92 washed real Light Mellow art nearly white on device.
+        // Legacy snapshot/uniform metadata, not additive light energy.
         : (profile.monochrome ? .30 : .50),
   );
 }
@@ -335,6 +431,13 @@ Color? _significantWarmAccent(
   var share = 0.0, bestScore = 0.0;
   Color? best;
   for (final sample in samples) {
+    if (_isAchromaticHighlight(
+      sample.color.r,
+      sample.color.g,
+      sample.color.b,
+    )) {
+      continue;
+    }
     if (!_isWarmAccent(sample.color)) continue;
     final weight = sample.proportion.clamp(0.0, 1.0);
     share += weight;

@@ -6,12 +6,10 @@ enum PlaybackArtworkBackgroundStyle { blurred, fluid }
 
 enum FluidBackgroundQuality { automatic, powerSaving, smooth }
 
-// Must match the one time multiplier in fluid_background.frag (not the clock).
-const fluidShaderTimeScale = .28;
-// Every shader frequency is expressed in hundredths of the slowed phase.
-// Wrapping at 200π / timeScale returns every sine/cosine to the same value. The former
-// 2π wrap reset non-integer harmonics mid-wave and produced a periodic flash.
-const fluidPhaseCycle = math.pi * 200 / fluidShaderTimeScale;
+// uTime is wall-clock seconds; the shader alone converts to orbital radians.
+// Every temporal harmonic is an integer, so all masks/warps wrap together.
+const fluidShaderTimeScale = .065;
+const fluidPhaseCycle = math.pi * 2 / fluidShaderTimeScale; // 96.66 seconds
 
 double wrapFluidPhase(double phase) => phase % fluidPhaseCycle;
 
@@ -31,6 +29,8 @@ class FluidPalette {
     this.baseColor = const Color(0xFF080A0E),
     this.glowStrength = .72,
     this.warmAccentLocked = false,
+    this.vividAccentLocked = false,
+    this.layeredRolesLocked = false,
   });
 
   final Color first;
@@ -40,9 +40,16 @@ class FluidPalette {
   // Base and ambient energy are artwork properties, not per-frame analysis.
   final Color baseColor;
   final double glowStrength;
-  // A significant real artwork accent owns c2's amplified light field. Slot
+  // A significant real artwork accent owns c2's ambient tint. Slot
   // matching may reorder the other fields, but must not evict this colour.
   final bool warmAccentLocked;
+  // Actual vivid lead owns slot 1; never relabel a grey as the lead.
+  final bool vividAccentLocked;
+  // Layer roles: baseColor=canvas, second=blob1, fourth=blob2, third=ambient.
+  // first remains extraction metadata for existing callers, not a fourth light.
+  // Extraction locks roles so closest-colour matching cannot swap a blob with
+  // an ambient accent. Colour interpolation itself remains continuous.
+  final bool layeredRolesLocked;
 
   List<Color> get colors => <Color>[first, second, third, fourth];
 
@@ -93,6 +100,12 @@ class FluidPalette {
       warmAccentLocked: t == 0
           ? source.warmAccentLocked
           : target.warmAccentLocked,
+      vividAccentLocked: t == 0
+          ? source.vividAccentLocked
+          : target.vividAccentLocked,
+      layeredRolesLocked: t == 0
+          ? source.layeredRolesLocked
+          : target.layeredRolesLocked,
     );
   }
 
@@ -106,7 +119,9 @@ class FluidPalette {
           fourth == other.fourth &&
           baseColor == other.baseColor &&
           glowStrength == other.glowStrength &&
-          warmAccentLocked == other.warmAccentLocked;
+          warmAccentLocked == other.warmAccentLocked &&
+          vividAccentLocked == other.vividAccentLocked &&
+          layeredRolesLocked == other.layeredRolesLocked;
 
   @override
   int get hashCode => Object.hash(
@@ -117,6 +132,8 @@ class FluidPalette {
     baseColor,
     glowStrength,
     warmAccentLocked,
+    vividAccentLocked,
+    layeredRolesLocked,
   );
 }
 
@@ -127,6 +144,7 @@ FluidPalette alignFluidPaletteSlots(
   FluidPalette current,
   FluidPalette incoming,
 ) {
+  if (incoming.layeredRolesLocked) return incoming;
   final source = current.colors;
   final target = incoming.colors;
   List<Color>? best;
@@ -135,6 +153,7 @@ FluidPalette alignFluidPaletteSlots(
   void visit(List<Color> remaining, List<Color> ordered) {
     if (remaining.isEmpty) {
       if (incoming.warmAccentLocked && ordered[2] != incoming.third) return;
+      if (incoming.vividAccentLocked && ordered[1] != incoming.second) return;
       var distance = 0.0;
       for (var index = 0; index < 4; index++) {
         final first = HSLColor.fromColor(source[index]);
@@ -170,6 +189,8 @@ FluidPalette alignFluidPaletteSlots(
     baseColor: incoming.baseColor,
     glowStrength: incoming.glowStrength,
     warmAccentLocked: incoming.warmAccentLocked,
+    vividAccentLocked: incoming.vividAccentLocked,
+    layeredRolesLocked: incoming.layeredRolesLocked,
   );
 }
 
@@ -187,15 +208,15 @@ class FluidBackgroundConfig {
     return switch (quality) {
       FluidBackgroundQuality.powerSaving => const FluidBackgroundConfig(
         framesPerSecond: 24,
-        motionPeriodSeconds: 6.5,
+        motionPeriodSeconds: fluidPhaseCycle,
       ),
       FluidBackgroundQuality.smooth => const FluidBackgroundConfig(
         framesPerSecond: 120,
-        motionPeriodSeconds: 5.5,
+        motionPeriodSeconds: fluidPhaseCycle,
       ),
       FluidBackgroundQuality.automatic => const FluidBackgroundConfig(
         framesPerSecond: 60,
-        motionPeriodSeconds: 5.5,
+        motionPeriodSeconds: fluidPhaseCycle,
       ),
     };
   }

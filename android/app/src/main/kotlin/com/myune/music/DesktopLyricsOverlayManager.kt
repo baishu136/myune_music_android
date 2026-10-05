@@ -8,6 +8,7 @@ import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
+import android.hardware.input.InputManager
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
@@ -95,6 +96,16 @@ class DesktopLyricsOverlayManager(
     private val onEvent: (String, Map<String, Any?>) -> Unit,
 ) {
     private val windowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
+    private val maximumObscuringOpacity = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        try {
+            context.getSystemService(InputManager::class.java)?.maximumObscuringOpacityForTouch
+                ?: DesktopLyricsTouchPolicy.DEFAULT_MAXIMUM_OBSCURING_OPACITY
+        } catch (_: RuntimeException) {
+            DesktopLyricsTouchPolicy.DEFAULT_MAXIMUM_OBSCURING_OPACITY
+        }
+    } else {
+        DesktopLyricsTouchPolicy.DEFAULT_MAXIMUM_OBSCURING_OPACITY
+    }
     private var root: LinearLayout? = null
     private var params: WindowManager.LayoutParams? = null
     private var lyricView: TextView? = null
@@ -148,6 +159,7 @@ class DesktopLyricsOverlayManager(
         }
         values["isPlaying"]?.let { playing = it as? Boolean ?: playing }
         values["isLocked"]?.let { locked = it as? Boolean ?: locked }
+        if (locked) collapseToLyricsOnly()
         (values["color"] as? Number)?.let { lyricColor = it.toInt() }
         (values["fontSize"] as? Number)?.let { lyricSize = it.toFloat().coerceIn(16f, 36f) }
         (values["opacity"] as? Number)?.let { lyricOpacity = it.toFloat().coerceIn(0.2f, 1f) }
@@ -227,7 +239,7 @@ class DesktopLyricsOverlayManager(
         }
         val generation = ++visibilityGeneration
         view.animate().cancel()
-        params?.flags = windowFlags()
+        applyWindowTouchPolicy()
         if (view.parent == null) {
             view.visibility = View.VISIBLE
             view.alpha = 0f
@@ -253,7 +265,6 @@ class DesktopLyricsOverlayManager(
         }
         val generation = ++visibilityGeneration
         view.animate().cancel()
-        params?.flags = windowFlags()
         refreshLayout()
         if (view.parent == null) {
             onDetached?.invoke()
@@ -463,21 +474,24 @@ class DesktopLyricsOverlayManager(
             if (playing) R.drawable.ic_desktop_lyrics_pause else R.drawable.ic_desktop_lyrics_play,
         )
         root?.background = if (expanded) roundedBackground(expandedBackgroundColor) else null
-        params?.flags = windowFlags()
+        applyWindowTouchPolicy()
         if (refreshWindow) refreshLayout()
     }
 
-    private fun windowFlags(): Int {
-        val base = WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-            WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN
-        // FLAG_NOT_TOUCHABLE passes every pointer event to the application
-        // below the overlay. It applies while locked and during fade-out so a
-        // disappearing lyric never leaves a temporary invisible hit target.
-        return if (locked || suppressed || !hasContent) {
-            base or WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE
-        } else {
-            base
-        }
+    private fun applyWindowTouchPolicy() {
+        val windowParams = params ?: return
+        val state = DesktopLyricsTouchPolicy.resolve(
+            locked = locked,
+            suppressed = suppressed,
+            hasContent = hasContent,
+            sdkInt = Build.VERSION.SDK_INT,
+            maximumObscuringOpacity = maximumObscuringOpacity,
+        )
+        // Update both fields before addView/updateViewLayout. A translucent
+        // pixel buffer, lyricOpacity or root.alpha cannot satisfy the system's
+        // untrusted-touch check when LayoutParams.alpha remains 1.0.
+        windowParams.flags = state.flags
+        windowParams.alpha = state.alpha
     }
 
     private fun loadLyricTypeface(path: String, collectionIndex: Int): Typeface {
@@ -507,6 +521,7 @@ class DesktopLyricsOverlayManager(
 
     private fun refreshLayout() {
         val view = root ?: return
+        applyWindowTouchPolicy()
         if (view.parent != null) windowManager.updateViewLayout(view, params)
     }
 

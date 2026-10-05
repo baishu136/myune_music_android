@@ -53,7 +53,8 @@ class FluidBackgroundController extends ChangeNotifier {
   double get effectiveTime => _effectiveTime;
   bool get isTicking => _ticker.isActive;
 
-  /// Updates the speed envelope from a lightweight audio-energy estimate.
+  /// Updates the warp-amplitude envelope from lightweight audio energy.
+  /// Orbit speed stays fixed: rhythm and quality never accelerate the clock.
   /// Values are deliberately bounded here so malformed or unusually hot FFT
   /// frames can never make the full-screen shader unstable.
   void setRhythmMotion(double value) {
@@ -137,12 +138,7 @@ class FluidBackgroundController extends ChangeNotifier {
     final response = 1 - math.exp(-frameSeconds / responseSeconds);
     _motionScale += (targetMotion - _motionScale) * response;
     final config = FluidBackgroundConfig.forQuality(_quality);
-    _effectiveTime = wrapFluidPhase(
-      _effectiveTime +
-          frameSeconds *
-              _motionScale *
-              (math.pi * 2 / config.motionPeriodSeconds),
-    );
+    _effectiveTime = wrapFluidPhase(_effectiveTime + frameSeconds);
 
     if (_paletteProgress < 1) {
       _paletteProgress =

@@ -7,7 +7,7 @@ void main() {
   test(
     'changelog covers the first Android release through the current build',
     () {
-      expect(projectChangelogEntries.first.version, '1.0.0-android.353');
+      expect(projectChangelogEntries.first.version, '1.0.0-android.360');
       expect(projectChangelogEntries.last.version, '0.9.2-android.1—3');
       expect(projectChangelogEntries.last.date, '2026-08-08');
       expect(projectReleaseCount, 16);
@@ -50,7 +50,7 @@ void main() {
       );
 
       expect(boundary, greaterThanOrEqualTo(0));
-      expect(projectChangelogSince099.first.version, '1.0.0-android.353');
+      expect(projectChangelogSince099.first.version, '1.0.0-android.360');
       expect(projectChangelogSince099.last.version, projectChangelog099Version);
       expect(
         projectChangelogSince099,
