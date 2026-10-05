@@ -6,11 +6,11 @@
 
 1. 项目根目录：`F:/AGENT/1/myune_music_android`；父工作目录：`F:/AGENT/1`。这是 Flutter Android 本地音乐播放器，不是桌面版项目。
 2. 当前源码版本为 **`1.0.0+360`**，显示版本 **`1.0.0-android.360`**；ARM64 split APK 的实际 versionCode 为 **2360**。这些是交接快照，接手时重新读取 `pubspec.yaml`，不要硬编码下一版本。
-3. 当前分支 `main`，remote `origin` 为 `git@github.com:baishu136/myune_music_android.git`。**存在大量未提交、未跟踪成果，不能 reset/checkout/clean 或批量覆盖。** Git HEAD 不是完整最新实现。
-4. 最新完成的功能任务是360版分层流体背景；359版中文/日文柔和连续跟随仍保留。2026-10-05当前请求为提交最新源码到GitHub（不创建Release），推送核验后将所有历史留档、360产物及历史测试资料移入回收站，并清理外部SaltPlayer/ZiterPlayer参考文件；保留Myune项目文档。不自动继续旧功能任务，不重新构建APK或改变应用版本。
+3. 当前分支 `main`，remote `origin` 为 `git@github.com:baishu136/myune_music_android.git`。2026-10-05已将354–360全部现有源码、测试、记录及本文件提交并推送GitHub，源码提交为 `0ec3d9ec5cc7dc2d8bc7930f38a98d9aea23a12d`；随后补充清理交接文档。**接手仍须检查实际git status，不能 reset/checkout/clean 或批量覆盖后续成果。**
+4. 最新完成的功能任务是360版分层流体背景；359版中文/日文柔和连续跟随仍保留。2026-10-05按当前授权提交源码（不创建Release）并清理历史留档、360产物及外部参考资料；保留Myune项目文档。156个目标已核对回收站内容；`test-artifacts`删除后未进入回收站，不能保证其原始资料完整恢复。构建缓存保留，`build/app/outputs`已回收。详见 `docs/source_sync_cleanup_20261005.md`；不自动继续旧功能任务。
 5. 当前逐字方案是 **354原小幅上浮 + 357轻跟随 + 359中日文短间隙衔接**。355/356的大幅或下沉归位方案已撤销，不能误恢复。
 6. 当前背景是 **地色 + 两个漫游色斑 + 弱环境色的分层遮罩 mix**，不是旧Screen或358的Power-Softmax四场归一化。
-7. 360最后一次完整验证：Flutter **464项通过、1项既有跳过**，分析无问题，工具6项单测通过；不是本次文档任务重新运行的测试。
+7. 2026-10-05推送前重新运行：Flutter **464项通过、1项既有跳过**，分析无问题，工具6项单测通过。原生单测任务检查成功但为UP-TO-DATE，既有XML为5项、零失败/错误，不宣称本轮重新执行了原生单测。清理后664个跟踪文件SHA256未变化，150个依赖的源码入口仍存在。
 8. 359未做真机验证，360时ADB没有设备。**不能把旧录屏、公式连续、60/90/120Hz测试采样当成当前真机满帧。** 接手时重新检查设备、已安装版本和设置。
 9. 实际软件修改要递增构建号、同步记录/测试、仅构建ARM64 Release并留档；不要推送、发布、卸载、清空数据或清理旧留档，除非当前用户授权。
 10. 推荐阅读顺序：本文件 → `README.md` → 最近相关 `docs/android_*.md` → 对应生产调用路径与测试。检查后来新增的更深层 `AGENTS.md`。
@@ -136,7 +136,7 @@ APK审计：`tool/analyze_android_apk.py <apk> --require-compressed-native`；�
 - 排除 `.git/`、`build/`、`dist/`、`.dart_tool/`、Gradle/Kotlin缓存、本机SDK配置、key.properties、.env、jks/keystore/p12/pem等本地签名/敏感材料。证据单独备份，不混入生产资源。
 - ZIP验证CRC、版本/记录存在、必要未跟踪文件存在；比较备份与原件SHA256。保留失败测试/失败安装记录，不只保留成功日志。
 - 参考上一轮源码ZIP逐文件核对本轮变化，可规范换行/BOM后比较；不能以此覆盖当前脏工作区。回退完整基线在新目录解压对照，通过限定补丁实施。
-- 244前留档曾按用户要求移入回收站，见 `F:/AGENT/1/WORKSPACE_INDEX.md`。这是已完成清理，不是持续自动删除规则。不要再次清理244之后归档或改动视频记录引用路径。
+- 2026-10-05用户另行明确授权清理全部历史留档：121份Myune版本/交接备份、`dist/`中的66个APK和16个源码ZIP、历史对照源码与媒体已回收；`test-artifacts`发生未进入回收站的删除异常。详细清单及恢复限制见 `docs/source_sync_cleanup_20261005.md` 和父目录 `WORKSPACE_INDEX.md`。这是本次已完成动作，不是持续自动删除规则；不要自动清理将来的新留档。历史文档保留当时路径，不能据此断言产物仍存在。
 
 ## 8. 真机测试与证据边界
 
@@ -154,10 +154,14 @@ APK审计：`tool/analyze_android_apk.py <apk> --require-compressed-native`；�
 - Windows PowerShell；Flutter/Dart目前在PATH，Flutter：`C:/Users/GUDGA/develop/flutter/bin/flutter.bat`。
 - ADB：`C:/Users/GUDGA/AppData/Local/Android/Sdk/platform-tools/adb.exe`；SDK工具曾用 `build-tools/36.0.0/`。接手时检查存在，不强制升级SDK/依赖。
 - 可用Python：`C:/Users/GUDGA/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe`；系统 `python` 不一定有效。必要时使用绝对路径。
-- 父目录参考源码：`F:/AGENT/1/SaltPlayerSource-12.3.1/`；参考图片/视频/分析目录可能在父目录。保持相对记录指向，不随意移动。
+- 父目录外部SaltPlayer参考源码及参考媒体已按2026-10-05授权清理；未扫描到独立ZiterPlayer残留。保留的 `docs/android_262_salt_reference_fluid_motion.md` 是Myune变更文档，不是外部源码。不要从过时路径假定参考资料仍在，重新下载或恢复需当前任务明确需要。
 - 在Codex中确实成功启动应用后，若当前技能目录仍提供 `register-generated-program`，按该技能读完流程并更新既有ADB启动入口，避免重复创建。**仅构建或未真实启动时不登记。** 历史入口ID `55597a6477880f94`，仍需重新核对。
 
-## 10. 最新可恢复交付快照
+## 10. 最新源码恢复与历史交付快照
+
+**当前360源码已保存到GitHub `main`，源码提交为 `0ec3d9ec5cc7dc2d8bc7930f38a98d9aea23a12d`；本轮没有创建tag或Release。** SSH端口连接曾关闭，使用已登录的gh HTTPS凭据通道推送，未改变原remote。不要输出访问令牌。
+
+以下是2026-10-04交付时的历史信息，不表示原路径仍有文件。2026-10-05该APK/ZIP及版本备份已移入回收站，历史测试目录不可从回收站整体还原；详见清理记录。当前源码可从GitHub提交恢复，不必还原历史构建缓存。
 
 360交付于2026-10-04，仅ARM64 Release，32,310,952 bytes（30.81MiB）：
 
@@ -171,12 +175,12 @@ APK审计：`tool/analyze_android_apk.py <apk> --require-compressed-native`；�
 
 359歌词交接：`docs/android_359_cjk_gentle_follower.md`；357回退依据：`docs/android_357_restore_354_gentle_follower.md`；354原生穿透修复：`docs/android_354_desktop_lyrics_touch_through.md`；358历史性能：`docs/android_358_fluid_power_softmax.md`。
 
-**本AGENTS.md于2026-10-05新增，仅文档，不在2026-10-04的360源码ZIP内。** 本次不修改软件版本或运行代码，不重新打APK，不覆盖已有快照。若用户要求打包最新源码，把本文件一起纳入新的交接归档，并使用不同名称，保留原快照及哈希。
+**本AGENTS.md于2026-10-05新增，不在2026-10-04的360源码ZIP内，现已随最新源码提交GitHub。** 本次源码同步与清理没有修改软件版本或运行代码，没有重新打APK。若后续用户要求源码打包，将本文件和清理记录一并纳入，并明确旧历史路径已清理。
 
 ## 11. 后续尚未验证与交付习惯
 
 - 359中日文微幅跟随的真机主观强度、360分层背景的真实封面整周期观感、完整播放页与歌词页的Profile帧预算，均需实际设备验证；目前不是已证实的新Bug，也不是自动授权的待办。
 - 360只完成算法/软件渲染与构建，不能说已安装到用户手机。下次测机先读取包versionCode和逐字开关/范围。
-- 本地354–360的未提交工作未因353曾发布而自动进入GitHub；需要当前明确发布要求才进行提交/推送/Release操作。
+- 354–360成果已按2026-10-05当前授权提交/推送GitHub，既有Release未改动；未来新的提交、推送或Release仍按当次授权处理。不要把源码同步误写成360已发布Release或已安装到真机。
 - 完成软件任务报告：实际原因和修改、测试/真机结果及限制、版本、修改文件、记录/留档和APK路径。实测、模型验证、理论推断明确分开。
 - 后续维护本文件的“当前快照”和未验证项，保留历史取舍摘要，避免让下一位agent根据过时结论继续叠加错误方案。
