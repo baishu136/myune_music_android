@@ -9,6 +9,11 @@ class SongGroupPresentation {
 
   static final Map<String, String> _alphabeticSortKeyCache = {};
 
+  static void installSortKeys(Map<String, String> keys) {
+    _alphabeticSortKeyCache.clear();
+    _alphabeticSortKeyCache.addAll(keys);
+  }
+
   static String _normalize(String path) =>
       p.normalize(path).replaceAll('\\', '/').toLowerCase();
 

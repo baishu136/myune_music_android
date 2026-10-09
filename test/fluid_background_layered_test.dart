@@ -21,7 +21,7 @@ void main() {
     },
   );
 
-  test('vivid artwork supplies two actual contrasting high-chroma blobs', () {
+  test('vivid artwork supplies two actual contrasting pigments', () {
     final palette = buildWeightedFluidPalette(const [
       FluidColorSample(Color(0xFFEF2683), .40),
       FluidColorSample(Color(0xFF25BFA3), .30),
@@ -30,7 +30,7 @@ void main() {
     ], fallbackSeed: Colors.blue);
     for (final color in [palette.second, palette.fourth]) {
       final hsl = HSLColor.fromColor(color);
-      expect(hsl.saturation, inInclusiveRange(.74, .86));
+      expect(hsl.saturation, inInclusiveRange(.65, .95));
       expect(hsl.lightness, inInclusiveRange(.345, .555));
     }
     final a = HSLColor.fromColor(palette.second),
@@ -88,7 +88,7 @@ void main() {
       );
       await tester.pump(const Duration(seconds: 10));
       expect(controller.effectiveTime, before);
-      expect(fluidPhaseCycle, inInclusiveRange(96, 97));
+      expect(fluidPhaseCycle, inInclusiveRange(64, 65));
     },
   );
 }

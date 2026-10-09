@@ -6,25 +6,25 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test(
-    'lyric size restores safely and all changes respect the 36 ceiling',
+    'lyric size restores safely and all changes respect the 40 ceiling',
     () async {
       SharedPreferences.setMockInitialValues({'fontSize': 48.0});
       final settings = SettingsProvider();
       await settings.initializationFuture;
-      expect(settings.fontSize, 36);
+      expect(settings.fontSize, 40);
       await settings.setDesktopLyricsFontSize(48);
-      expect(settings.desktopLyricsFontSize, 36);
+      expect(settings.desktopLyricsFontSize, 40);
       settings.previewFontSize(34);
       expect(settings.fontSize, 34);
       settings.previewFontSize(80);
-      expect(settings.fontSize, 36);
+      expect(settings.fontSize, 40);
       settings.previewFontSize(double.nan);
       expect(settings.fontSize, SettingsProvider.defaultLyricFontSize);
       settings.previewFontSize(1);
       expect(settings.fontSize, 12);
-      settings.setFontSize(36);
+      settings.setFontSize(40);
       await Future<void>.delayed(Duration.zero);
-      expect((await SharedPreferences.getInstance()).getDouble('fontSize'), 36);
+      expect((await SharedPreferences.getInstance()).getDouble('fontSize'), 40);
       settings.dispose();
     },
   );

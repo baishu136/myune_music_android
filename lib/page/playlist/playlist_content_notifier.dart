@@ -17,7 +17,6 @@ import '../../services/audio/audio_interruption_policy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:http/http.dart' as http;
 import 'package:colorgram/colorgram.dart';
-import 'package:pinyin/pinyin.dart';
 
 import 'playlist_models.dart';
 import 'playlist_manager.dart';
@@ -36,6 +35,8 @@ import '../../services/interaction_performance_controller.dart';
 import '../../services/foreground_lifecycle.dart';
 import '../../services/lyric_seek_notifier.dart';
 import '../../services/search_service.dart';
+import '../../services/library_preparation_worker.dart';
+import '../../services/song_group_presentation.dart';
 import '../../widgets/artwork_image.dart';
 
 double playbackSleepFadeFactor(
@@ -441,6 +442,186 @@ class PlaylistContentNotifier extends ChangeNotifier
   Map<String, List<Song>> _albumGroupsCache = const {};
   int _libraryRevision = 0;
   int get libraryRevision => _libraryRevision;
+  final LibraryPreparationWorker _libraryPreparationWorker =
+      LibraryPreparationWorker();
+  Future<void>? _libraryPreparation;
+  Completer<void>? _groupsPreparation;
+  Object? _libraryPreparationError;
+  int _preparationGeneration = 0,
+      _derivedRevision = -1,
+      _requestedRevision = -1;
+  String? _derivedSeparators, _requestedSeparators;
+  bool _preparationDisposed = false;
+  bool get libraryPresentationReady =>
+      _derivedRevision == _libraryRevision &&
+      _derivedSeparators == jsonEncode(_settingsProvider.artistSeparators);
+  bool get libraryGroupsReady =>
+      _artistGroupsRevision == _libraryRevision &&
+      _albumGroupsRevision == _libraryRevision &&
+      _artistGroupsSeparatorSignature ==
+          jsonEncode(_settingsProvider.artistSeparators);
+
+  Future<void> prepareLibraryGroups() async {
+    if (libraryGroupsReady || _preparationDisposed) return;
+    unawaited(prepareLibraryPresentation());
+    await _groupsPreparation?.future;
+    if (!_preparationDisposed &&
+        !libraryGroupsReady &&
+        _libraryPreparationError != null) {
+      throw StateError(
+        'Library groups preparation failed: $_libraryPreparationError',
+      );
+    }
+  }
+
+  Future<void> prepareLibraryPresentation() {
+    if (_preparationDisposed || libraryPresentationReady) return Future.value();
+    final separators = List<String>.of(_settingsProvider.artistSeparators);
+    final signature = jsonEncode(separators);
+    if (_requestedRevision == _libraryRevision &&
+        _requestedSeparators == signature &&
+        _libraryPreparation != null) {
+      return _libraryPreparation!;
+    }
+    _requestedRevision = _libraryRevision;
+    _requestedSeparators = signature;
+    final generation = ++_preparationGeneration, revision = _libraryRevision;
+    final songs = List<Song>.of(_allSongs);
+    // Retire an obsolete waiter; consumers recheck the revision before mounting.
+    if (_groupsPreparation?.isCompleted == false) {
+      _groupsPreparation!.complete();
+    }
+    _groupsPreparation = Completer<void>();
+    _libraryPreparationError = null;
+    return _libraryPreparation = _prepareLibraryPresentation(
+      songs,
+      separators,
+      signature,
+      revision,
+      generation,
+    );
+  }
+
+  Future<void> _prepareLibraryPresentation(
+    List<Song> songs,
+    List<String> separators,
+    String signature,
+    int revision,
+    int generation,
+  ) async {
+    bool needed() =>
+        !_preparationDisposed && generation == _preparationGeneration;
+    try {
+      final work = InteractionPerformanceController.instance;
+      var copyLease = await work.acquireIdleWork(isStillNeeded: needed);
+      if (!copyLease.isGranted) return;
+      late PreparedLibraryMetadata result;
+      final rows = <List<String>>[];
+      try {
+        if (!needed()) return;
+        var start = 0;
+        while (start < songs.length) {
+          if (!needed()) return;
+          if (work.isCritical) {
+            copyLease.release();
+            copyLease = await work.acquireIdleWork(isStillNeeded: needed);
+            if (!copyLease.isGranted || !needed()) return;
+          }
+          final budget = Stopwatch()..start();
+          var copied = 0;
+          do {
+            final song = songs[start++];
+            rows.add([song.title, song.artist, song.album]);
+            copied++;
+          } while (start < songs.length &&
+              copied < 128 &&
+              budget.elapsedMicroseconds < 2000);
+          copyLease.release();
+          if (start < songs.length) {
+            copyLease = await work.acquireIdleWork(isStillNeeded: needed);
+            if (!copyLease.isGranted || !needed()) return;
+          }
+        }
+        copyLease.release();
+        result = await _libraryPreparationWorker.prepare(
+          rows,
+          separators,
+          labels: _playlists.map((p) => p.name).toList(growable: false),
+          includeSearchIndex: false,
+        );
+      } finally {
+        copyLease.release();
+      }
+      final publishLease = await InteractionPerformanceController.instance
+          .acquireIdleWork(isStillNeeded: needed);
+      try {
+        if (!publishLease.isGranted ||
+            !needed() ||
+            revision != _libraryRevision ||
+            signature != jsonEncode(_settingsProvider.artistSeparators)) {
+          return;
+        }
+        _artistGroupsCache = {
+          for (final entry in result.artists.entries)
+            entry.key: entry.value.map((i) => songs[i]).toList(growable: false),
+        };
+        _albumGroupsCache = {
+          for (final entry in result.albums.entries)
+            entry.key: entry.value.map((i) => songs[i]).toList(growable: false),
+        };
+        _artistGroupsRevision = _albumGroupsRevision = revision;
+        _artistGroupsSeparatorSignature = signature;
+        SongGroupPresentation.installSortKeys(result.sortKeys);
+        if (_groupsPreparation?.isCompleted == false) {
+          _groupsPreparation!.complete();
+        }
+        notifyListeners();
+      } finally {
+        publishLease.release();
+      }
+      // Search and per-song sorting are useful but not a page display barrier.
+      final indexStart = await work.acquireIdleWork(isStillNeeded: needed);
+      if (!indexStart.isGranted) return;
+      indexStart.release();
+      if (!needed()) return;
+      final indexed = await _libraryPreparationWorker.prepare(
+        rows,
+        separators,
+        labels: _playlists.map((p) => p.name).toList(growable: false),
+      );
+      final indexCommit = await work.acquireIdleWork(isStillNeeded: needed);
+      try {
+        if (!indexCommit.isGranted ||
+            !needed() ||
+            revision != _libraryRevision ||
+            signature != jsonEncode(_settingsProvider.artistSeparators)) {
+          return;
+        }
+        SongGroupPresentation.installSortKeys(indexed.sortKeys);
+        _searchService.installPrepared(songs, indexed.pinyin, indexed.initials);
+        _derivedRevision = revision;
+        _derivedSeparators = signature;
+        if (_isSearching) _updateFilteredSongs();
+        notifyListeners();
+      } finally {
+        indexCommit.release();
+      }
+    } catch (error) {
+      if (!_preparationDisposed) {
+        debugPrint('Library preparation failed: $error');
+      }
+      if (generation == _preparationGeneration) {
+        _requestedRevision = -1;
+        _libraryPreparationError = error;
+      }
+    } finally {
+      if (generation == _preparationGeneration &&
+          _groupsPreparation?.isCompleted == false) {
+        _groupsPreparation!.complete();
+      }
+    }
+  }
+
   int _allSongsUpdateGeneration = 0;
   int _metadataVerificationGeneration = 0;
   int _libraryArtworkWarmGeneration = 0;
@@ -1171,7 +1352,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   String _searchKeyword = ''; // 当前搜索关键词
   bool _isSearching = false; // 是否正在搜索（用于切换UI）
   List<Song> _filteredSongs = []; // 搜索结果列表
-  final SearchService _searchService = SearchService();
+  final SearchService _searchService = SearchService(allowColdPinyin: false);
 
   bool _disableHotKeys = false; // 是否禁用快捷键
 
@@ -1746,6 +1927,12 @@ class PlaylistContentNotifier extends ChangeNotifier
   @override
   // --- 播放器相关 ---
   void dispose() {
+    _preparationDisposed = true;
+    if (_groupsPreparation?.isCompleted == false) {
+      _groupsPreparation!.complete();
+    }
+    _preparationGeneration++;
+    _libraryPreparationWorker.dispose();
     WidgetsBinding.instance.removeObserver(this);
     _playbackSleepTimer?.cancel();
     _playbackSleepFadeStartTimer?.cancel();
@@ -2536,7 +2723,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     if (updated) {
       _libraryRevision++;
-      _searchService.rebuild(_allSongs);
+      unawaited(prepareLibraryPresentation());
       notifyListeners();
     }
   }
@@ -2552,12 +2739,26 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     final pendingUpdates = <String, SongMetadataCacheEntry?>{};
 
-    void flushUpdates() {
+    Future<void> flushUpdates() async {
       if (pendingUpdates.isEmpty) return;
-      _applyMetadataBatch(
-        Map<String, SongMetadataCacheEntry?>.from(pendingUpdates),
-      );
-      pendingUpdates.clear();
+      final commit = await InteractionPerformanceController.instance
+          .acquireIdleWork(
+            priority: InteractionWorkPriority.maintenance,
+            isStillNeeded: () =>
+                verificationGeneration == _metadataVerificationGeneration,
+          );
+      try {
+        if (!commit.isGranted ||
+            verificationGeneration != _metadataVerificationGeneration) {
+          return;
+        }
+        _applyMetadataBatch(
+          Map<String, SongMetadataCacheEntry?>.from(pendingUpdates),
+        );
+        pendingUpdates.clear();
+      } finally {
+        commit.release();
+      }
     }
 
     for (final filePath in filePaths) {
@@ -2581,6 +2782,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       final file = File(normalizedPath);
 
       try {
+        lease.release();
         final stat = await file.stat();
         final modifiedMs = stat.modified.millisecondsSinceEpoch;
 
@@ -2636,10 +2838,10 @@ class PlaylistContentNotifier extends ChangeNotifier
       } finally {
         lease.release();
       }
-      if (pendingUpdates.length >= 64) flushUpdates();
+      if (pendingUpdates.length >= 64) await flushUpdates();
     }
     if (verificationGeneration == _metadataVerificationGeneration) {
-      flushUpdates();
+      await flushUpdates();
     }
   }
 
@@ -3276,6 +3478,7 @@ class PlaylistContentNotifier extends ChangeNotifier
         final filePath = cacheKey;
         Uint8List? diskCover;
         try {
+          deferredWorkLease?.release();
           final normalizedPath = Uri.file(
             filePath,
           ).toFilePath(windows: Platform.isWindows);
@@ -3448,7 +3651,8 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
       selectedSongPaths.add(pathToAdd);
       if (!currentPlaylist.songFilePaths.any(
-        (path) => _normalizePath(path).toLowerCase() ==
+        (path) =>
+            _normalizePath(path).toLowerCase() ==
             _normalizePath(pathToAdd).toLowerCase(),
       )) {
         newSongPaths.add(pathToAdd);
@@ -3456,9 +3660,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
     if (selectedSongPaths.isEmpty) {
       _infoStreamController.add(
-        skippedUnsupportedFiles > 0
-            ? '所选文件不是支持的音频格式'
-            : '无法读取所选文件，请改从本机存储中选择',
+        skippedUnsupportedFiles > 0 ? '所选文件不是支持的音频格式' : '无法读取所选文件，请改从本机存储中选择',
       );
       return false;
     }
@@ -5914,6 +6116,7 @@ class PlaylistContentNotifier extends ChangeNotifier
             );
         try {
           if (generation != _playbackStateSaveGeneration) return;
+          lease.release();
           await savePlaybackState();
         } finally {
           lease.release();
@@ -6086,9 +6289,11 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
       final preparedWhileQueued = _takeDynamicColor(songPath);
       if (preparedWhileQueued != null) {
+        lease.release();
         await _themeProvider.setDynamicSeedColor(preparedWhileQueued);
         return;
       }
+      lease.release();
       await extractAndApplyDynamicColor(
         displayCoverForSong(song),
         sourceSongPath: songPath,
@@ -6112,14 +6317,29 @@ class PlaylistContentNotifier extends ChangeNotifier
       final songPath = sourceSongPath ?? _currentSong?.normalizedPath;
       if (songPath == null) return;
       final color = await _resolveDynamicColor(songPath, albumArt);
-      if (requestGeneration != _dynamicColorApplyGeneration ||
-          !_settingsProvider.useDynamicColor ||
-          _currentSong?.normalizedPath != songPath ||
-          color == null) {
-        return;
+      final commit = await InteractionPerformanceController.instance
+          .acquireIdleWork(
+            priority: InteractionWorkPriority.userVisible,
+            isStillNeeded: () =>
+                requestGeneration == _dynamicColorApplyGeneration &&
+                _settingsProvider.useDynamicColor &&
+                _currentSong?.normalizedPath == songPath,
+          );
+      try {
+        if (!commit.isGranted) return;
+        if (requestGeneration != _dynamicColorApplyGeneration ||
+            !_settingsProvider.useDynamicColor ||
+            _currentSong?.normalizedPath != songPath ||
+            color == null) {
+          return;
+        }
+        final applied = _themeProvider.setDynamicSeedColor(color);
+        commit.release();
+        await applied;
+        unawaited(_prefetchAdjacentDynamicColors(songPath));
+      } finally {
+        commit.release();
       }
-      await _themeProvider.setDynamicSeedColor(color);
-      unawaited(_prefetchAdjacentDynamicColors(songPath));
     } catch (e) {
       // print('提取颜色失败 $e');
     }
@@ -6230,7 +6450,12 @@ class PlaylistContentNotifier extends ChangeNotifier
             _currentSong?.normalizedPath != currentSongPath) {
           return;
         }
+        lease.release();
         final color = await _resolveDynamicColor(path, albumArt);
+        if (generation != _dynamicColorPrefetchGeneration ||
+            _currentSong?.normalizedPath != currentSongPath) {
+          return;
+        }
         if (color != null) _themeProvider.prewarmDynamicSeedColor(color);
       } catch (_) {
         // A failed adjacent cover must not affect current-song theme updates.
@@ -6309,18 +6534,8 @@ class PlaylistContentNotifier extends ChangeNotifier
     required SortCriterion criterion,
     required bool descending,
   }) async {
-    String mixedPinyin(String text) {
-      final buffer = StringBuffer();
-      for (final char in text.characters) {
-        final pinyin = PinyinHelper.getPinyin(char);
-        if (pinyin.isNotEmpty && pinyin != char) {
-          buffer.write(pinyin);
-        } else {
-          buffer.write(char.toLowerCase());
-        }
-      }
-      return buffer.toString();
-    }
+    var mixedKeys = <String, String>{};
+    String mixedPinyin(String text) => mixedKeys[text] ?? text.toLowerCase();
 
     int compareByTitleThenPath(
       ({String path, Song song}) a,
@@ -6356,6 +6571,14 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
 
       // 对这个临时列表进行排序
+      mixedKeys = (await _libraryPreparationWorker.prepare([
+        for (final item in sortableList)
+          [
+            (item['metadata'] as Song).title,
+            (item['metadata'] as Song).artist,
+            p.basename(item['path'] as String),
+          ],
+      ], [])).mixedKeys;
       sortableList.sort((a, b) {
         final songA = a['metadata'] as Song;
         final songB = b['metadata'] as Song;
@@ -6401,6 +6624,10 @@ class PlaylistContentNotifier extends ChangeNotifier
         sortableList.add((path: path, song: song, sortValue: sortValue));
       }
 
+      mixedKeys = (await _libraryPreparationWorker.prepare([
+        for (final item in sortableList)
+          [item.song.title, item.song.artist, p.basename(item.path)],
+      ], [])).mixedKeys;
       sortableList.sort((a, b) {
         // 这两种统计排序始终从高到低；相同数值（包括 0）按标题排序。
         final statisticResult = b.sortValue.compareTo(a.sortValue);
@@ -8781,7 +9008,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   void _publishAllSongsSnapshot(List<Song> songs) {
     _allSongs = songs;
     _libraryRevision++;
-    _searchService.rebuild(_allSongs);
+    unawaited(prepareLibraryPresentation());
     _syncAllSongsPlaybackSnapshot();
     _allSongsLoaded = true;
     notifyListeners();
@@ -9047,7 +9274,7 @@ class PlaylistContentNotifier extends ChangeNotifier
         .toList(growable: false);
     _allSongs = sortedSongList;
     _libraryRevision++;
-    _searchService.rebuild(_allSongs);
+    unawaited(prepareLibraryPresentation());
     _syncAllSongsPlaybackSnapshot();
 
     if (_playingPlaylist?.id == _allSongsVirtualPlaylist.id &&

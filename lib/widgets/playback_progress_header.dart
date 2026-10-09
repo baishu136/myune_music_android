@@ -13,6 +13,84 @@ int playbackRemainingSeconds(Duration position, Duration totalDuration) {
   return ((totalMs - positionMs) / Duration.millisecondsPerSecond).ceil();
 }
 
+typedef PlaybackClockValue = ({String elapsed, String total, int remaining});
+
+/// Filters visual clock text only. Playback, seek and lyric clocks stay full rate.
+class PlaybackClockBuilder extends StatefulWidget {
+  const PlaybackClockBuilder({
+    super.key,
+    required this.positionListenable,
+    required this.previewPositionListenable,
+    required this.totalDuration,
+    required this.builder,
+  });
+  final ValueListenable<Duration> positionListenable;
+  final ValueListenable<double?> previewPositionListenable;
+  final Duration totalDuration;
+  final Widget Function(BuildContext, PlaybackClockValue) builder;
+
+  @override
+  State<PlaybackClockBuilder> createState() => _PlaybackClockBuilderState();
+}
+
+class _PlaybackClockBuilderState extends State<PlaybackClockBuilder> {
+  late PlaybackClockValue _value;
+  PlaybackClockValue _read() {
+    final preview = widget.previewPositionListenable.value;
+    final totalMs = widget.totalDuration.inMilliseconds.clamp(0, 359999999);
+    final position = Duration(
+      milliseconds:
+          (preview?.round() ?? widget.positionListenable.value.inMilliseconds)
+              .clamp(0, totalMs),
+    );
+    return (
+      elapsed: playbackClockLabel(position),
+      total: playbackClockLabel(widget.totalDuration),
+      remaining: playbackRemainingSeconds(position, widget.totalDuration),
+    );
+  }
+
+  void _changed() {
+    final next = _read();
+    if (next != _value) setState(() => _value = next);
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    _value = _read();
+    widget.positionListenable.addListener(_changed);
+    widget.previewPositionListenable.addListener(_changed);
+  }
+
+  @override
+  void didUpdateWidget(covariant PlaybackClockBuilder oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.positionListenable, widget.positionListenable)) {
+      oldWidget.positionListenable.removeListener(_changed);
+      widget.positionListenable.addListener(_changed);
+    }
+    if (!identical(
+      oldWidget.previewPositionListenable,
+      widget.previewPositionListenable,
+    )) {
+      oldWidget.previewPositionListenable.removeListener(_changed);
+      widget.previewPositionListenable.addListener(_changed);
+    }
+    _value = _read();
+  }
+
+  @override
+  void dispose() {
+    widget.positionListenable.removeListener(_changed);
+    widget.previewPositionListenable.removeListener(_changed);
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context, _value);
+}
+
 class PlaybackProgressHeader extends StatelessWidget {
   const PlaybackProgressHeader({
     super.key,
@@ -27,43 +105,29 @@ class PlaybackProgressHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return ValueListenableBuilder<double?>(
-      valueListenable: previewPositionListenable,
-      builder: (context, previewPositionMs, _) {
-        return ValueListenableBuilder<Duration>(
-          valueListenable: positionListenable,
-          builder: (context, position, _) {
-            final displayedPosition = previewPositionMs == null
-                ? position
-                : Duration(milliseconds: previewPositionMs.round());
-            final totalMs = totalDuration.inMilliseconds.clamp(0, 359999999);
-            final clampedPosition = Duration(
-              milliseconds: displayedPosition.inMilliseconds.clamp(0, totalMs),
-            );
-            final remainingSeconds = playbackRemainingSeconds(
-              clampedPosition,
-              totalDuration,
-            );
-            final elapsedLabel = playbackClockLabel(clampedPosition);
-            final totalLabel = playbackClockLabel(totalDuration);
+    return PlaybackClockBuilder(
+      positionListenable: positionListenable,
+      previewPositionListenable: previewPositionListenable,
+      totalDuration: totalDuration,
+      builder: (context, clock) {
+        final remainingSeconds = clock.remaining;
+        final elapsedLabel = clock.elapsed;
+        final totalLabel = clock.total;
 
-            return Semantics(
-              label:
-                  '已播放 $elapsedLabel，歌曲时长 $totalLabel，剩余 $remainingSeconds 秒',
-              child: Opacity(
-                opacity: .5,
-                child: Text(
-                  '${remainingSeconds}s',
-                  maxLines: 1,
-                  overflow: TextOverflow.fade,
-                  softWrap: false,
-                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ),
-            );
-          },
+        return Semantics(
+          label: '已播放 $elapsedLabel，歌曲时长 $totalLabel，剩余 $remainingSeconds 秒',
+          child: Opacity(
+            opacity: .5,
+            child: Text(
+              '${remainingSeconds}s',
+              maxLines: 1,
+              overflow: TextOverflow.fade,
+              softWrap: false,
+              style: Theme.of(
+                context,
+              ).textTheme.headlineSmall?.copyWith(fontWeight: FontWeight.w700),
+            ),
+          ),
         );
       },
     );

@@ -13,7 +13,55 @@ KaraokeGlyphTiming timing(int start, [int span = 120000]) => KaraokeGlyphTiming(
 );
 
 void main() {
-  final config = KaraokeMotionConfig();
+  final config = KaraokeMotionConfig(fastOvershootFraction: 0);
+  test(
+    'fast lift gently crosses its retained height then settles, deterministically',
+    () {
+      final config = KaraokeMotionConfig();
+      final fast = timing(0, 80000), slow = timing(0, 600000);
+      final wave = KaraokeFollowerTimeline([
+        KaraokeFollowerGlyph(timing: fast, chain: 0),
+      ], config);
+      expect(wave.ownAt(0, 700000), greaterThan(1));
+      expect(wave.ownAt(0, 1200000), 1);
+      expect(karaokeGlyphLiftAt(700000, slow, config), lessThanOrEqualTo(1));
+      for (final hz in [60, 90, 120]) {
+        double previous = 0, velocity = 0, peak = 0;
+        for (var frame = 0; frame <= hz * 2; frame++) {
+          final time = (frame * 1000000 / hz).round();
+          final next = wave.ownAt(0, time);
+          final speed = (next - previous) * hz;
+          expect((next - previous).abs(), lessThan(.06));
+          expect((speed - velocity).abs(), lessThan(1.1));
+          expect(next, karaokeGlyphLiftAt(time, fast, config));
+          if (next > peak) peak = next;
+          previous = next;
+          velocity = speed;
+        }
+        expect(peak, inExclusiveRange(1, 1.15));
+        expect(previous, 1);
+      }
+    },
+  );
+
+  test(
+    'follower pre-lift grows modestly without reaching the fourth neighbour',
+    () {
+      final motion = KaraokeFollowerTimeline([
+        for (var i = 0; i < 5; i++)
+          KaraokeFollowerGlyph(timing: timing(i * 2000000, 600000), chain: 0),
+      ], config);
+      final old = KaraokeFollowerTimeline([
+        for (var i = 0; i < 5; i++)
+          KaraokeFollowerGlyph(timing: timing(i * 2000000, 600000), chain: 0),
+      ], KaraokeMotionConfig(followerWeights: const [.24, .12, .05]));
+      for (var i = 1; i <= 3; i++) {
+        expect(motion.liftAt(i, 500000), greaterThan(old.liftAt(i, 500000)));
+        expect(motion.liftAt(i, 500000), lessThan(old.liftAt(i, 500000) * 1.5));
+      }
+      expect(motion.liftAt(4, 500000), 0);
+    },
+  );
   test('complete Han and kana graphemes use compact-script continuity', () {
     for (final text in ['中文', 'かなカナ', 'か\u3099', '\u{20000}\u{E0100}']) {
       expect(karaokeHasCompactFollowerScript(text), isTrue, reason: text);
@@ -22,6 +70,117 @@ void main() {
       expect(karaokeHasCompactFollowerScript(text), isFalse, reason: text);
     }
   });
+
+  test(
+    'fast recoil and three followers stay bounded at all rates with seek equivalence',
+    () {
+      final config = KaraokeMotionConfig();
+      final glyphs = [
+        for (var i = 0; i < 8; i++)
+          KaraokeFollowerGlyph(timing: timing(i * 80000, 80000), chain: 0),
+      ];
+      final wave = KaraokeFollowerTimeline(glyphs, config);
+      final direct = KaraokeFollowerTimeline(glyphs, config);
+      final output = Float64List(8), target = Float64List(8);
+      const retainedHeight = 40 * .07;
+      const heightScale = .07 / .055;
+      for (final hz in [60, 90, 120]) {
+        for (final rate in [.75, 1.0, 1.5, 2.0]) {
+          final previous = Float64List(8), velocities = Float64List(8);
+          var peak = 0.0;
+          for (var frame = 0; frame <= hz * 3; frame++) {
+            final us = (frame * 1000000 / hz * rate).round();
+            wave.writeOffsets(us, 40, output);
+            for (var i = 0; i < 8; i++) {
+              final velocity = (output[i] - previous[i]) * hz;
+              expect(output[i], inInclusiveRange(-retainedHeight * 1.1, 0));
+              expect(
+                (output[i] - previous[i]).abs(),
+                lessThan(.35 * heightScale),
+              );
+              expect(
+                (velocity - velocities[i]).abs(),
+                lessThan(5 * heightScale),
+              );
+              previous[i] = output[i];
+              velocities[i] = velocity;
+              if (-output[i] > peak) peak = -output[i];
+            }
+          }
+          expect(peak, greaterThan(retainedHeight));
+          expect(output, everyElement(closeTo(-retainedHeight, 1e-12)));
+        }
+      }
+      for (final us in [700000, 100000, 1300000, 700000]) {
+        wave.writeOffsets(us, 40, output);
+        direct.writeOffsets(us, 40, target);
+        expect(output, target);
+        for (var i = 0; i < 60; i++) {
+          wave.writeOffsets(us, 40, output);
+          expect(
+            output,
+            target,
+            reason: 'a paused media clock cannot integrate recoil',
+          );
+        }
+      }
+    },
+  );
+
+  test(
+    'word bridge respects local gaps and backwards time, independently of highlight',
+    () {
+      final previous = timing(0, 200000);
+      expect(
+        karaokeFollowerTimingConnected(
+          previous,
+          timing(230000, 100000),
+          config,
+          wordBoundary: true,
+        ),
+        isTrue,
+      );
+      expect(
+        karaokeFollowerTimingConnected(
+          previous,
+          timing(236000, 100000),
+          config,
+          wordBoundary: true,
+        ),
+        isFalse,
+      );
+      expect(
+        karaokeFollowerTimingConnected(
+          previous,
+          timing(600000),
+          config,
+          wordBoundary: true,
+        ),
+        isFalse,
+      );
+      expect(
+        karaokeFollowerTimingConnected(
+          timing(600000),
+          previous,
+          config,
+          wordBoundary: true,
+        ),
+        isFalse,
+      );
+      for (final value in [-.1, .16, double.nan]) {
+        expect(
+          () => KaraokeMotionConfig(fastOvershootFraction: value),
+          throwsRangeError,
+        );
+      }
+      expect(
+        () => KaraokeMotionConfig(
+          maxWordFollowerGap: const Duration(milliseconds: 121),
+        ),
+        throwsRangeError,
+      );
+    },
+  );
 
   test('short gaps connect motion only, never the real highlight gap', () {
     final before = timing(0, 190000), next = timing(220000, 190000);
@@ -108,8 +267,8 @@ void main() {
     },
   );
 
-  test('354 height, direction and slow autonomous timing are unchanged', () {
-    expect(config.liftHeightFraction, .055);
+  test('seven percent height retains direction and slow autonomous timing', () {
+    expect(config.liftHeightFraction, .07);
     expect(config.liftDuration, const Duration(milliseconds: 760));
     final glyph = timing(0);
     final motion = KaraokeFollowerTimeline([
@@ -131,8 +290,8 @@ void main() {
       );
     }
     expect(karaokeLiftPixels(0, 40, config), 0);
-    expect(karaokeLiftPixels(1, 40, config), -2.2);
-    expect(motion.ownAt(0, 120000), lessThan(.1));
+    expect(karaokeLiftPixels(1, 40, config), closeTo(-2.8, 1e-12));
+    expect(motion.ownAt(0, 120000), lessThan(.15));
     expect(motion.ownAt(0, 760000), 1);
   });
 
@@ -181,10 +340,10 @@ void main() {
         final expected = 1 - (1 - own) * remaining;
         expect(motion.liftAt(i, us), expected);
         expect(expected, inInclusiveRange(own - 1e-12, 1));
-        expect(output[i], closeTo(-2.2 * expected, 1e-12));
+        expect(output[i], closeTo(-2.8 * expected, 1e-12));
       }
     }
-    expect(output, everyElement(-2.2));
+    expect(output, everyElement(closeTo(-2.8, 1e-12)));
   });
 
   test('breaks disconnect pre-lift while preserving own time', () {
@@ -225,9 +384,12 @@ void main() {
             for (var i = 0; i < 12; i++) {
               final displacement = previous[i] - next[i];
               final velocity = displacement * hz;
-              expect(next[i], inInclusiveRange(-2.2, 0));
-              expect(displacement, inInclusiveRange(-1e-12, .3));
-              expect((velocity - velocities[i]).abs(), lessThan(4));
+              expect(next[i], inInclusiveRange(-40 * .07, 0));
+              expect(displacement, inInclusiveRange(-1e-12, .3 * .07 / .055));
+              expect(
+                (velocity - velocities[i]).abs(),
+                lessThan(4 * .07 / .055),
+              );
               previous[i] = next[i];
               velocities[i] = velocity;
             }
@@ -257,26 +419,33 @@ void main() {
     }
   });
 
-  test('zero traction is an exact 354 baseline with unchanged highlight', () {
-    final baseline = KaraokeMotionConfig(followerWeights: const [0, 0, 0]);
-    final glyphs = [
-      for (var i = 0; i < 6; i++)
-        KaraokeFollowerGlyph(timing: timing(i * 100000), chain: 0),
-    ];
-    final motion = KaraokeFollowerTimeline(glyphs, baseline);
-    for (var us = 0; us < 1600000; us += 16667) {
-      for (var i = 0; i < glyphs.length; i++) {
-        expect(
-          motion.liftAt(i, us),
-          closeTo(karaokeGlyphLiftAt(us, glyphs[i].timing, baseline), 1e-12),
-        );
-        expect(
-          karaokeGlyphFrame(us, glyphs[i].timing, config).highlightProgress,
-          karaokeGlyphFrame(us, glyphs[i].timing, baseline).highlightProgress,
-        );
+  test(
+    'internal original-curve/no-recoil baseline has unchanged highlight',
+    () {
+      final baseline = KaraokeMotionConfig(
+        followerWeights: const [0, 0, 0],
+        curve: KaraokeLiftCurve.smoothTop,
+        fastOvershootFraction: 0,
+      );
+      final glyphs = [
+        for (var i = 0; i < 6; i++)
+          KaraokeFollowerGlyph(timing: timing(i * 100000), chain: 0),
+      ];
+      final motion = KaraokeFollowerTimeline(glyphs, baseline);
+      for (var us = 0; us < 1600000; us += 16667) {
+        for (var i = 0; i < glyphs.length; i++) {
+          expect(
+            motion.liftAt(i, us),
+            closeTo(karaokeGlyphLiftAt(us, glyphs[i].timing, baseline), 1e-12),
+          );
+          expect(
+            karaokeGlyphFrame(us, glyphs[i].timing, config).highlightProgress,
+            karaokeGlyphFrame(us, glyphs[i].timing, baseline).highlightProgress,
+          );
+        }
       }
-    }
-  });
+    },
+  );
 
   test(
     '354 entry/exit envelope fades the entire follower pose, without residuals',

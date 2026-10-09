@@ -83,52 +83,55 @@ void main() {
       }
     }
   });
-  test('clock corrects decoder drift quickly while keeping motion forward', () {
-    const current = Duration(seconds: 2);
-    const step = Duration(milliseconds: 16);
-    for (final drift in [-20000, 20000]) {
-      final next = karaokeAdvanceVisualClock(
+  test(
+    'clock corrects decoder drift without a visible speed surge or stall',
+    () {
+      const current = Duration(seconds: 2);
+      const step = Duration(milliseconds: 16);
+      for (final drift in [-20000, 20000]) {
+        final next = karaokeAdvanceVisualClock(
+          current,
+          current + step + Duration(microseconds: drift),
+          step,
+        );
+        expect((next - current).inMicroseconds, inInclusiveRange(14720, 17280));
+      }
+      final ahead = karaokeAdvanceVisualClock(
         current,
-        current + step + Duration(microseconds: drift),
+        current + step + const Duration(milliseconds: 80),
         step,
       );
-      expect((next - current).inMicroseconds, inInclusiveRange(14720, 17280));
-    }
-    final ahead = karaokeAdvanceVisualClock(
-      current,
-      current + step + const Duration(milliseconds: 80),
-      step,
-    );
-    final behind = karaokeAdvanceVisualClock(
-      current,
-      current + step - const Duration(milliseconds: 80),
-      step,
-    );
-    expect(ahead - current, greaterThan(step));
-    expect(behind, greaterThan(current));
-    expect(behind - current, lessThan(step));
-    var recovering = current;
-    for (var frame = 1; frame <= 3; frame++) {
-      recovering = karaokeAdvanceVisualClock(
-        recovering,
-        current + step * frame + const Duration(milliseconds: 80),
+      final behind = karaokeAdvanceVisualClock(
+        current,
+        current + step - const Duration(milliseconds: 80),
         step,
       );
-    }
-    expect(
-      (current + step * 3 + const Duration(milliseconds: 80) - recovering)
-          .inMicroseconds,
-      lessThan(30000),
-    );
-    expect(
-      karaokeAdvanceVisualClock(
-        current,
-        current + step + const Duration(milliseconds: 220),
-        step,
-      ),
-      current + step + const Duration(milliseconds: 220),
-    );
-  });
+      expect(ahead - current, greaterThan(step));
+      expect(behind, greaterThan(current));
+      expect(behind - current, lessThan(step));
+      var recovering = current;
+      for (var frame = 1; frame <= 3; frame++) {
+        recovering = karaokeAdvanceVisualClock(
+          recovering,
+          current + step * frame + const Duration(milliseconds: 80),
+          step,
+        );
+      }
+      expect(
+        (current + step * 3 + const Duration(milliseconds: 80) - recovering)
+            .inMicroseconds,
+        inInclusiveRange(70000, 80000),
+      );
+      expect(
+        karaokeAdvanceVisualClock(
+          current,
+          current + step + const Duration(milliseconds: 220),
+          step,
+        ),
+        current + const Duration(microseconds: 17280),
+      );
+    },
+  );
   test('visual clock re-anchors continuously across playback rates', () {
     for (final rate in [.75, 1.0, 1.5, 2.0]) {
       const anchor = Duration(seconds: 10);

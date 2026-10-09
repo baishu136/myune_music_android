@@ -173,7 +173,9 @@ void main() {
     expect(palette.colors, contains(Colors.black));
     for (final color in palette.colors.where((c) => c != Colors.black)) {
       final hsl = HSLColor.fromColor(color);
-      expect(hsl.lightness, inInclusiveRange(.375, .685));
+      // Role pigments retain the cover's dark accents rather than forcing
+      // every vivid-family colour up to .38 (362 fidelity change).
+      expect(hsl.lightness, inInclusiveRange(.215, .685));
       expect(hsl.saturation, lessThanOrEqualTo(.96));
     }
   });
@@ -313,7 +315,9 @@ void main() {
               ).saturation;
             }
             final average = saturation / (96 * 160);
-            expect(average, greaterThan(.35));
+            // This sample includes a muted pigment; do not force it vivid to
+            // meet a historical fixed saturation floor. Still reject washout.
+            expect(average, greaterThan(.25));
             debugPrint(
               'Extracted synthetic palette @${seconds}s: mean HSL saturation=$average',
             );
@@ -329,10 +333,9 @@ void main() {
           final broad = await _render(shader, isolated, motion: 0);
           final peak = _meanLuma(broad, 23, 30, 31, 46);
           final distant = _meanLuma(broad, 78, 128, 86, 144);
-          // An opaque blob must not spread into uncovered far canvas. White
-          // occupies the explicit blob1 slot, not the former fourth light ABI.
+          // Opaque pigment cores remain distinct from the new 30% canvas wash.
           expect(peak, greaterThan(160));
-          expect(distant, lessThan(30));
+          expect(distant, lessThan(peak * .40));
           final dim0 = await _render(shader, _colourful, dim: 0);
           final dim6 = await _render(shader, _colourful, dim: .6);
           final capped = await _render(shader, _colourful, dim: 1);

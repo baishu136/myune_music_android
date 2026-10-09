@@ -121,7 +121,12 @@ void main() {
             'active cache retained; next cache must not be built at the boundary',
       );
       await tester.pump(const Duration(milliseconds: 1));
-      expect(debugKaraokeLayoutBuildCount, layouts + 1);
+      expect(
+        debugKaraokeLayoutBuildCount,
+        layouts,
+        reason:
+            'a macrotask still waits for the active scroll to release idle work',
+      );
       for (var f = 0; f < 60; f++) {
         await tester.pump(const Duration(microseconds: 16667));
       }

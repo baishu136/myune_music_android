@@ -54,6 +54,11 @@ class ThemeSettingsSection extends StatelessWidget {
         ),
         const ThemeSelectionScreen(),
         SwitchListTile(
+          title: const Text('主页禁用主题色'),
+          value: settings.disableHomeThemeColor,
+          onChanged: settings.setDisableHomeThemeColor,
+        ),
+        SwitchListTile(
           title: Row(
             children: [
               Text('动态主题配色', style: Theme.of(context).textTheme.titleMedium),

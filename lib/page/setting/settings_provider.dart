@@ -64,7 +64,7 @@ GroupViewMode _decodeGroupViewMode(
 class SettingsProvider with ChangeNotifier {
   static const double defaultLyricFontSize = 20.0;
   static const double minLyricFontSize = 12.0;
-  static const double maxLyricFontSize = 36.0;
+  static const double maxLyricFontSize = 40.0;
   static double normalizedLyricFontSize(double size) => size.isFinite
       ? size.clamp(minLyricFontSize, maxLyricFontSize)
       : defaultLyricFontSize;
@@ -80,6 +80,7 @@ class SettingsProvider with ChangeNotifier {
   static const _lyricAlignmentKey = 'lyricAlignment';
   static const _useBlurBackgroundKey = 'useBlurBackground'; // 模糊背景设置的 key
   static const _useDynamicColorKey = 'useDynamicColor'; // 动态颜色设置的 key
+  static const _disableHomeThemeColorKey = 'disableHomeThemeColor';
   static const _allowAnyFormatKey = 'allowAnyFormat'; // 允许任何格式设置的 key
   static const _forceSingleLineLyricKey =
       'forceSingleLineLyric'; // 强制单行歌词设置的 key
@@ -174,6 +175,7 @@ class SettingsProvider with ChangeNotifier {
   TextAlign _lyricAlignment = TextAlign.left; // 默认左侧对齐
   bool _useBlurBackground = true; // 默认启用模糊背景
   bool _useDynamicColor = true; // 默认启用动态颜色
+  bool _disableHomeThemeColor = false;
   bool _allowAnyFormat = false; // 默认不允许任何格式
   bool _forceSingleLineLyric = false; // 默认不强制单行显示歌词
   double _lyricVerticalSpacing = 6.0; // 默认歌词垂直间距为6.0
@@ -268,6 +270,7 @@ class SettingsProvider with ChangeNotifier {
   TextAlign get lyricAlignment => _lyricAlignment;
   bool get useBlurBackground => _useBlurBackground; // 获取模糊背景设置
   bool get useDynamicColor => _useDynamicColor; // 获取动态颜色设置
+  bool get disableHomeThemeColor => _disableHomeThemeColor;
   bool get allowAnyFormat => _allowAnyFormat; // 获取允许任何格式设置
   bool get forceSingleLineLyric => _forceSingleLineLyric; // 获取强制单行歌词设置
   double get lyricVerticalSpacing => _lyricVerticalSpacing; // 获取歌词垂直间距
@@ -397,6 +400,8 @@ class SettingsProvider with ChangeNotifier {
         _readPreference<bool>(prefs, _useBlurBackgroundKey) ?? true;
     _useDynamicColor =
         _readPreference<bool>(prefs, _useDynamicColorKey) ?? true; // 加载动态颜色设置
+    _disableHomeThemeColor =
+        _readPreference<bool>(prefs, _disableHomeThemeColorKey) ?? false;
     _allowAnyFormat =
         _readPreference<bool>(prefs, _allowAnyFormatKey) ?? false; // 加载允许任何格式设置
     _forceSingleLineLyric =
@@ -735,6 +740,14 @@ class SettingsProvider with ChangeNotifier {
       final prefs = await SharedPreferences.getInstance();
       await prefs.setBool(_useDynamicColorKey, value);
     }
+  }
+
+  Future<void> setDisableHomeThemeColor(bool value) async {
+    if (_disableHomeThemeColor == value) return;
+    _disableHomeThemeColor = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_disableHomeThemeColorKey, value);
   }
 
   void setEnableOnlineLyrics(bool value) async {

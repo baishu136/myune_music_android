@@ -15,6 +15,23 @@ import '../../services/interaction_performance_controller.dart';
 import 'fluid_background_painter.dart';
 
 class FluidPlaybackBackground extends StatefulWidget {
+  /// Loads resources without mounting an extra route, shader instance or ticker.
+  static Future<void> prewarm({
+    required Uint8List bytes,
+    required String identity,
+    required int cacheGeneration,
+    required Color fallbackSeed,
+  }) async {
+    await Future.wait([
+      _FluidPlaybackBackgroundState._loadProgram(),
+      fluidArtworkPaletteCache.resolve(
+        key: fluidArtworkPaletteKey(identity, cacheGeneration, bytes),
+        bytes: bytes,
+        fallbackSeed: fallbackSeed,
+      ),
+    ]);
+  }
+
   const FluidPlaybackBackground({
     super.key,
     required this.artworkBytes,
@@ -53,6 +70,13 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
   static Future<ui.FragmentProgram>? _programRequest;
   static ui.FragmentProgram? _program;
   static bool _shaderUnavailable = false;
+  static Future<ui.FragmentProgram> _loadProgram() => _programRequest ??=
+      ui.FragmentProgram.fromAsset('shaders/fluid_background.frag').then((
+        program,
+      ) {
+        _program = program;
+        return program;
+      });
 
   late final FluidBackgroundController _controller;
   late FluidPalette _entryPalette;
@@ -290,15 +314,11 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
           _routeTransitionActive) {
         return;
       }
+      // Async asset/decode work must not monopolize the UI idle queue.
+      lease.release();
       if (_shader == null) {
         try {
-          final program = await (_programRequest ??=
-              ui.FragmentProgram.fromAsset(
-                'shaders/fluid_background.frag',
-              ).then((program) {
-                _program = program;
-                return program;
-              }));
+          final program = await _loadProgram();
           if (!mounted || generation != _preparationGeneration) return;
           _shader = program.fragmentShader();
         } catch (_) {
@@ -315,6 +335,7 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
               fallbackSeed: fallbackSeed,
             );
       if (!mounted || generation != _preparationGeneration) return;
+      _entryPalette = palette;
       _controller.setPalette(palette);
       setState(() {});
     } finally {

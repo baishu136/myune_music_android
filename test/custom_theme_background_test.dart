@@ -133,7 +133,10 @@ void main() {
     );
 
     expect(find.byKey(const ValueKey('cover-follow-background')), findsOne);
-    expect(find.byType(ImageFiltered), findsNothing);
+    expect(
+      tester.widget<ImageFiltered>(find.byType(ImageFiltered)).enabled,
+      isFalse,
+    );
     expect(find.text('sharp background'), findsOne);
   });
 

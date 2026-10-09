@@ -323,72 +323,16 @@ FluidPalette buildWeightedFluidPalette(
     retained.removeAt(replace);
     retained.insert(2, warm);
   }
-  // Blob 1 must contain a real, substantial vivid pigment, not
-  // whichever grey happened to land second after hue sorting. Only boost c1;
-  // leave genuine shadows/neutral auxiliaries and the real warm c2 unchanged.
-  var vividAccentLocked = false;
-  if (profile.vivid && !profile.dark && !profile.monochrome) {
-    var hero = -1;
-    var bestScore = 0.0;
-    for (var i = 0; i < retained.length; i++) {
-      if (warm != null && i == 2) continue;
-      final hsl = HSLColor.fromColor(retained[i]);
-      if (hsl.saturation < .20 || hsl.lightness < .08) continue;
-      var score = 0.0;
-      for (final sample in extracted) {
-        final normalized = _normalizeFluidColor(sample.color, profile);
-        if (_colorDistance(retained[i], normalized) < .10) {
-          score +=
-              sample.proportion.clamp(0.0, 1.0) *
-              HSLColor.fromColor(sample.color).saturation;
-        }
-      }
-      if (score > bestScore) {
-        hero = i;
-        bestScore = score;
-      }
-    }
-    if (hero >= 0) {
-      final color = retained[hero];
-      retained[hero] = retained[1];
-      retained[1] = HSLColor.fromColor(color)
-          .withSaturation(HSLColor.fromColor(color).saturation.clamp(.70, .95))
-          .withLightness(HSLColor.fromColor(color).lightness.clamp(.35, .55))
-          .toColor();
-      vividAccentLocked = true;
-    }
+  // Pool nearby hue families so a gradient's many small bins retain their area.
+  // Area dominates lead selection; contrast alone cannot promote a tiny speck.
+  // Only per-cover work. Keep the observed saturation, not a .75/.85 floor.
+  final roles = _artworkBlobPigments(extracted, profile);
+  if (roles != null) {
+    if (retained.contains(Colors.black)) retained[0] = Colors.black;
+    retained[1] = roles.$1;
+    retained[3] = roles.$2;
   }
-  // Assign a real contrasting pigment to blob 2, rather than leaving whichever
-  // auxiliary grey happens to occupy slot 3. Pool/selection happens per cover,
-  // never in paint. A single-hue or monochrome cover does not invent a hue.
-  final lead = HSLColor.fromColor(retained[1]);
-  Color? contrast;
-  var contrastScore = -1.0;
-  for (final sample in extracted) {
-    final hsl = HSLColor.fromColor(sample.color);
-    if (sample.proportion < .01 || hsl.saturation < .20 || hsl.lightness < .025) {
-      continue;
-    }
-    final rawHue = (lead.hue - hsl.hue).abs();
-    final hueDistance = (rawHue > 180 ? 360 - rawHue : rawHue) / 180;
-    final score =
-        hueDistance * .70 + hsl.saturation * .20 + sample.proportion * .10;
-    if (score > contrastScore) {
-      contrastScore = score;
-      contrast = _normalizeFluidColor(sample.color, profile);
-    }
-  }
-  if (contrast != null && !profile.monochrome) retained[3] = contrast;
-  if (profile.vivid && !profile.dark && !profile.monochrome) {
-    for (final slot in [1, 3]) {
-      final hsl = HSLColor.fromColor(retained[slot]);
-      if (hsl.saturation < .20 || hsl.lightness < .08) continue;
-      retained[slot] = hsl
-          .withSaturation(hsl.saturation.clamp(.75, .85))
-          .withLightness(hsl.lightness.clamp(.35, .55))
-          .toColor();
-    }
-  }
+  final vividAccentLocked = roles != null && profile.vivid && !profile.dark;
   var darkest = retained.first;
   for (final color in retained) {
     if (HSLColor.fromColor(color).lightness <
@@ -421,6 +365,92 @@ FluidPalette buildWeightedFluidPalette(
         // Legacy snapshot/uniform metadata, not additive light energy.
         : (profile.monochrome ? .30 : .50),
   );
+}
+
+(Color, Color)? _artworkBlobPigments(
+  List<FluidColorSample> samples,
+  _FluidArtworkProfile profile,
+) {
+  if (profile.monochrome) return null;
+  final families = <FluidColorSample>[];
+  final familyHues = <double>[];
+  for (final sample in samples) {
+    final hsl = HSLColor.fromColor(sample.color);
+    // Pale paper/skin highlights may inform the base, but must not own a
+    // pigment blob and crowd out the actual coloured printing underneath.
+    if (sample.proportion <= 0 ||
+        hsl.saturation < .12 ||
+        hsl.lightness < .025 ||
+        hsl.lightness > .85) {
+      continue;
+    }
+    var match = -1;
+    for (var i = 0; i < families.length; i++) {
+      final family = families[i];
+      final other = HSLColor.fromColor(family.color);
+      // Changing the representative must not drift the family hue anchor.
+      final delta = (hsl.hue - familyHues[i]).abs();
+      if ((delta > 180 ? 360 - delta : delta) <= 18 &&
+          (hsl.saturation - other.saturation).abs() <= .24) {
+        match = i;
+        break;
+      }
+    }
+    if (match < 0) {
+      families.add(sample);
+      familyHues.add(hsl.hue);
+    } else {
+      final family = families[match];
+      double chroma(Color c) {
+        final values = [c.r, c.g, c.b]..sort();
+        return values.last - values.first;
+      }
+
+      families[match] = FluidColorSample(
+        chroma(sample.color) > chroma(family.color)
+            ? sample.color
+            : family.color,
+        family.proportion + sample.proportion,
+      );
+    }
+  }
+  // A sole pigment cannot supply two distinct roles. Keep the original
+  // monochromatic/pale auxiliaries instead of duplicating it over both slots.
+  if (families.length < 2) return null;
+  double areaScore(FluidColorSample s) =>
+      s.proportion * (.75 + .25 * HSLColor.fromColor(s.color).saturation);
+  families.sort((a, b) => areaScore(b).compareTo(areaScore(a)));
+  final lead = families.first;
+  final total = samples.fold<double>(
+    0,
+    (sum, sample) => sum + sample.proportion,
+  );
+  var companion = lead;
+  var bestScore = -1.0;
+  final leadHue = HSLColor.fromColor(lead.color).hue;
+  for (final sample in families.skip(1)) {
+    if (sample.proportion < total * .03) continue;
+    final delta = (leadHue - HSLColor.fromColor(sample.color).hue).abs();
+    final hue = (delta > 180 ? 360 - delta : delta) / 180;
+    final score = (sample.proportion / lead.proportion) * (.45 + .55 * hue);
+    if (score > bestScore) {
+      bestScore = score;
+      companion = sample;
+    }
+  }
+  Color pigment(Color color) {
+    final hsl = HSLColor.fromColor(color);
+    return hsl
+        .withSaturation(hsl.saturation.clamp(0.0, .95))
+        .withLightness(
+          profile.dark
+              ? hsl.lightness.clamp(0.0, .38)
+              : hsl.lightness.clamp(.22, .60),
+        )
+        .toColor();
+  }
+
+  return (pigment(lead.color), pigment(companion.color));
 }
 
 Color? _significantWarmAccent(
@@ -521,7 +551,7 @@ Color _normalizeFluidColor(Color color, _FluidArtworkProfile profile) {
   final normalizedSaturation = hsl.saturation < .20
       ? hsl.saturation
       : profile.vivid
-      ? hsl.saturation.clamp(.34, .95)
+      ? hsl.saturation.clamp(0.0, .95)
       : hsl.saturation.clamp(.08, .55);
   return hsl
       .withSaturation(normalizedSaturation)

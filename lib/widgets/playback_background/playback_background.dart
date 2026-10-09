@@ -5,7 +5,6 @@ import 'package:flutter/material.dart';
 import 'package:mpv_audio_kit/mpv_audio_kit.dart';
 
 import '../../models/fluid_background_state.dart';
-import '../artwork_image.dart';
 import '../custom_theme_background.dart';
 import 'fluid_background.dart';
 
@@ -96,11 +95,7 @@ class _PlaybackBackgroundState extends State<PlaybackBackground> {
         widget.coverBytes!.isNotEmpty) {
       try {
         await precacheImage(
-          artworkImageProvider(
-            context,
-            widget.coverBytes!,
-            size: ArtworkSize.medium,
-          ),
+          MemoryImage(widget.coverBytes!),
           context,
         ).timeout(const Duration(milliseconds: 220));
       } catch (_) {

@@ -11,6 +11,273 @@ import 'package:myune_music/widgets/karaoke_motion.dart';
 
 void main() {
   testWidgets(
+    'slow real syllable retains feather and coverage across cold/hot rendering',
+    (tester) async {
+      await _fonts(tester);
+      final line = LyricLine(
+        timestamp: Duration.zero,
+        texts: ['I'],
+        tokens: [
+          [
+            LyricToken(
+              text: 'I',
+              start: const Duration(seconds: 1),
+              end: const Duration(seconds: 9),
+            ),
+          ],
+        ],
+      );
+      await tester.pumpWidget(_host('I', sourceLine: line));
+      final dynamic painter = _painter(tester), cache = painter.cache;
+      final dynamic fragment = cache.tokens.single.fragments.single;
+      final double feather = fragment.feather;
+      expect(feather, lessThan(cache.feather));
+      final dynamic colors = painter.colors.withColors(
+        Colors.white,
+        Colors.white.withValues(alpha: .36),
+      );
+      late Uint8List cold;
+      await tester.runAsync(() async {
+        cold = await _render(
+          cache,
+          (canvas) => cache.paint(canvas, 5000000, 1.0, colors),
+        );
+      });
+      await _warm(tester, cache);
+      expect(fragment.feather, feather);
+      final layouts = debugKaraokeTextLayoutCount;
+      await tester.runAsync(() async {
+        final warm = await _render(
+          cache,
+          (canvas) => cache.paint(canvas, 5000000, 1.0, colors),
+        );
+        var difference = 0, inkPixels = 0;
+        for (var i = 0; i < cold.length; i += 4) {
+          if (cold[i] > 10 || warm[i] > 10) {
+            difference += (cold[i] - warm[i]).abs();
+            inkPixels++;
+          }
+        }
+        expect(inkPixels, greaterThan(20));
+        expect(difference / inkPixels, lessThan(12));
+        final sums = <int>[];
+        for (final time in [
+          4000000,
+          4200000,
+          4400000,
+          4600000,
+          4800000,
+          5000000,
+        ]) {
+          final bytes = await _render(
+            cache,
+            (canvas) => cache.paint(canvas, time, 1.0, colors),
+          );
+          var sum = 0;
+          for (var i = 0; i < bytes.length; i += 4) {
+            sum += bytes[i];
+          }
+          sums.add(sum);
+        }
+        for (var i = 1; i < sums.length; i++) {
+          expect(sums[i], greaterThan(sums[i - 1]));
+        }
+      });
+      expect(debugKaraokeTextLayoutCount, layouts);
+      final dynamic timing = cache.tokens.single.units.single.timing;
+      expect(timing.sourceTokenStartUs, 1000000);
+      expect(timing.sourceTokenEndUs, 9000000);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'synthetic contiguous relay shares fixed feather in every fragment',
+    (tester) async {
+      await _fonts(tester);
+      final line = LyricLine(timestamp: Duration.zero, texts: ['slow words']);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            height: 600,
+            child: MobileLyricsList(
+              lines: [
+                line,
+                LyricLine(
+                  timestamp: const Duration(seconds: 8),
+                  texts: ['next'],
+                ),
+              ],
+              active: 0,
+              karaokeLyricsMode: KaraokeLyricsMode.all,
+              fontFamily: 'Coverage',
+              fontSize: 30,
+            ),
+          ),
+        ),
+      );
+      final dynamic cache = tester
+          .widget<CustomPaint>(
+            find.descendant(
+              of: find.byKey(const ValueKey('mobile_lyric_0')),
+              matching: find.byKey(
+                const ValueKey('mobile_karaoke_single_pass_paint'),
+              ),
+            ),
+          )
+          .painter;
+      final dynamic ink = cache.cache;
+      expect(ink.sweepRelays, isNotEmpty);
+      for (final dynamic token in ink.tokens) {
+        for (final dynamic fragment in token.fragments) {
+          if (fragment.relay != null) {
+            expect(fragment.feather, fragment.relay.feather);
+          }
+        }
+      }
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'symbol ink participates in the real cached sweep without relayout',
+    (tester) async {
+      await _fonts(tester);
+      for (final text in ['*****', '✱✱✱✱✱', '＊＊＊＊＊']) {
+        final line = LyricLine(
+          timestamp: Duration.zero,
+          texts: [text],
+          tokens: [
+            [
+              LyricToken(
+                text: text,
+                start: const Duration(seconds: 1),
+                end: const Duration(seconds: 3),
+              ),
+            ],
+          ],
+        );
+        await tester.pumpWidget(_host(text, sourceLine: line));
+        final dynamic painter = _painter(tester), cache = painter.cache;
+        final dynamic colors = painter.colors.withColors(
+          Colors.white,
+          Colors.white.withValues(alpha: .36),
+        );
+        await _warm(tester, cache);
+        final layouts = debugKaraokeTextLayoutCount;
+        final counts = <int>[];
+        await tester.runAsync(() async {
+          for (final time in [0, 2000000, 4000000]) {
+            final bytes = await _render(
+              cache,
+              (canvas) => cache.paint(canvas, time, 1.0, colors),
+            );
+            var white = 0;
+            for (var i = 0; i < bytes.length; i += 4) {
+              if (bytes[i] > 180 && bytes[i + 1] > 180 && bytes[i + 2] > 180) {
+                white++;
+              }
+            }
+            counts.add(white);
+          }
+        });
+        expect(counts.first, 0);
+        expect(
+          counts[1],
+          greaterThan(20),
+          reason: '$text must have visible partial highlighting',
+        );
+        expect(counts.last, greaterThan(counts[1] * 1.2));
+        expect(debugKaraokeTextLayoutCount, layouts);
+        for (final dynamic token in cache.tokens) {
+          for (final dynamic unit in token.units) {
+            expect(unit.timing.sourceTokenStartUs, 1000000);
+            expect(unit.timing.sourceTokenEndUs, 3000000);
+          }
+        }
+      }
+    },
+  );
+  testWidgets(
+    'a single-letter word hands motion across a short space without changing timing',
+    (tester) async {
+      await _fonts(tester);
+      const text = 'say I go';
+      final line = LyricLine(
+        timestamp: Duration.zero,
+        texts: [text, '静态翻译'],
+        tokens: [
+          [
+            LyricToken(
+              text: 'say ',
+              start: Duration.zero,
+              end: const Duration(milliseconds: 600),
+            ),
+            LyricToken(
+              text: 'I ',
+              start: const Duration(milliseconds: 600),
+              end: const Duration(milliseconds: 800),
+            ),
+            LyricToken(
+              text: 'go',
+              start: const Duration(milliseconds: 800),
+              end: const Duration(milliseconds: 1400),
+            ),
+          ],
+          const [],
+        ],
+      );
+      await tester.pumpWidget(_host(text, sourceLine: line));
+      final dynamic painter = _painter(tester), cache = painter.cache;
+      await _warm(tester, cache);
+      final all = <dynamic>[
+        for (final dynamic token in cache.tokens) ...token.units as List,
+      ];
+      final int index = all.indexWhere(
+        (u) => text.substring(u.range.start, u.range.end) == 'I',
+      );
+      expect(index, greaterThan(0));
+      final int probe = all[index].timing.liftStartUs - 30000;
+      expect(cache.followerTimeline.ownAt(index, probe), 0);
+      final layouts = debugKaraokeTextLayoutCount;
+      final buffer = cache.lifts;
+      final recorder = ui.PictureRecorder();
+      cache.paint(Canvas(recorder), probe, 1.0, painter.colors);
+      recorder.endRecording().dispose();
+      expect(cache.lifts[index], lessThan(-.01));
+      expect(all[index].timing.sourceTokenStartUs, 600000);
+      expect(all[index].timing.sourceTokenEndUs, 800000);
+      for (final us in [550000, 600000, 700000, 800000]) {
+        expect(
+          karaokeGlyphHighlightAt(us, all[index].timing),
+          ((us - 550000) / 250000).clamp(0.0, 1.0),
+        );
+      }
+      for (final hz in [60, 90, 120]) {
+        for (final rate in [.75, 1.0, 1.5, 2.0]) {
+          final previous = List<double>.filled(all.length, 0);
+          for (var frame = 0; frame < hz * 3; frame++) {
+            final time = (frame * 1000000 / hz * rate).round();
+            final recorder = ui.PictureRecorder();
+            cache.paint(Canvas(recorder), time, 1.0, painter.colors);
+            recorder.endRecording().dispose();
+            for (var i = 0; i < all.length; i++) {
+              final dy = cache.lifts[i] as double;
+              expect((dy - previous[i]).abs(), lessThan(.35));
+              expect(dy, inInclusiveRange(-cache.liftHeight * 1.1, 0));
+              expect(
+                cache.highlights[i],
+                karaokeGlyphHighlightAt(time, all[i].timing),
+              );
+              previous[i] = dy;
+            }
+          }
+        }
+      }
+      expect(identical(cache.lifts, buffer), isTrue);
+      expect(debugKaraokeTextLayoutCount, layouts);
+      expect(cache.drawTranslation, isTrue);
+    },
+  );
+  testWidgets(
     'Chinese and Japanese followers bridge short token gaps without moving highlight',
     (tester) async {
       await _fonts(tester);
@@ -163,7 +430,7 @@ void main() {
     (tester) async {
       await _fonts(tester);
       for (final text in [
-        'Following softly',
+        'Following  softly',
         'supercalifragilisticexpialidocious',
         '中文 歌词',
         'かな カナ',
@@ -511,6 +778,10 @@ void main() {
           .painter;
       await tester.pumpWidget(host(0));
       await tester.pump();
+      // Resource preparation has its own idle queue. Finish it before timing
+      // the 240ms ink handoff, rather than advancing that animation to warm.
+      await _warm(tester, rowPainter(0).cache);
+      await _warm(tester, rowPainter(1).cache);
       final dynamic before = rowPainter(0);
       final oldActive = before.colors.active;
       final oldInactive = before.colors.inactive;
@@ -844,11 +1115,11 @@ Future<void> _warm(WidgetTester tester, dynamic cache) async {
   cache.prepareImage();
   // The native raster callback arrives outside fake time, but the Future's
   // continuation was registered during build inside fake time. Pump both.
-  for (var i = 0; i < 20 && !cache.imageReady; i++) {
+  for (var i = 0; i < 80 && !cache.imageReady; i++) {
     await tester.runAsync(
       () => Future<void>.delayed(const Duration(milliseconds: 10)),
     );
-    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 20));
   }
   expect(cache.imageReady, isTrue);
 }

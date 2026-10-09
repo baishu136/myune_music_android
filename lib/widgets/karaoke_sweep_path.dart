@@ -1,6 +1,21 @@
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+/// Fixed for one cached sweep. Media-time speed, not noisy source samples or
+/// per-frame displacement, selects a narrower edge for long, slow syllables.
+double karaokeSweepFeather({
+  required double width,
+  required int durationUs,
+  required double baseline,
+}) {
+  if (!width.isFinite || width <= 0 || durationUs <= 0) return baseline;
+  final slow = (width * .22).clamp(4.0, math.min(8.0, baseline));
+  final speed = (width + baseline) * 1000000 / durationUs;
+  final t = ((speed - 12) / 36).clamp(0.0, 1.0);
+  final blend = t * t * (3 - 2 * t);
+  return slow + (baseline - slow) * blend;
+}
+
 /// Cached visual advance, excluding blank gaps. This changes only where a
 /// feathered highlight front is drawn, never a source token's timestamps or
 /// the shaped text/ink coverage. No allocations in the frame-time queries.

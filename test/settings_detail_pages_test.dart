@@ -145,7 +145,7 @@ void main() {
           tester.view.physicalSize.height / tester.view.devicePixelRatio,
         ),
       );
-      await controller.setFontSize(38);
+      await controller.setFontSize(40);
       await controller.setOutlineEnabled(true);
       await tester.pumpAndSettle();
       final previewTexts = tester
@@ -157,7 +157,7 @@ void main() {
           )
           .toList();
       expect(previewTexts, hasLength(2));
-      expect(previewTexts.last.style!.fontSize, 36);
+      expect(previewTexts.last.style!.fontSize, 40);
       expect(tester.getTopLeft(preview), top);
       await capture(tester, captureKey, 'desktop-preview-updated');
       expect(tester.takeException(), isNull);

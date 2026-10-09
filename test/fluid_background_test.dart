@@ -10,6 +10,31 @@ import 'package:myune_music/services/artwork_palette_cache.dart';
 import 'package:myune_music/services/fluid_background_controller.dart';
 import 'package:myune_music/widgets/playback_background/playback_background.dart';
 
+class _ForegroundProbe extends StatefulWidget {
+  const _ForegroundProbe({required this.onMount, required this.onDispose});
+  final VoidCallback onMount, onDispose;
+  @override
+  State<_ForegroundProbe> createState() => _ForegroundProbeState();
+}
+
+class _ForegroundProbeState extends State<_ForegroundProbe> {
+  @override
+  void initState() {
+    super.initState();
+    widget.onMount();
+  }
+
+  @override
+  void dispose() {
+    widget.onDispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      const SizedBox.expand(child: Text('single foreground'));
+}
+
 void main() {
   test('fluid phase only wraps at the shader harmonic cycle', () {
     expect(wrapFluidPhase(math.pi * 2 + .1), greaterThan(math.pi * 2));
@@ -312,6 +337,7 @@ void main() {
       'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=',
     );
     var style = PlaybackArtworkBackgroundStyle.fluid;
+    var foregroundMounts = 0, foregroundDisposals = 0;
     late StateSetter updateHost;
     await tester.pumpWidget(
       MaterialApp(
@@ -334,7 +360,10 @@ void main() {
               coverDim: .5,
               coverBlur: 40,
               usePlaybackTheme: true,
-              child: const SizedBox.expand(child: Text('single foreground')),
+              child: _ForegroundProbe(
+                onMount: () => foregroundMounts++,
+                onDispose: () => foregroundDisposals++,
+              ),
             );
           },
         ),
@@ -361,5 +390,20 @@ void main() {
       find.byKey(const ValueKey('fluid-background-static-fallback')),
       findsNothing,
     );
+    expect(foregroundMounts, 1);
+    expect(foregroundDisposals, 0);
+    final nativeProvider = MemoryImage(artwork);
+    expect(
+      tester.widget<Image>(find.byType(Image)).image,
+      nativeProvider,
+      reason:
+          'style-switch predecode and static display use the same cache key',
+    );
+    expect(
+      PaintingBinding.instance.imageCache.statusForKey(nativeProvider).tracked,
+      isTrue,
+    );
+    await tester.pumpWidget(const SizedBox());
+    expect(foregroundDisposals, 1);
   });
 }

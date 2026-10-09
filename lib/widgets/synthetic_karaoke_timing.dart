@@ -17,7 +17,7 @@ final _cjk = RegExp(
   r'[\u1100-\u11FF\u3130-\u318F\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u3040-\u30FF\u31F0-\u31FF\uAC00-\uD7AF\u{20000}-\u{3134F}]',
   unicode: true,
 );
-final _punctuation = RegExp(r'^[\p{P}\p{S}]+$', unicode: true);
+final _punctuation = RegExp(r'^\p{P}$', unicode: true);
 
 List<String> _syntheticChunks(String text) {
   final chunks = <String>[];
@@ -114,9 +114,14 @@ LyricLine synthesizeKaraokeTiming(LyricLine line, {Duration? nextTimestamp}) {
       // A line timestamp cannot reveal which syllable is sustained. Equal
       // estimates avoid the former .72/1/1.3/1.8 artificial speed staircase.
       weights.add(1);
-    } else if (_punctuation.hasMatch(chunk.trim())) {
+    } else if (_punctuation.hasMatch(chunk.trim()) &&
+        chunk.trim() != '*' &&
+        chunk.trim() != '＊') {
       weights.add(.25);
     } else {
+      // Repeated symbols can replace an entire sung word (e.g. *****).
+      // Give them glyph-length cadence, not a near-instant comma beat. This
+      // changes estimates only; supplied token boundaries still win above.
       weights.add(karaokeSyntheticTokenWeight(chunk));
     }
   }

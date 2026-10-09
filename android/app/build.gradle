@@ -16,7 +16,14 @@ android {
     kotlinOptions { jvmTarget = JavaVersion.VERSION_17.toString() }
 
     defaultConfig {
-        applicationId = "com.myune.music"
+        // Explicit profile-fixture opt-in: never replace the user's player or
+        // data while measuring widgets. Production package/signing unchanged.
+        def benchmarkId = project.findProperty("myuneBenchmarkApplicationId")
+        if (benchmarkId != null && (benchmarkId != "com.myune.music.benchmark" ||
+                !gradle.startParameter.taskNames.every { it.toLowerCase().contains("profile") })) {
+            throw new GradleException("Benchmark application id is restricted to Profile tasks")
+        }
+        applicationId = benchmarkId ?: "com.myune.music"
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode

@@ -8,8 +8,8 @@ enum FluidBackgroundQuality { automatic, powerSaving, smooth }
 
 // uTime is wall-clock seconds; the shader alone converts to orbital radians.
 // Every temporal harmonic is an integer, so all masks/warps wrap together.
-const fluidShaderTimeScale = .065;
-const fluidPhaseCycle = math.pi * 2 / fluidShaderTimeScale; // 96.66 seconds
+const fluidShaderTimeScale = .0975; // 1.5x the 361 orbit speed.
+const fluidPhaseCycle = math.pi * 2 / fluidShaderTimeScale; // 64.44 seconds
 
 double wrapFluidPhase(double phase) => phase % fluidPhaseCycle;
 

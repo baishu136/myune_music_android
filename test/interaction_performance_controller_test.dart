@@ -1,11 +1,119 @@
+import 'dart:async';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/services/interaction_performance_controller.dart';
 
 void main() {
   final controller = InteractionPerformanceController.instance;
 
+  test(
+    'cancelled owner releases queued work without releasing another owner',
+    () async {
+      final guard = controller.beginTransition();
+      bool needed() => true;
+      final pending = controller.acquireIdleWork(isStillNeeded: needed);
+      controller.cancelIdleWork(needed);
+      expect((await pending).isGranted, isFalse);
+      expect(controller.isCritical, isTrue);
+      guard.release();
+      final next = await controller.acquireIdleWork();
+      expect(next.isGranted, isTrue);
+      next.release();
+    },
+  );
+
   tearDown(() {
     controller.pulse(InteractionPhase.idle);
+  });
+
+  test(
+    'owned entrance defers work without leaving a fixed settle tail',
+    () async {
+      final entrance = controller.beginVisualAnimation();
+      addTearDown(entrance.release);
+      expect(controller.isCritical, isTrue);
+      expect(controller.blocksFluidAnimation, isFalse);
+      final route = controller.beginTransition();
+      expect(controller.blocksFluidAnimation, isTrue);
+      route.release();
+      expect(controller.phase, InteractionPhase.visualAnimation);
+      entrance.release();
+      final work = await controller.acquireIdleWork().timeout(
+        const Duration(milliseconds: 100),
+      );
+      expect(controller.isCritical, isFalse);
+      work.release();
+    },
+  );
+
+  test(
+    'newly selected target is promoted even while waiting for a lease',
+    () async {
+      final active = await controller.acquireIdleWork();
+      var requested = false, backgroundGranted = false;
+      final backgroundFuture = controller.acquireIdleWork().then((lease) {
+        backgroundGranted = true;
+        return lease;
+      });
+      final targetFuture = controller.acquireIdleWork(
+        priority: InteractionWorkPriority.maintenance,
+        priorityForWork: () => requested
+            ? InteractionWorkPriority.userVisible
+            : InteractionWorkPriority.maintenance,
+      );
+      requested = true;
+      active.release();
+      final target = await targetFuture.timeout(
+        const Duration(milliseconds: 200),
+      );
+      expect(backgroundGranted, isFalse);
+      target.release();
+      final background = await backgroundFuture.timeout(
+        const Duration(milliseconds: 200),
+      );
+      background.release();
+    },
+  );
+
+  test('pending resource does not hold the idle publication queue', () async {
+    final started = Completer<void>();
+    final resource = Completer<int>();
+    var completed = false;
+    final pending = controller
+        .runIdleResource<int>(() {
+          started.complete();
+          return resource.future;
+        })
+        .then((value) {
+          completed = true;
+          return value;
+        });
+    await started.future;
+    final visible = await controller
+        .acquireIdleWork(priority: InteractionWorkPriority.currentVisual)
+        .timeout(const Duration(milliseconds: 200));
+    expect(completed, isFalse);
+    visible.release();
+    resource.complete(42);
+    expect(await pending, 42);
+  });
+
+  test('transition owners cannot release another route or gesture', () async {
+    final first = controller.beginTransition();
+    final second = controller.beginTransition();
+    addTearDown(first.release);
+    addTearDown(second.release);
+    controller.pulse(InteractionPhase.idle);
+    first.release();
+    expect(controller.isCritical, isTrue);
+    expect(controller.blocksFluidAnimation, isTrue);
+    controller.pulse(
+      InteractionPhase.interacting,
+      settleAfter: const Duration(milliseconds: 80),
+    );
+    second.release();
+    expect(controller.isCritical, isTrue);
+    await controller.waitForIdle(maxWait: const Duration(milliseconds: 250));
+    expect(controller.isCritical, isFalse);
   });
 
   test(

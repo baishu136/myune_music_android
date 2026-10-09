@@ -1,4 +1,5 @@
 import 'dart:math' as math;
+import 'dart:io';
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -17,6 +18,127 @@ const _pigments = [
 ];
 
 void main() {
+  testWidgets('exposed centre retains cover colour throughout an orbit', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final shader = (await ui.FragmentProgram.fromAsset(
+        'shaders/fluid_background.frag',
+      )).fragmentShader();
+      try {
+        const palette = FluidPalette(
+          Colors.black,
+          Color(0xFFEE2288),
+          Color(0xFFFFB820),
+          Color(0xFF22BF9C),
+          baseColor: Colors.black,
+        );
+        for (var step = 0; step < 24; step++) {
+          final bytes = await _render(
+            shader,
+            palette,
+            time: fluidPhaseCycle * step / 24,
+            motion: 1,
+          );
+          for (var y = 64; y <= 96; y += 16) {
+            for (var x = 36; x <= 60; x += 12) {
+              final i = (y * 96 + x) * 4;
+              final c = Color.fromARGB(
+                255,
+                bytes[i],
+                bytes[i + 1],
+                bytes[i + 2],
+              );
+              expect(
+                HSLColor.fromColor(c).lightness,
+                greaterThan(.085),
+                reason: 'orbit $step at $x,$y',
+              );
+              expect(bytes[i + 3], 255);
+            }
+          }
+        }
+        const black = FluidPalette(
+          Colors.black,
+          Colors.black,
+          Colors.black,
+          Colors.black,
+          baseColor: Colors.black,
+        );
+        final bytes = await _render(shader, black, motion: 1);
+        for (var i = 0; i < bytes.length; i += 4) {
+          expect(bytes[i], lessThanOrEqualTo(1));
+          expect(bytes[i + 1], lessThanOrEqualTo(1));
+          expect(bytes[i + 2], lessThanOrEqualTo(1));
+        }
+      } finally {
+        shader.dispose();
+      }
+    });
+  });
+  testWidgets(
+    'export actual fluid samples without substituting a scalar renderer',
+    (tester) async {
+      const directory = String.fromEnvironment('FLUID_ARTIFACT_DIRECTORY');
+      if (directory.isEmpty) return;
+      await tester.runAsync(() async {
+        await Directory(directory).create(recursive: true);
+        final shader = (await ui.FragmentProgram.fromAsset(
+          'shaders/fluid_background.frag',
+        )).fragmentShader();
+        final palette = buildWeightedFluidPalette(
+          _pigments,
+          fallbackSeed: Colors.blue,
+        );
+        final controller = FluidBackgroundController(
+          vsync: const TestVSync(),
+          initialPalette: palette,
+        );
+        try {
+          for (final seconds in [0.0, 24.0, 48.0, 72.0]) {
+            shader.setFloat(0, 384);
+            shader.setFloat(1, 640);
+            shader.setFloat(2, seconds);
+            shader.setFloat(3, 1);
+            // The painter writes all palette uniforms; then set the explicit
+            // phase/motion for reproducible snapshots, not a simulated clock.
+            final uniformRecorder = ui.PictureRecorder();
+            FluidBackgroundPainter(
+              shader: shader,
+              controller: controller,
+              dim: .3,
+            ).paint(Canvas(uniformRecorder), const Size(384, 640));
+            uniformRecorder.endRecording().dispose();
+            shader.setFloat(2, seconds);
+            shader.setFloat(3, 1);
+            // DisplayList snapshots shader uniforms at draw time, not at the
+            // eventual toImage call. Set explicit phase BEFORE recording.
+            final recorder = ui.PictureRecorder();
+            Canvas(recorder).drawRect(
+              const Rect.fromLTWH(0, 0, 384, 640),
+              Paint()..shader = shader,
+            );
+            final picture = recorder.endRecording();
+            final image = await picture.toImage(384, 640);
+            try {
+              final data = await image.toByteData(
+                format: ui.ImageByteFormat.png,
+              );
+              await File(
+                '$directory/phase-${seconds.toInt()}.png',
+              ).writeAsBytes(data!.buffer.asUint8List());
+            } finally {
+              image.dispose();
+              picture.dispose();
+            }
+          }
+        } finally {
+          shader.dispose();
+          controller.dispose();
+        }
+      });
+    },
+  );
   test(
     'highlight rejection uses both thresholds, not brightness or low chroma alone',
     () {
@@ -230,18 +352,27 @@ void main() {
 
 Future<Uint8List> _render(
   ui.FragmentShader shader,
-  FluidPalette palette,
-) async {
+  FluidPalette palette, {
+  double time = 0,
+  double motion = 0,
+}) async {
   final controller = FluidBackgroundController(
     vsync: const TestVSync(),
     initialPalette: palette,
   );
-  final recorder = ui.PictureRecorder();
+  final setup = ui.PictureRecorder();
   FluidBackgroundPainter(
     shader: shader,
     controller: controller,
     dim: .3,
-  ).paint(Canvas(recorder), const Size(96, 160));
+  ).paint(Canvas(setup), const Size(96, 160));
+  setup.endRecording().dispose();
+  shader.setFloat(2, time);
+  shader.setFloat(3, motion);
+  final recorder = ui.PictureRecorder();
+  Canvas(
+    recorder,
+  ).drawRect(const Rect.fromLTWH(0, 0, 96, 160), Paint()..shader = shader);
   final picture = recorder.endRecording();
   final image = await picture.toImage(96, 160);
   try {
@@ -259,24 +390,29 @@ Future<Uint8List> _render(
 List<double> _layerOracle(FluidPalette palette, double x, double y) {
   double mask(double cx, double cy, double rx, double ry, double outer) {
     final dx = (x - cx) / rx, dy = (y - cy) / ry;
-    final t = ((dx * dx + dy * dy - .10) / (outer - .10)).clamp(0.0, 1.0);
-    return 1 - t * t * (3 - 2 * t);
+    final radius = math.sqrt(dx * dx + dy * dy);
+    final t = ((radius - .20) / (outer - .20)).clamp(0.0, 1.0);
+    return 1 - t * t * t * (t * (t * 6 - 15) + 10);
   }
 
-  final blob1 = mask(.26, .28, .62, .78, 1);
-  final blob2 = mask(.78, .74, .55, .70, 1);
-  final ambient = mask(.48, .50, 1.10, 1.0, 1.6) * .16;
+  final blob1 = mask(.26, .28, .62, .78, 1.20);
+  final blob2 = mask(.78, .74, .55, .70, 1.20);
+  final ambient = mask(.48, .50, 1.10, 1.0, 1.50) * .16;
   final distance = math.sqrt(math.pow(x - .5, 2) + math.pow(y - .48, 2));
   final edge = ((distance - .35) / (1.10 - .35)).clamp(0.0, 1.0);
   final vignette = 1 - edge * edge * (3 - 2 * edge);
   return List<double>.generate(3, (channel) {
     double component(Color c) => [c.r, c.g, c.b][channel];
     double lerp(double a, double b, double mask) => a + (b - a) * mask;
+    final coverage = math.max(blob1, blob2);
+    final exposure = ((coverage - .10) / .55).clamp(0.0, 1.0);
+    final canvasFill = .30 * (1 - exposure * exposure * (3 - 2 * exposure));
     var mixed = lerp(
       component(palette.baseColor),
-      component(palette.third),
-      ambient,
+      component(palette.second),
+      canvasFill,
     );
+    mixed = lerp(mixed, component(palette.third), ambient);
     mixed = lerp(mixed, component(palette.second), blob1);
     mixed = lerp(mixed, component(palette.fourth), blob2);
     return mixed * (.98 + .02 * vignette) * (1 - .3 * .25);

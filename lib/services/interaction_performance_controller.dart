@@ -30,11 +30,19 @@ class InteractionWorkLease {
 }
 
 class _InteractionWorkRequest {
-  _InteractionWorkRequest(this.priority, this.sequence, this.isStillNeeded);
+  _InteractionWorkRequest(
+    this.priority,
+    this.sequence,
+    this.isStillNeeded,
+    this.priorityForWork,
+  );
 
   final InteractionWorkPriority priority;
   final int sequence;
   final bool Function()? isStillNeeded;
+  final InteractionWorkPriority Function()? priorityForWork;
+  InteractionWorkPriority get effectivePriority =>
+      priorityForWork?.call() ?? priority;
   final Completer<InteractionWorkLease> completer =
       Completer<InteractionWorkLease>();
 }
@@ -55,12 +63,58 @@ class InteractionPerformanceController {
   int _settleAfterMicros = 0;
   int _workSequence = 0;
   bool _workLeaseActive = false;
+  final Set<Object> _transitions = {};
+  final Set<Object> _visualAnimations = {};
 
-  InteractionPhase get phase => _phase;
-  bool get isCritical => _phase != InteractionPhase.idle;
+  InteractionPhase get phase => _transitions.isEmpty
+      ? (_phase == InteractionPhase.idle && _visualAnimations.isNotEmpty
+            ? InteractionPhase.visualAnimation
+            : _phase)
+      : InteractionPhase.transition;
+  bool get isCritical => phase != InteractionPhase.idle;
   bool get blocksFluidAnimation =>
-      _phase != InteractionPhase.idle &&
-      _phase != InteractionPhase.visualAnimation;
+      phase != InteractionPhase.idle &&
+      phase != InteractionPhase.visualAnimation;
+
+  /// An owner releases only its own route protection, never another gesture.
+  InteractionWorkLease beginTransition() {
+    return _beginProtection(_transitions);
+  }
+
+  InteractionWorkLease beginVisualAnimation() =>
+      _beginProtection(_visualAnimations);
+
+  InteractionWorkLease _beginProtection(Set<Object> owners) {
+    final owner = Object();
+    owners.add(owner);
+    _workDrainTimer?.cancel();
+    _workDrainTimer = null;
+    return InteractionWorkLease._(() {
+      owners.remove(owner);
+      if (!isCritical) _setIdle();
+    });
+  }
+
+  /// Limit the synchronous start, not the lifetime of a decode/IO Future.
+  /// Callers must validate their generation again before publishing results.
+  Future<T?> runIdleResource<T>(
+    Future<T> Function() start, {
+    InteractionWorkPriority priority = InteractionWorkPriority.background,
+    bool Function()? isStillNeeded,
+  }) async {
+    final lease = await acquireIdleWork(
+      priority: priority,
+      isStillNeeded: isStillNeeded,
+    );
+    if (!lease.isGranted) return null;
+    late Future<T> pending;
+    try {
+      pending = start();
+    } finally {
+      lease.release();
+    }
+    return await pending;
+  }
 
   void endPhase(InteractionPhase phase) {
     if (_phase == phase) _setIdle();
@@ -118,15 +172,33 @@ class InteractionPerformanceController {
   Future<InteractionWorkLease> acquireIdleWork({
     InteractionWorkPriority priority = InteractionWorkPriority.background,
     bool Function()? isStillNeeded,
+    InteractionWorkPriority Function()? priorityForWork,
   }) {
     final request = _InteractionWorkRequest(
       priority,
       _workSequence++,
       isStillNeeded,
+      priorityForWork,
     );
     _workQueue.add(request);
     _scheduleWorkDrain(Duration.zero);
     return request.completer.future;
+  }
+
+  /// Dispose queued work immediately instead of keeping its owner alive until
+  /// another interaction ends. Granted leases remain the caller's responsibility.
+  void cancelIdleWork(bool Function() isStillNeeded) {
+    final cancelled = _workQueue
+        .where((r) => r.isStillNeeded == isStillNeeded)
+        .toList();
+    _workQueue.removeWhere((r) => r.isStillNeeded == isStillNeeded);
+    for (final request in cancelled) {
+      request.completer.complete(InteractionWorkLease._(() {})..release());
+    }
+    if (_workQueue.isEmpty) {
+      _workDrainTimer?.cancel();
+      _workDrainTimer = null;
+    }
   }
 
   void _scheduleWorkDrain(Duration delay) {
@@ -140,7 +212,9 @@ class InteractionPerformanceController {
   void _drainWorkQueue() {
     if (_workLeaseActive || _workQueue.isEmpty || isCritical) return;
     _workQueue.sort((first, second) {
-      final priority = first.priority.index.compareTo(second.priority.index);
+      final priority = first.effectivePriority.index.compareTo(
+        second.effectivePriority.index,
+      );
       return priority != 0
           ? priority
           : first.sequence.compareTo(second.sequence);
@@ -175,6 +249,7 @@ class InteractionPerformanceController {
     _settleAfterMicros = 0;
     _settlePoll?.cancel();
     _settlePoll = null;
+    if (isCritical) return;
     final waiters = _idleWaiters.toList(growable: false);
     _idleWaiters.clear();
     for (final waiter in waiters) {

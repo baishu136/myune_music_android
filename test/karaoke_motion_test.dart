@@ -12,13 +12,13 @@ void main() {
     liftStartUs: 1000000,
   );
 
-  test('default lift is slightly taller without altering time or curve', () {
-    final previous = KaraokeMotionConfig(liftHeightFraction: .045);
+  test('seven percent lift changes height without altering time or curve', () {
+    final previous = KaraokeMotionConfig(liftHeightFraction: .055);
     for (final height in [32.0, 40.0, 48.0]) {
       final oldTop = -karaokeLiftPixels(1, height, previous);
       final newTop = -karaokeLiftPixels(1, height, config);
-      expect(newTop / oldTop, inInclusiveRange(1.15, 1.25));
-      expect(newTop - oldTop, lessThan(.6));
+      expect(newTop, closeTo(height * .07, 1e-9));
+      expect(newTop / oldTop, closeTo(.07 / .055, 1e-9));
       for (final hz in [60, 90, 120]) {
         for (
           var time = 950000;
@@ -31,7 +31,7 @@ void main() {
         }
       }
     }
-    expect(-karaokeLiftPixels(1, 500, config), lessThanOrEqualTo(4));
+    expect(-karaokeLiftPixels(1, 500, config), 35);
   });
 
   test('motion settings reject out-of-range values', () {
@@ -69,7 +69,7 @@ void main() {
     expect(atNext.highlightProgress, 1);
     expect(atNext.liftProgress, greaterThan(0));
     expect(atNext.liftProgress, lessThan(.1));
-    expect(karaokeGlyphFrame(1760000, fast, config).liftProgress, 1);
+    expect(karaokeGlyphFrame(2100000, fast, config).liftProgress, 1);
   });
 
   test('the same media time has the same motion after playback or seek', () {
@@ -86,7 +86,7 @@ void main() {
       reason: 'a backward seek must immediately show the earlier pose',
     );
     expect(
-      karaokeGlyphFrame(2000000, fast, config).liftProgress,
+      karaokeGlyphFrame(2200000, fast, config).liftProgress,
       1,
       reason: 'a forward seek must immediately show the completed pose',
     );
@@ -124,8 +124,11 @@ void main() {
       ) {
         final next = karaokeGlyphFrame(time, fast, config);
         final velocity = (next.liftProgress - previous.liftProgress) * hz;
-        expect(next.liftProgress, greaterThanOrEqualTo(previous.liftProgress));
-        expect(next.liftProgress - previous.liftProgress, lessThan(.05));
+        expect(next.liftProgress, inInclusiveRange(0, 1.1));
+        expect(
+          (next.liftProgress - previous.liftProgress).abs(),
+          lessThan(.06),
+        );
         expect((velocity - previousVelocity).abs(), lessThan(1.0));
         previous = next;
         previousVelocity = velocity;

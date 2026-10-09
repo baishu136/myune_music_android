@@ -19,6 +19,13 @@ class _SongSearchIndex {
   final List<String> pinyin;
   final List<String> initials;
 
+  _SongSearchIndex.prepared(this.song, this.pinyin, this.initials)
+    : fields = [
+        song.title,
+        song.artist,
+        song.album,
+      ].map((v) => v.toLowerCase()).toList();
+
   static String _fullPinyin(String text) =>
       PinyinHelper.getPinyin(text, separator: '').toLowerCase();
 
@@ -39,7 +46,24 @@ class _SongSearchIndex {
 
 /// Ranked search for Chinese metadata, pinyin, initials and small typos.
 class SearchService {
+  SearchService({this.allowColdPinyin = true});
+  final bool allowColdPinyin;
   final Map<String, _SongSearchIndex> _cache = {};
+
+  void installPrepared(
+    List<Song> songs,
+    List<List<String>> pinyin,
+    List<List<String>> initials,
+  ) {
+    _cache.clear();
+    for (var i = 0; i < songs.length; i++) {
+      _cache[songs[i].normalizedPath] = _SongSearchIndex.prepared(
+        songs[i],
+        pinyin[i],
+        initials[i],
+      );
+    }
+  }
 
   void rebuild(Iterable<Song> songs) {
     final paths = songs.map((song) => song.normalizedPath).toSet();
@@ -59,7 +83,13 @@ class SearchService {
       final song = source[i];
       final index = _cache.putIfAbsent(
         song.normalizedPath,
-        () => _SongSearchIndex(song),
+        () => allowColdPinyin
+            ? _SongSearchIndex(song)
+            : _SongSearchIndex.prepared(
+                song,
+                List.filled(3, ''),
+                List.filled(3, ''),
+              ),
       );
       var best = -1.0;
       for (var field = 0; field < index.fields.length; field++) {

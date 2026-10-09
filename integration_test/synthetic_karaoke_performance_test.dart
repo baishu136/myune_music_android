@@ -1,6 +1,8 @@
 import 'dart:io';
 import 'dart:convert';
+import 'dart:typed_data';
 import 'dart:ui' show FramePhase;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart';
@@ -9,6 +11,8 @@ import 'package:integration_test/integration_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
+import 'package:myune_music/models/fluid_background_state.dart';
+import 'package:myune_music/widgets/playback_background/fluid_background.dart';
 
 // Run on a physical Android device in PROFILE mode at both 60 and 120 Hz:
 // flutter drive --profile --driver=test_driver/integration_test.dart
@@ -21,12 +25,32 @@ void main() {
   testWidgets('synthetic karaoke frame budgets and warmed memory', (
     tester,
   ) async {
+    final recorder = ui.PictureRecorder();
+    final canvas = Canvas(recorder);
+    for (var i = 0; i < 3; i++) {
+      canvas.drawRect(
+        Rect.fromLTWH(i * 24, 0, 24, 72),
+        Paint()
+          ..color = const [
+            Color(0xFFEF2683),
+            Color(0xFF25BFA3),
+            Color(0xFFF09D2C),
+          ][i],
+      );
+    }
+    final picture = recorder.endRecording();
+    final image = await picture.toImage(72, 72);
+    final cover = (await image.toByteData(
+      format: ui.ImageByteFormat.png,
+    ))!.buffer.asUint8List();
+    image.dispose();
+    picture.dispose();
     final key = GlobalKey<_FixtureState>();
     await tester.pumpWidget(
       MaterialApp(
         theme: ThemeData.dark(),
         showPerformanceOverlay: true,
-        home: _Fixture(key: key),
+        home: _Fixture(key: key, cover: cover),
       ),
     );
     await tester.pump(const Duration(seconds: 4));
@@ -85,6 +109,7 @@ void main() {
     final budget = 1000 / refresh;
     binding.reportData!['synthetic_karaoke_metrics'] = {
       'mode': 'profile',
+      'fixture': 'generated cover + lyrics, not a real song/full player',
       'displayHz': refresh,
       'budgetMs': budget,
       'frames': build.length,
@@ -123,7 +148,8 @@ void main() {
 }
 
 class _Fixture extends StatefulWidget {
-  const _Fixture({super.key});
+  const _Fixture({super.key, required this.cover});
+  final Uint8List cover;
   @override
   State<_Fixture> createState() => _FixtureState();
 }
@@ -144,7 +170,7 @@ class _FixtureState extends State<_Fixture>
       texts: [
         switch (i % 4) {
           0 => '快速中文句子里的文字自然逐个推进',
-          1 => 'supercalifragilisticexpialidocious softly follows the song',
+          1 => 'I am supercalifragilisticexpialidocious and I go softly',
           2 => '中文 mixed English 日本語 한국어 👨‍👩‍👧‍👦 é',
           _ => 'طريق الموسيقى शांत संगीत',
         },
@@ -189,17 +215,26 @@ class _FixtureState extends State<_Fixture>
 
   @override
   Widget build(BuildContext context) => Scaffold(
-    body: MobileLyricsList(
-      lines: lines,
-      active: active,
-      positionListenable: position,
-      playbackRateListenable: rate,
-      seekPositionListenable: seek,
-      karaokeLyricsMode: KaraokeLyricsMode.all,
-      fontFamily: 'misans',
-      fontSize: 28,
-      activeColor: Colors.white,
-      lineBlurEnabled: true,
+    body: FluidPlaybackBackground(
+      artworkBytes: widget.cover,
+      artworkIdentity: 'profile-generated-pigments',
+      artworkCacheGeneration: 361,
+      fallbackSeed: Colors.pink,
+      dim: .3,
+      quality: FluidBackgroundQuality.smooth,
+      routeTransitionActive: false,
+      child: MobileLyricsList(
+        lines: lines,
+        active: active,
+        positionListenable: position,
+        playbackRateListenable: rate,
+        seekPositionListenable: seek,
+        karaokeLyricsMode: KaraokeLyricsMode.all,
+        fontFamily: 'misans',
+        fontSize: 28,
+        activeColor: Colors.white,
+        lineBlurEnabled: true,
+      ),
     ),
   );
 }

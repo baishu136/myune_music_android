@@ -9,16 +9,26 @@ int debugKaraokeSolidLayerCount = 0;
 int debugKaraokeGradientLayerCount = 0;
 
 ui.FragmentProgram? _karaokeInkProgram;
+Future<ui.FragmentProgram>? _karaokeInkProgramFuture;
+Future<void>? _karaokeRasterTail;
 // Joining/combining and colour-font glyphs retain exact native coverage.
 final _karaokeJoinedRun = RegExp(r'[\u0300-\u036F\u0590-\u0FFF\u200D]');
 final _karaokeColorGlyph = RegExp(
   r'[\u200D\uFE0F\u2600-\u27FF\u{1F000}-\u{1FAFF}]',
   unicode: true,
 );
-Future<ui.FragmentProgram> _loadKaraokeInkProgram() async =>
-    _karaokeInkProgram ??= await ui.FragmentProgram.fromAsset(
-      'shaders/karaoke_ink.frag',
-    );
+Future<ui.FragmentProgram> _loadKaraokeInkProgram() {
+  if (_karaokeInkProgram case final program?) return Future.value(program);
+  return _karaokeInkProgramFuture ??= () async {
+    try {
+      return _karaokeInkProgram ??= await ui.FragmentProgram.fromAsset(
+        'shaders/karaoke_ink.frag',
+      );
+    } finally {
+      _karaokeInkProgramFuture = null;
+    }
+  }();
+}
 
 double karaokeFeatherWidth(double lineHeight) =>
     (lineHeight * karaokeDefaultMotion.highlightFeatherFraction).clamp(
@@ -83,14 +93,16 @@ class _KaraokeFragment {
   ui.Picture? mask;
   _KaraokeNativeInk? nativeInk;
   late final KaraokeSweepPath sweep;
+  late double feather;
   _KaraokeSweepRelay? relay;
 }
 
 class _KaraokeSweepRelay {
-  _KaraokeSweepRelay(this.path, this.timeline, this.rtl);
+  _KaraokeSweepRelay(this.path, this.timeline, this.rtl, this.feather);
   final KaraokeSweepPath path;
   final KaraokeSweepTimeline timeline;
   final bool rtl;
+  final double feather;
   double phase = 0;
   double front = 0;
 }
@@ -358,6 +370,14 @@ class _KaraokePaintCache extends ChangeNotifier {
         1,
         range.token.end.inMicroseconds - range.token.start.inMicroseconds,
       );
+      for (final fragment in fragments) {
+        fragment.feather = karaokeSweepFeather(
+          width: fragment.sweep.length,
+          durationUs: (span * (fragment.endRatio - fragment.startRatio))
+              .round(),
+          baseline: feather,
+        );
+      }
       // 9-bit atlas IDs reserve three groups. Pathological long lines must
       // fall back rather than wrapping IDs and losing/borrowing another glyph.
       final nativeRun =
@@ -391,6 +411,10 @@ class _KaraokePaintCache extends ChangeNotifier {
             highlightEndUs:
                 range.token.start.inMicroseconds + (span * endRatio).round(),
             liftStartUs: start,
+            estimatedCadenceUs: math.max(
+              1,
+              (span * (endRatio - startRatio)).round(),
+            ),
           );
         } else {
           unit.timing = KaraokeGlyphTiming.fromToken(
@@ -424,7 +448,9 @@ class _KaraokePaintCache extends ChangeNotifier {
       );
       unitCount += units.length;
       tokens.add(token);
-      if (token.nativeShaping) _prepareNativeToken(token);
+      // Own a shaped vector fallback before this cache can become visible.
+      // Cold rows must sweep too; no token mask is constructed during paint.
+      _prepareNativeToken(token);
       drawable.add(range);
     }
     if (synthetic) _buildSyntheticRelays();
@@ -443,10 +469,6 @@ class _KaraokePaintCache extends ChangeNotifier {
     originalMask = _recordOwnedMask(untouched);
     primaryMask = _recordOwnedMask([
       _KaraokePaintRange(start: 0, end: originalEnd),
-    ]);
-    pendingMask = _recordOwnedMask([
-      for (final token in tokens)
-        if (!token.nativeShaping) token.range,
     ]);
     final firstStarts = List<int>.filled(tokens.length, 0);
     for (var i = 0; i < tokens.length; i++) {
@@ -592,7 +614,7 @@ class _KaraokePaintCache extends ChangeNotifier {
   ui.Image? _image;
   ui.Image? _coverageImage;
   bool _disposed = false;
-  bool _fallbackReady = false;
+  bool _rasterNeeded() => !_disposed;
   Future<void>? _imageFuture;
   final List<_KaraokePaintToken> tokens = [];
   late final double height;
@@ -602,7 +624,6 @@ class _KaraokePaintCache extends ChangeNotifier {
   late final Rect fullBounds;
   late final ui.Picture originalMask;
   late final ui.Picture primaryMask;
-  late final ui.Picture pendingMask;
   late final int firstMotionUs;
   Int64List restSuffixStartUs = Int64List(0);
   final restSuffixMasks = <ui.Picture>[];
@@ -619,18 +640,29 @@ class _KaraokePaintCache extends ChangeNotifier {
     _KaraokeUnit? previous;
     var previousDrawable = false;
     var previousCompact = false;
+    var previousWord = false;
     var chain = 0;
     for (final token in tokens) {
       for (final unit in token.units) {
         final unitText = text.substring(unit.range.start, unit.range.end);
         final drawable = unitText.trim().isNotEmpty;
         final compact = karaokeHasCompactFollowerScript(unitText);
+        final word = karaokeHasWordFollowerScript(unitText);
         final before = previous;
+        // One ordinary Latin word separator carries movement, not blank ink
+        // or highlight time. Layout-only string checks; no new frame work.
+        final wordBoundary =
+            before != null &&
+            previousWord &&
+            word &&
+            unit.range.start == before.range.end + 1 &&
+            const [' ', '\u00a0', '\u202f'].contains(text[before.range.end]) &&
+            karaokeDefaultMotion.maxWordFollowerGap > Duration.zero;
         final connected =
             before != null &&
             drawable &&
             previousDrawable &&
-            before.range.end == unit.range.start &&
+            (before.range.end == unit.range.start || wordBoundary) &&
             before.fragment.row == unit.fragment.row &&
             before.fragment.direction == unit.fragment.direction &&
             karaokeFollowerTimingConnected(
@@ -638,12 +670,14 @@ class _KaraokePaintCache extends ChangeNotifier {
               unit.timing,
               karaokeDefaultMotion,
               compactScript: previousCompact && compact,
+              wordBoundary: wordBoundary,
             );
         if (!connected) chain++;
         glyphs.add(KaraokeFollowerGlyph(timing: unit.timing, chain: chain));
         previous = unit;
         previousDrawable = drawable;
         previousCompact = compact;
+        previousWord = word;
       }
     }
     followerTimeline = KaraokeFollowerTimeline(glyphs, karaokeDefaultMotion);
@@ -658,10 +692,16 @@ class _KaraokePaintCache extends ChangeNotifier {
         KaraokeSweepPath(group.expand((fragment) => fragment.sweep.spans)),
         KaraokeSweepTimeline(segments),
         group.first.direction == TextDirection.rtl,
+        karaokeSweepFeather(
+          width: segments.fold<double>(0, (sum, s) => sum + s.advance),
+          durationUs: segments.last.endUs - segments.first.startUs,
+          baseline: feather,
+        ),
       );
       sweepRelays.add(relay);
       for (final fragment in group) {
         fragment.relay = relay;
+        fragment.feather = relay.feather;
       }
       group.clear();
       segments.clear();
@@ -739,7 +779,26 @@ class _KaraokePaintCache extends ChangeNotifier {
 
   /// Requested only by active/near-next rows, outside paint. An async raster
   /// never blocks layout. Pending stale results are disposed, not adopted.
-  Future<void> prepareImage() => _imageFuture ??= _rasterize();
+  Future<void> prepareImage() => _imageFuture ??= _enqueueRaster();
+  Future<void> _enqueueRaster() async {
+    final previous = _karaokeRasterTail;
+    final done = Completer<void>();
+    _karaokeRasterTail = done.future;
+    if (previous != null) await previous;
+    try {
+      if (!_disposed) await _rasterize();
+    } finally {
+      if (identical(_karaokeRasterTail, done.future)) _karaokeRasterTail = null;
+      done.complete();
+    }
+  }
+
+  Future<ui.Image?> _idleRasterImage(ui.Picture picture, int w, int h) =>
+      InteractionPerformanceController.instance.runIdleResource<ui.Image>(
+        () => picture.toImage(w, h),
+        priority: InteractionWorkPriority.currentVisual,
+        isStillNeeded: _rasterNeeded,
+      );
   bool get imageReady => _ready;
   int get imageBytes =>
       (_image?.width ?? 0) * (_image?.height ?? 0) * 8 + _nativePixels * 4;
@@ -783,7 +842,8 @@ class _KaraokePaintCache extends ChangeNotifier {
     final picture = recorder.endRecording();
     ui.Image? image;
     try {
-      image = await picture.toImage(w, h);
+      image = await _idleRasterImage(picture, w, h);
+      if (image == null) return null;
       if (_disposed) {
         image.dispose();
         return null;
@@ -825,37 +885,40 @@ class _KaraokePaintCache extends ChangeNotifier {
     ui.Image? image;
     ui.Image? coverage;
     try {
-      image = await picture.toImage(
+      image = await _idleRasterImage(
+        picture,
         (fullBounds.width * _imageScale).ceil(),
         (fullBounds.height * _imageScale).ceil(),
       );
-      coverage = await coveragePicture.toImage(image.width, image.height);
+      if (image == null) return;
+      coverage = await _idleRasterImage(
+        coveragePicture,
+        image.width,
+        image.height,
+      );
+      if (coverage == null) {
+        image.dispose();
+        return;
+      }
       if (_disposed) {
         image.dispose();
         coverage.dispose();
         return;
       }
-      final program = await _loadKaraokeInkProgram();
-      if (_disposed) {
+      final program = await InteractionPerformanceController.instance
+          .runIdleResource<ui.FragmentProgram>(
+            _loadKaraokeInkProgram,
+            priority: InteractionWorkPriority.currentVisual,
+            isStillNeeded: _rasterNeeded,
+          );
+      if (_disposed || program == null) {
         image.dispose();
         coverage.dispose();
         return;
       }
       _image = image;
       _coverageImage = coverage;
-      _primaryShader = _makeShader(program, image, -1);
-      _originalShader = _makeShader(program, image, _originalInkId.toDouble());
-      _translationShader = _makeShader(
-        program,
-        image,
-        _translationInkId.toDouble(),
-      );
-      for (final token in tokens) {
-        if (token.nativeShaping) continue;
-        for (final unit in token.units) {
-          unit.shader = _makeShader(program, image, unit.inkId.toDouble());
-        }
-      }
+      if (!await _prepareShaders(program, image)) return;
       if (_originalNative && drawOriginal) {
         _originalNativeInk = await _prepareNativeInk(
           originalMask,
@@ -882,6 +945,17 @@ class _KaraokePaintCache extends ChangeNotifier {
         }
       }
       if (_disposed) return;
+      for (final token in tokens) {
+        if (token.nativeShaping) continue;
+        for (final fragment in token.fragments) {
+          fragment.mask?.dispose();
+          fragment.mask = null;
+          assert(() {
+            debugKaraokeLivePictureCount--;
+            return true;
+          }());
+        }
+      }
       _ready = true;
       notifyListeners();
     } catch (error) {
@@ -892,17 +966,55 @@ class _KaraokePaintCache extends ChangeNotifier {
       // A bounded Picture fallback remains usable on raster/OOM failures.
       if (kDebugMode) debugPrint('Karaoke image fallback: $error');
       if (!_disposed) {
-        // Failure-only native masks, prepared outside paint. The normal path
-        // does not lay out a whole paragraph once for every western/CJK token.
-        for (final token in tokens) {
-          if (!token.nativeShaping) _prepareNativeToken(token);
-        }
-        _fallbackReady = true;
+        // The shaped vector masks remain usable without waiting for a retry.
         notifyListeners();
       }
     } finally {
       picture.dispose();
       coveragePicture.dispose();
+    }
+  }
+
+  Future<bool> _prepareShaders(
+    ui.FragmentProgram program,
+    ui.Image image,
+  ) async {
+    final controller = InteractionPerformanceController.instance;
+    var lease = await controller.acquireIdleWork(
+      priority: InteractionWorkPriority.currentVisual,
+      isStillNeeded: _rasterNeeded,
+    );
+    final budget = Stopwatch()..start();
+    try {
+      if (!lease.isGranted || _disposed) return false;
+      _primaryShader = _makeShader(program, image, -1);
+      _originalShader = _makeShader(program, image, _originalInkId.toDouble());
+      _translationShader = _makeShader(
+        program,
+        image,
+        _translationInkId.toDouble(),
+      );
+      var count = 0;
+      for (final token in tokens) {
+        if (token.nativeShaping) continue;
+        for (final unit in token.units) {
+          if (count >= 32 || budget.elapsedMicroseconds >= 2000) {
+            lease.release();
+            lease = await controller.acquireIdleWork(
+              priority: InteractionWorkPriority.currentVisual,
+              isStillNeeded: _rasterNeeded,
+            );
+            if (!lease.isGranted || _disposed) return false;
+            count = 0;
+            budget.reset();
+          }
+          unit.shader = _makeShader(program, image, unit.inkId.toDouble());
+          count++;
+        }
+      }
+      return true;
+    } finally {
+      lease.release();
     }
   }
 
@@ -971,6 +1083,7 @@ class _KaraokePaintCache extends ChangeNotifier {
 
   void _prepareNativeToken(_KaraokePaintToken token) {
     for (final fragment in token.fragments) {
+      if (fragment.mask != null) continue;
       final line = _textLines[fragment.row];
       fragment.mask = _recordOwnedMask([
         _KaraokePaintRange(
@@ -1006,6 +1119,7 @@ class _KaraokePaintCache extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    InteractionPerformanceController.instance.cancelIdleWork(_rasterNeeded);
     _ready = false;
     _primaryShader?.dispose();
     _originalShader?.dispose();
@@ -1016,10 +1130,9 @@ class _KaraokePaintCache extends ChangeNotifier {
     _translationNativeInk?.dispose();
     _nativePixels = 0;
     _image = null;
-    var count = 6;
+    var count = 5;
     originalMask.dispose();
     primaryMask.dispose();
-    pendingMask.dispose();
     translationMask.dispose();
     for (final mask in restSuffixMasks) {
       mask.dispose();
@@ -1074,11 +1187,12 @@ class _KaraokePaintCache extends ChangeNotifier {
     Color inactive,
     double front,
     double direction,
-    double strength,
-  ) {
+    double strength, {
+    double? featherWidth,
+  }) {
     shader
       ..setFloat(7, front)
-      ..setFloat(8, feather)
+      ..setFloat(8, featherWidth ?? feather)
       ..setFloat(9, direction)
       ..setFloat(10, strength)
       ..setFloat(11, active.r * active.a)
@@ -1193,19 +1307,17 @@ class _KaraokePaintCache extends ChangeNotifier {
     if (drawTranslation) {
       _paintTranslation(canvas, colors);
     }
-    if (_image == null && !_fallbackReady) {
-      // First mount only: preserve complete unswept ink while async raster
-      // prepares. Normal handoffs use the already-prewarmed next-line atlas.
-      _solid(canvas, pendingMask, fullBounds, 0, colors.inactiveLayer);
-    }
     for (var r = 0; r < sweepRelays.length; r++) {
       final relay = sweepRelays[r];
       relay.phase = relay.timeline.phaseAt(mediaUs);
-      relay.front = relay.path.frontAt(relay.phase, feather, rtl: relay.rtl);
+      relay.front = relay.path.frontAt(
+        relay.phase,
+        relay.feather,
+        rtl: relay.rtl,
+      );
     }
     for (var t = 0; t < tokens.length; t++) {
       final token = tokens[t];
-      if (_image == null && !_fallbackReady && !token.nativeShaping) continue;
       final progress = ((mediaUs - token.visualStartUs) / token.spanUs).clamp(
         0.0,
         1.0,
@@ -1215,7 +1327,7 @@ class _KaraokePaintCache extends ChangeNotifier {
         final timing = token.units[u].timing;
         highlights[index] = karaokeGlyphHighlightAt(mediaUs, timing);
       }
-      if (synthetic || _image == null || token.nativeShaping) {
+      if (synthetic || !_ready || token.nativeShaping) {
         for (var f = 0; f < token.fragments.length; f++) {
           final fragment = token.fragments[f];
           final phase =
@@ -1227,17 +1339,18 @@ class _KaraokePaintCache extends ChangeNotifier {
               fragment.relay?.front ??
               fragment.sweep.frontAt(
                 phase,
-                feather,
+                fragment.feather,
                 rtl: fragment.direction == TextDirection.rtl,
               );
         }
       }
-      if (_image == null || token.nativeShaping) {
+      if (!_ready || token.nativeShaping) {
         // Before the bounded atlas is ready (or on a shader/raster failure),
         // keep complete shaped word fragments. Never cut glyph ink into boxes.
         // Timed sweeps continue; only micro-lift degrades to a word-level pose.
         final lift = lifts[token.firstUnit];
         for (final fragment in token.fragments) {
+          final feather = fragment.feather;
           final phase = fragmentPhases[fragment.index];
           var front = fragmentFronts[fragment.index];
           if (phase >= 1) {
@@ -1261,6 +1374,7 @@ class _KaraokePaintCache extends ChangeNotifier {
               front,
               fragment.direction == TextDirection.rtl ? -1 : 1,
               highlightStrength,
+              featherWidth: feather,
             );
           } else if (phase <= 0 || highlightStrength <= 0) {
             _solid(
@@ -1303,6 +1417,7 @@ class _KaraokePaintCache extends ChangeNotifier {
         final unit = token.units[u];
         final index = token.firstUnit + u;
         final rtl = unit.fragment.direction == TextDirection.rtl;
+        final feather = unit.fragment.feather;
         var phase = highlights[index];
         var front = unit.sweep.frontAt(phase, feather, rtl: rtl);
         if (synthetic) {
@@ -1336,6 +1451,7 @@ class _KaraokePaintCache extends ChangeNotifier {
           front,
           rtl ? -1 : 1,
           highlightStrength,
+          featherWidth: feather,
         );
       }
     }

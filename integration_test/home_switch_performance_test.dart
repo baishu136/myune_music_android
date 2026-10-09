@@ -87,11 +87,11 @@ void main() {
       } finally {
         SchedulerBinding.instance.removeTimingsCallback(record);
       }
-      // Page slide is 320 ms, header 380 ms. Include 40 ms scheduling slack.
+      // Body/header are 300 ms. Include preparation and scheduling slack.
       // ALSO retain the entire window: deferred cold work is not hidden.
       final motion = samples.where((f) {
         final vsync = f.timestampInMicroseconds(ui.FramePhase.vsyncStart);
-        return vsync >= startUs && vsync < startUs + 420000;
+        return vsync >= startUs && vsync < startUs + 380000;
       }).toList();
       Map<String, Object> summarize(List<FrameTiming> frames) {
         final builds =

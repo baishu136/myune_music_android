@@ -3,20 +3,40 @@ import 'dart:typed_data';
 
 /// Internal motion values. Durations are MEDIA time: at 2x a 760 ms lift
 /// occupies 380 ms on the wall clock, matching the lyric time axis.
-enum KaraokeLiftCurve { smoothTop, easeOutCubic }
+enum KaraokeLiftCurve { smoothTop, flowingTop, easeOutCubic }
 
 class KaraokeMotionConfig {
   KaraokeMotionConfig({
-    this.liftHeightFraction = .055,
+    this.liftHeightFraction = .07,
     this.liftDuration = const Duration(milliseconds: 760),
-    this.curve = KaraokeLiftCurve.smoothTop,
+    this.curve = KaraokeLiftCurve.flowingTop,
     this.staggerFraction = .15,
     this.maxPreStart = const Duration(milliseconds: 35),
     this.highlightFeatherFraction = .72,
     this.exitDuration = const Duration(milliseconds: 240),
     this.maxCompactFollowerGap = const Duration(milliseconds: 80),
-    List<double> followerWeights = const [.24, .12, .05],
+    this.maxWordFollowerGap = const Duration(milliseconds: 80),
+    this.fastOvershootFraction = .10,
+    List<double> followerWeights = const [.30, .16, .07],
   }) : followerWeights = List<double>.unmodifiable(followerWeights) {
+    if (maxWordFollowerGap < Duration.zero ||
+        maxWordFollowerGap > const Duration(milliseconds: 120)) {
+      throw RangeError.range(
+        maxWordFollowerGap.inMilliseconds,
+        0,
+        120,
+        'maxWordFollowerGap',
+      );
+    }
+    if (!fastOvershootFraction.isFinite ||
+        fastOvershootFraction < 0 ||
+        fastOvershootFraction > .15) {
+      throw RangeError.value(
+        fastOvershootFraction,
+        'fastOvershootFraction',
+        '0–.15',
+      );
+    }
     if (maxCompactFollowerGap < Duration.zero ||
         maxCompactFollowerGap > const Duration(milliseconds: 120)) {
       throw RangeError.range(
@@ -35,11 +55,11 @@ class KaraokeMotionConfig {
     }
     if (!liftHeightFraction.isFinite ||
         liftHeightFraction < .02 ||
-        liftHeightFraction > .08) {
+        liftHeightFraction > .09) {
       throw RangeError.value(
         liftHeightFraction,
         'liftHeightFraction',
-        '.02–.08',
+        '.02–.09',
       );
     }
     if (liftDuration < const Duration(milliseconds: 400) ||
@@ -92,6 +112,12 @@ class KaraokeMotionConfig {
   // Capped again at 35% of the shorter neighbouring SOURCE token duration.
   // Zero restores the previous 2ms quantization tolerance. No highlight shift.
   final Duration maxCompactFollowerGap;
+  // A single Latin word separator may bridge motion, not highlight. Larger
+  // blanks, line wraps and real pauses still break. Zero disables this bridge.
+  final Duration maxWordFollowerGap;
+  // A single bounded recoil, only below 180ms estimated local cadence. Zero
+  // restores strictly monotone lift. This never moves highlight boundaries.
+  final double fastOvershootFraction;
 }
 
 final karaokeDefaultMotion = KaraokeMotionConfig();
@@ -106,12 +132,17 @@ final _compactFollowerScript = RegExp(
 bool karaokeHasCompactFollowerScript(String text) =>
     _compactFollowerScript.hasMatch(text);
 
+final _wordFollowerScript = RegExp(r'^[A-Za-z\u00C0-\u024F]+$');
+bool karaokeHasWordFollowerScript(String text) =>
+    _wordFollowerScript.hasMatch(text);
+
 /// Motion-only adjacency. Never fills or alters a real highlight time gap.
 bool karaokeFollowerTimingConnected(
   KaraokeGlyphTiming previous,
   KaraokeGlyphTiming next,
   KaraokeMotionConfig config, {
   bool compactScript = false,
+  bool wordBoundary = false,
 }) {
   if (next.liftStartUs < previous.liftStartUs) return false;
   if (previous.sourceTokenStartUs == next.sourceTokenStartUs &&
@@ -120,7 +151,7 @@ bool karaokeFollowerTimingConnected(
   }
   if (next.sourceTokenStartUs < previous.sourceTokenStartUs) return false;
   var toleranceUs = 2000;
-  if (compactScript) {
+  if (compactScript || wordBoundary) {
     final localSpan = math.min(
       math.max(1, previous.sourceTokenEndUs - previous.sourceTokenStartUs),
       math.max(1, next.sourceTokenEndUs - next.sourceTokenStartUs),
@@ -128,7 +159,10 @@ bool karaokeFollowerTimingConnected(
     toleranceUs = math.max(
       toleranceUs,
       math.min(
-        config.maxCompactFollowerGap.inMicroseconds,
+        (wordBoundary
+                ? config.maxWordFollowerGap
+                : config.maxCompactFollowerGap)
+            .inMicroseconds,
         (localSpan * .35).round(),
       ),
     );
@@ -149,6 +183,7 @@ class KaraokeGlyphTiming {
     required this.highlightStartUs,
     required this.highlightEndUs,
     required this.liftStartUs,
+    this.estimatedCadenceUs,
   });
 
   factory KaraokeGlyphTiming.fromToken({
@@ -184,6 +219,7 @@ class KaraokeGlyphTiming {
       highlightStartUs: start,
       highlightEndUs: math.max(start + 1, end),
       liftStartUs: start - preStart,
+      estimatedCadenceUs: math.max(1, estimatedCadenceUs.round()),
     );
   }
 
@@ -193,6 +229,9 @@ class KaraokeGlyphTiming {
   final int highlightStartUs;
   final int highlightEndUs;
   final int liftStartUs;
+  // Estimate used only for motion, NOT another measured timestamp. A supplied
+  // single glyph falls back to its true token span; long sustains do not recoil.
+  final int? estimatedCadenceUs;
 }
 
 typedef KaraokeGlyphFrame = ({double highlightProgress, double liftProgress});
@@ -224,7 +263,37 @@ double karaokeGlyphLiftAt(
   KaraokeGlyphTiming timing,
   KaraokeMotionConfig config,
 ) {
-  return _liftAt(mediaTimeUs, timing.liftStartUs, config);
+  return _liftAt(mediaTimeUs, timing.liftStartUs, config) +
+      _recoilAt(
+        mediaTimeUs,
+        timing.liftStartUs,
+        _recoilAmplitude(timing, config),
+        config,
+      );
+}
+
+double _recoilAmplitude(KaraokeGlyphTiming timing, KaraokeMotionConfig config) {
+  final cadence =
+      timing.estimatedCadenceUs ??
+      math.max(1, timing.sourceTokenEndUs - timing.sourceTokenStartUs);
+  return config.fastOvershootFraction *
+      ((180000 - cadence) / 120000).clamp(0.0, 1.0);
+}
+
+double _recoilAt(
+  int mediaUs,
+  int startUs,
+  double amplitude,
+  KaraokeMotionConfig config,
+) {
+  if (amplitude == 0) return 0;
+  final phase = (mediaUs - startUs) / config.liftDuration.inMicroseconds;
+  // One C2 compact hump (zero position/velocity/acceleration at each end).
+  // Peak at .95 of the slow lift; settled exactly by 1.35. It is not passed
+  // into neighbour traction, so fast articulation cannot amplify the chain.
+  final x = ((phase - .55) / .80).clamp(0.0, 1.0);
+  final bell = x * (1 - x);
+  return amplitude * 64 * bell * bell * bell;
 }
 
 double _liftAt(int mediaTimeUs, int startUs, KaraokeMotionConfig config) {
@@ -235,6 +304,10 @@ double _liftAt(int mediaTimeUs, int startUs, KaraokeMotionConfig config) {
       );
   final lift = switch (config.curve) {
     KaraokeLiftCurve.smoothTop => _smoothTop(liftPhase),
+    // Zero starting velocity and a zero-velocity/acceleration arrival, but
+    // less dead travel at the beginning than symmetric quintic smoothstep.
+    KaraokeLiftCurve.flowingTop =>
+      liftPhase * liftPhase * (6 - 8 * liftPhase + 3 * liftPhase * liftPhase),
     KaraokeLiftCurve.easeOutCubic => 1 - math.pow(1 - liftPhase, 3).toDouble(),
   };
   return lift;
@@ -250,28 +323,30 @@ double karaokeLiftPixels(
   double lineHeight,
   KaraokeMotionConfig config,
 ) =>
-    -liftProgress.clamp(0.0, 1.0) *
-    (lineHeight * config.liftHeightFraction).clamp(1.2, 4.0);
+    -liftProgress.clamp(0.0, 1.0 + config.fastOvershootFraction) *
+    (lineHeight * config.liftHeightFraction);
 
 /// Layout-only metadata. Shaped runs stay intact; cached adjacency respects
-/// whitespace, bounded timing gaps, physical wraps and text direction.
+/// bounded word separators/timing gaps, physical wraps and text direction.
 class KaraokeFollowerGlyph {
   const KaraokeFollowerGlyph({required this.timing, required this.chain});
   final KaraokeGlyphTiming timing;
   final int chain;
 }
 
-/// 354's slow own curve plus bounded, non-recursive three-neighbour traction.
+/// Slow own curve plus bounded, non-recursive three-neighbour traction.
 /// No frame integration: seeking to a time equals playing to that time.
 class KaraokeFollowerTimeline {
   KaraokeFollowerTimeline(List<KaraokeFollowerGlyph> glyphs, this.config)
     : _starts = Int64List(glyphs.length),
       _sources = Int32List(glyphs.length * 3)
         ..fillRange(0, glyphs.length * 3, -1),
-      _own = Float64List(glyphs.length) {
+      _own = Float64List(glyphs.length),
+      _recoilAmplitudes = Float64List(glyphs.length) {
     var chainStart = 0;
     for (var i = 0; i < glyphs.length; i++) {
       _starts[i] = glyphs[i].timing.liftStartUs;
+      _recoilAmplitudes[i] = _recoilAmplitude(glyphs[i].timing, config);
       if (i == 0 || glyphs[i].chain != glyphs[i - 1].chain) chainStart = i;
       for (var hop = 0; hop < 3 && i - hop - 1 >= chainStart; hop++) {
         _sources[i * 3 + hop] = i - hop - 1;
@@ -283,22 +358,29 @@ class KaraokeFollowerTimeline {
   final Int64List _starts;
   final Int32List _sources;
   final Float64List _own;
+  final Float64List _recoilAmplitudes;
   int get length => _starts.length;
 
   double ownAt(int index, int mediaUs) =>
-      _liftAt(mediaUs, _starts[index], config);
+      _liftAt(mediaUs, _starts[index], config) +
+      _recoilAt(mediaUs, _starts[index], _recoilAmplitudes[index], config);
 
   double liftAt(int index, int mediaUs) {
-    final own = ownAt(index, mediaUs);
+    final own = _liftAt(mediaUs, _starts[index], config);
     var remaining = 1.0;
     for (var hop = 0; hop < 3; hop++) {
       final source = _sources[index * 3 + hop];
       if (source < 0) break;
-      remaining *= 1 - config.followerWeights[hop] * ownAt(source, mediaUs);
+      remaining *=
+          1 -
+          config.followerWeights[hop] *
+              _liftAt(mediaUs, _starts[source], config);
     }
     // Smooth remaining-travel blend instead of max's velocity-changing switch.
     // Each follower reads ONLY own motion, never another follower's result.
-    return (1 - (1 - own) * remaining).clamp(0.0, 1.0);
+    return 1 -
+        (1 - own) * remaining +
+        _recoilAt(mediaUs, _starts[index], _recoilAmplitudes[index], config);
   }
 
   void writeOffsets(
@@ -314,7 +396,7 @@ class KaraokeFollowerTimeline {
       return;
     }
     for (var i = 0; i < length; i++) {
-      _own[i] = ownAt(i, mediaUs);
+      _own[i] = _liftAt(mediaUs, _starts[i], config);
     }
     final maximum = karaokeLiftPixels(1, lineHeight, config) * envelope;
     for (var i = 0; i < length; i++) {
@@ -324,7 +406,11 @@ class KaraokeFollowerTimeline {
         if (source < 0) break;
         remaining *= 1 - config.followerWeights[hop] * _own[source];
       }
-      output[i] = maximum * (1 - (1 - _own[i]) * remaining).clamp(0.0, 1.0);
+      output[i] =
+          maximum *
+          (1 -
+              (1 - _own[i]) * remaining +
+              _recoilAt(mediaUs, _starts[i], _recoilAmplitudes[i], config));
     }
   }
 }

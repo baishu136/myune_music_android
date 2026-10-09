@@ -32,6 +32,16 @@ part 'karaoke_media_clock.dart';
 part 'karaoke_paint_cache.dart';
 part 'karaoke_prewarm.dart';
 
+double mobileLyricWholeLineHighlight(int distance, {bool hasFocus = true}) =>
+    !hasFocus
+    ? 0
+    : switch (distance) {
+        0 => 1,
+        _ => 0,
+      };
+
+int debugMobileLyricGlowLayoutCount = 0;
+
 const int mobileLyricsTopEdgeAlpha = 0x00;
 const int mobileLyricsTopFadeSoftAlpha = 0x24;
 const int mobileLyricsTopFadeMidAlpha = 0x68;
@@ -328,12 +338,11 @@ Duration karaokeAdvanceVisualClock(
   final step = math.max(0, frameDelta.inMicroseconds * playbackRate).round();
   final predicted = current.inMicroseconds + step;
   final drift = target.inMicroseconds - predicted;
-  if (drift.abs() > 200000) return target;
-  final correction = drift.abs() <= 30000
-      ? (drift * karaokePositionBlend(frameDelta))
-            .clamp(-step * .08, step * .08)
-            .round()
-      : (drift * .35).clamp(-step * .75, step * 3).round();
+  // A sample is a correction, not a request to slow the sweep to 25% speed.
+  // Genuine jumps are resolved by the sample tracker / explicit seek path.
+  final correction = (drift * karaokePositionBlend(frameDelta))
+      .clamp(-step * .08, step * .08)
+      .round();
   return Duration(microseconds: predicted + correction);
 }
 
@@ -824,6 +833,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   final _prewarm = _KaraokePrewarmSlot();
   int _prewarmGeneration = 0;
   bool _prewarmPending = false;
+  bool _prewarmWorkNeeded() => mounted;
   int _prewarmHandledIndex = -1;
   int _prewarmHandledGeneration = -1;
   TextStyle? _prewarmStyle;
@@ -831,6 +841,8 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   Locale? _prewarmLocale;
   double _prewarmPixelRatio = 1;
   Duration? _lastTick;
+  InteractionWorkLease? _scrollProtection;
+  bool _motionVisible = true;
   Duration _lastDebugUpdate = Duration.zero;
   Timer? _resumeFollowTimer;
   Timer? _browseHighlightRevealTimer;
@@ -857,8 +869,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   int? _interludeExitIndex;
   bool _explicitSeekPending = false;
   Timer? _explicitSeekTimer;
-  Duration? _lastObservedPosition;
-  Duration _lastObservedStamp = Duration.zero;
+  final _positionSamples = KaraokePositionSampleTracker();
   Duration? _seekTargetTimestamp;
   double _viewportHeight = 0;
   double _layoutWidth = 0;
@@ -886,6 +897,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   void initState() {
     super.initState();
     _frameClock = LyricFrameClock(this, _onMotionTick);
+    _frameClock.visualMoving.addListener(_syncScrollProtection);
     _configureMotion();
     widget.seekIntentListenable?.addListener(_markExplicitSeek);
     widget.seekPositionListenable?.addListener(_readCompletedSeek);
@@ -914,9 +926,18 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     });
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _motionVisible = TickerMode.valuesOf(context).enabled;
+    _syncScrollProtection();
+  }
+
   void _resetListPositionAnchor() {
-    _lastObservedPosition = widget.positionListenable?.value ?? widget.position;
-    _lastObservedStamp = SchedulerBinding.instance.currentSystemFrameTimeStamp;
+    _positionSamples.reset(
+      widget.positionListenable?.value ?? widget.position,
+      SchedulerBinding.instance.currentSystemFrameTimeStamp,
+    );
   }
 
   void _readCompletedSeek() {
@@ -926,35 +947,29 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   void _readListPosition() {
     final source = widget.positionListenable?.value ?? widget.position;
-    final previous = _lastObservedPosition;
     final stamp = SchedulerBinding.instance.currentSystemFrameTimeStamp;
     final outputRunning =
         widget.isPlaying && (widget.actualPlaybackListenable?.value ?? true);
-    final discontinuity =
-        previous != null &&
-        karaokePlaybackPositionDiscontinuity(
-          previousSource: previous,
-          source: source,
-          // Pause/buffering has no expected media-time advance. Re-anchor on
-          // output transitions so resumed updates cannot include the pause.
-          elapsedSinceSource: outputRunning
-              ? stamp - _lastObservedStamp
-              : Duration.zero,
-          playbackRate:
-              widget.playbackRateListenable?.value ?? widget.playbackRate,
-        );
-    _lastObservedPosition = source;
-    _lastObservedStamp = stamp;
-    if (discontinuity && _seekTargetIndex == null) _snapPlaybackSeek(source);
+    final update = _positionSamples.observe(
+      source,
+      stamp,
+      outputRunning
+          ? widget.playbackRateListenable?.value ?? widget.playbackRate
+          : 0,
+    );
+    if (update == KaraokeSourceUpdate.discontinuity &&
+        _seekTargetIndex == null) {
+      _snapPlaybackSeek(source);
+    }
     _maybePrewarmNext(source);
   }
 
   void _snapPlaybackSeek(Duration target) {
     if (widget.lines.isEmpty) return;
-    var index = 0;
+    var index = -1;
     // A media position belongs to the preceding LRC line, not the nearest
     // future timestamp. Controller lyric taps still use their exact timestamp.
-    for (var i = 1; i < widget.lines.length; i++) {
+    for (var i = 0; i < widget.lines.length; i++) {
       if (widget.lines[i].timestamp > target) break;
       index = i;
     }
@@ -1009,6 +1024,12 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       _normalExitIndex = null;
       _interludeExitIndex = null;
       if (!oldWidget.entryPreparing) {
+        // The retained list is hidden while cover -> lyrics prepares. Do not
+        // replay an old browse badge/selection fade when it becomes visible.
+        _resumeAutomaticFollow(notifyBrowseTarget: false, immediate: true);
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) widget.onBrowseTargetChanged?.call(null);
+        });
         _stopMotion();
         _elasticPulse.value = _LyricElasticPulse(
           id: _elasticPulse.value.id + 1,
@@ -1052,7 +1073,10 @@ class _MobileLyricsListState extends State<MobileLyricsList>
           (_lyricsPointerDown || _isManuallyBrowsing);
       final pendingSeekTimestamp = contentChanged ? null : _seekTargetTimestamp;
       if (pendingSeekTimestamp != null && widget.lines.isNotEmpty) {
-        final remappedTarget = _nearestLyricIndex(pendingSeekTimestamp);
+        final remappedTarget =
+            pendingSeekTimestamp < widget.lines.first.timestamp
+            ? -1
+            : _nearestLyricIndex(pendingSeekTimestamp);
         _seekTargetTimer?.cancel();
         _seekTargetConfirmationTimer?.cancel();
         _seekTargetIndex = remappedTarget;
@@ -1209,10 +1233,9 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     final start = widget.lines[index - 1].timestamp;
     final end = widget.lines[index].timestamp;
     final span = (end - start).inMicroseconds;
-    if (source >= end ||
-        span <= 0 ||
-        ((source - start).inMicroseconds < span * .8 &&
-            (end - source).inMilliseconds > 400)) {
+    // Prepare the bounded next row as soon as playback occupies this line,
+    // rather than issuing a burst in its final 400ms.
+    if (source >= end || span <= 0 || source < start) {
       return;
     }
     final line = widget.lines[index];
@@ -1239,36 +1262,46 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     // layout work to transient callbacks. A continuously ticking player would
     // starve a Priority.idle scheduler task. At most one spare is prepared.
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      Timer.run(() {
-        _prewarmPending = false;
-        if (!mounted ||
-            generation != _prewarmGeneration ||
-            widget.active + 1 != index ||
-            _isManuallyBrowsing ||
-            (widget.positionListenable?.value ?? widget.position) >= end ||
-            _prewarm.mounted.contains(identity)) {
-          return;
+      Timer.run(() async {
+        final lease = await InteractionPerformanceController.instance
+            .acquireIdleWork(
+              priority: InteractionWorkPriority.userVisible,
+              isStillNeeded: _prewarmWorkNeeded,
+            );
+        try {
+          if (!lease.isGranted) return;
+          if (!mounted ||
+              generation != _prewarmGeneration ||
+              widget.active + 1 != index ||
+              _isManuallyBrowsing ||
+              (widget.positionListenable?.value ?? widget.position) >= end ||
+              _prewarm.mounted.contains(identity)) {
+            return;
+          }
+          _prewarm.clear();
+          _prewarm.identity = identity;
+          _prewarm.cache = _KaraokePaintCache(
+            text: effective.texts.join('\n'),
+            ranges: _karaokeRanges(effective),
+            synthetic: !timed,
+            width: mobileLyricScaleSafeContentWidth(
+              (_layoutWidth - mobileLyricsHorizontalInset(widget.textAlign) * 2)
+                  .clamp(1.0, double.infinity),
+            ),
+            style: style,
+            textAlign: widget.textAlign,
+            textDirection: _layoutDirection!,
+            textScaler: _prewarmScaler,
+            locale: _prewarmLocale,
+            pixelRatio: _prewarmPixelRatio,
+          );
+          _prewarm.cache!.prepareImage();
+          _prewarmHandledIndex = index;
+          _prewarmHandledGeneration = generation;
+        } finally {
+          _prewarmPending = false;
+          lease.release();
         }
-        _prewarm.clear();
-        _prewarm.identity = identity;
-        _prewarm.cache = _KaraokePaintCache(
-          text: effective.texts.join('\n'),
-          ranges: _karaokeRanges(effective),
-          synthetic: !timed,
-          width: mobileLyricScaleSafeContentWidth(
-            (_layoutWidth - mobileLyricsHorizontalInset(widget.textAlign) * 2)
-                .clamp(1.0, double.infinity),
-          ),
-          style: style,
-          textAlign: widget.textAlign,
-          textDirection: _layoutDirection!,
-          textScaler: _prewarmScaler,
-          locale: _prewarmLocale,
-          pixelRatio: _prewarmPixelRatio,
-        );
-        _prewarm.cache!.prepareImage();
-        _prewarmHandledIndex = index;
-        _prewarmHandledGeneration = generation;
       });
     });
   }
@@ -1305,18 +1338,21 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     // elapsed time, not zero, or a new line would inherit the song's uptime.
     _frameClock.setMoving(true);
     _lastTick = _frameClock.elapsed;
-    InteractionPerformanceController.instance.pulse(
-      InteractionPhase.visualAnimation,
-      settleAfter: const Duration(milliseconds: 1500),
-    );
+  }
+
+  void _syncScrollProtection() {
+    if (_motionVisible && _frameClock.visualMoving.value) {
+      _scrollProtection ??= InteractionPerformanceController.instance
+          .beginVisualAnimation();
+    } else {
+      _scrollProtection?.release();
+      _scrollProtection = null;
+    }
   }
 
   void _stopMotion() {
     _frameClock.setMoving(false);
     _lastTick = null;
-    InteractionPerformanceController.instance.endPhase(
-      InteractionPhase.visualAnimation,
-    );
   }
 
   bool _retargetIndex(
@@ -1358,10 +1394,6 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       final displacement = clampedTarget - _scrollController.offset;
       _stopMotion();
       if (displacement.abs() >= .35) {
-        InteractionPerformanceController.instance.pulse(
-          InteractionPhase.visualAnimation,
-          settleAfter: const Duration(milliseconds: 1100),
-        );
         final previous = _elasticPulse.value;
         final visualDisplacement = !boundedTravel && _normalExitIndex != null
             ? displacement
@@ -1469,9 +1501,9 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       final seekTarget = _seekTargetIndex;
       if (seekTarget != null) {
         if (_pendingTypographyReanchor) {
-          _jumpToIndex(seekTarget);
+          _jumpToIndex(seekTarget.clamp(0, widget.lines.length - 1));
         } else {
-          _jumpToIndex(seekTarget);
+          _jumpToIndex(seekTarget.clamp(0, widget.lines.length - 1));
         }
         return;
       }
@@ -1543,7 +1575,10 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     });
   }
 
-  void _resumeAutomaticFollow({bool notifyBrowseTarget = true}) {
+  void _resumeAutomaticFollow({
+    bool notifyBrowseTarget = true,
+    bool immediate = false,
+  }) {
     _resumeFollowTimer?.cancel();
     _resumeFollowTimer = null;
     _browseHighlightRevealTimer?.cancel();
@@ -1552,7 +1587,9 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     _browseChromeExitTimer = null;
     final wasManuallyBrowsing = _isManuallyBrowsing;
     final animateExit =
-        _browseHighlightVisible && _browseHighlight.value.entry != null;
+        !immediate &&
+        _browseHighlightVisible &&
+        _browseHighlight.value.entry != null;
     _isManuallyBrowsing = false;
     _browseHighlightVisible = false;
     if (animateExit) {
@@ -1615,7 +1652,9 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   void _handleLyricsPointerDown(PointerDownEvent event) {
     _lyricsPointerDown = true;
-    if (!_isManuallyBrowsing) _startManualInteraction();
+    // Freeze tracking on touch, but only a vertical ScrollStart with drag
+    // details enters browse. Double tap and horizontal song swipes must not
+    // collapse dynamic row spacing or expose a seek badge.
     _layoutRequestId++;
     _stopMotion();
     if (!_isManuallyBrowsing && _scrollController.hasClients) {
@@ -1748,7 +1787,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       _seekTargetIndex = targetIndex;
     });
     if (_scrollControllerState?.hasClients ?? false) {
-      _jumpToIndex(targetIndex);
+      _jumpToIndex(targetIndex.clamp(0, widget.lines.length - 1));
     } else {
       _scheduleLayoutRetarget(jump: true);
     }
@@ -2017,15 +2056,17 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   @override
   void dispose() {
+    InteractionPerformanceController.instance.cancelIdleWork(
+      _prewarmWorkNeeded,
+    );
     widget.seekIntentListenable?.removeListener(_markExplicitSeek);
     widget.seekPositionListenable?.removeListener(_readCompletedSeek);
     widget.positionListenable?.removeListener(_readListPosition);
     widget.playbackRateListenable?.removeListener(_resetListPositionAnchor);
     widget.actualPlaybackListenable?.removeListener(_resetListPositionAnchor);
     _explicitSeekTimer?.cancel();
-    InteractionPerformanceController.instance.endPhase(
-      InteractionPhase.visualAnimation,
-    );
+    _frameClock.visualMoving.removeListener(_syncScrollProtection);
+    _scrollProtection?.release();
     widget.controller?._detach(this);
     _frameClock.dispose();
     _prewarmGeneration++;
@@ -2050,7 +2091,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
           builder: (context, constraints) {
             _ensureLayoutMetrics(context, constraints);
             final displayedActive = (_seekTargetIndex ?? widget.active).clamp(
-              0,
+              -1,
               widget.lines.length - 1,
             );
             final displayedPosition = _seekTargetIndex == null
@@ -2118,6 +2159,10 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                               active: index == displayedActive,
                               distance: distance,
                               relativeDistance: index - displayedActive,
+                              wholeLineHighlight: mobileLyricWholeLineHighlight(
+                                distance,
+                                hasFocus: displayedActive >= 0,
+                              ),
                               height: _itemHeights[index],
                               contentCenter:
                                   _itemOffsets[index] +
@@ -2595,6 +2640,7 @@ class _LyricLineItem extends StatelessWidget {
     required this.prewarm,
     required this.active,
     required this.distance,
+    required this.wholeLineHighlight,
     required this.relativeDistance,
     required this.height,
     required this.contentCenter,
@@ -2638,6 +2684,7 @@ class _LyricLineItem extends StatelessWidget {
   final _KaraokePrewarmSlot prewarm;
   final bool active;
   final int distance;
+  final double wholeLineHighlight;
   final int relativeDistance;
   final double height;
   final double contentCenter;
@@ -2753,9 +2800,14 @@ class _LyricLineItem extends StatelessWidget {
     final karaokeUnplayedColor = darkForeground
         ? Colors.white.withValues(alpha: .36)
         : const Color(0xFF757575).withValues(alpha: .68);
-    // Distance opacity is composited outside the cached glyph masks.
+    final ordinaryText = !karaokeLyricsEnabled && !line.isInterlude;
+    // Ordinary 0% means the existing dim base, including its distance alpha.
+    // Blend alpha too so white-on-white themes retain the dim base outside
+    // the active row; the outer fade must not apply distance a second time.
     final inactiveColor = karaokeLyricsEnabled
         ? karaokeUnplayedColor
+        : ordinaryText
+        ? inactiveBase.withValues(alpha: inactiveBase.a * _opacity)
         : inactiveBase;
     final resolvedActiveColor = highlightActiveLine
         ? Colors.white
@@ -2765,6 +2817,8 @@ class _LyricLineItem extends StatelessWidget {
         : resolvedActiveColor;
     final lineColor = browseHighlighted
         ? browseHighlightColor
+        : ordinaryText
+        ? Color.lerp(inactiveColor, resolvedActiveColor, wholeLineHighlight)!
         : active
         ? resolvedActiveColor
         : inactiveColor;
@@ -2776,10 +2830,8 @@ class _LyricLineItem extends StatelessWidget {
       color: lineColor,
       shadows: null,
     );
-    // Keep the expensive blurred glyph raster independent from the line's
-    // distance opacity. As the active line advances, most visible lyrics only
-    // change alpha; applying that with a composited Opacity layer lets their
-    // cached glow textures survive instead of repainting every blur.
+    // Glow geometry is cached independently from animated text style. The
+    // retained outer glow opacity applies the line alpha exactly once.
     final glowStyle = style.copyWith(color: Colors.transparent);
     final glowColor = lineColor.withValues(alpha: .30);
     Widget buildLyric(Duration currentPosition) {
@@ -2867,10 +2919,7 @@ class _LyricLineItem extends StatelessWidget {
                   opacity: lineColor.a,
                   child: RepaintBoundary(
                     child: IgnorePointer(
-                      child: CustomPaint(
-                        key: const ValueKey('mobile_lyric_glow_layer'),
-                        isComplex: true,
-                        willChange: false,
+                      child: _CachedMobileLyricGlow(
                         painter: MobileLyricGlowPainter(
                           text: line.texts.join('\n'),
                           style: glowStyle,
@@ -2933,7 +2982,7 @@ class _LyricLineItem extends StatelessWidget {
       curve: focusCurve,
       opacity: line.isInterlude && normalExit
           ? 1
-          : karaokeLyricsEnabled && !browseHighlighted
+          : (karaokeLyricsEnabled || ordinaryText) && !browseHighlighted
           ? 1
           : !browseHighlighted
           ? _opacity
@@ -3117,6 +3166,56 @@ class _AnimatedLyricBlurState
 /// Keeping this painter below its own repaint boundary lets scrolling and
 /// elastic transforms reuse the rasterized blur instead of rebuilding a text
 /// shadow on every foreground color or karaoke-progress frame.
+class _CachedMobileLyricGlow extends StatefulWidget {
+  const _CachedMobileLyricGlow({required this.painter});
+  final MobileLyricGlowPainter painter;
+  @override
+  State<_CachedMobileLyricGlow> createState() => _CachedMobileLyricGlowState();
+}
+
+class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
+  TextPainter? _layout;
+  MobileLyricGlowPainter? _previous;
+  double? _width;
+  @override
+  void dispose() {
+    _layout?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      final config = widget.painter;
+      if (_layout == null ||
+          _width != constraints.maxWidth ||
+          config.shouldRepaint(_previous!)) {
+        _layout?.dispose();
+        _layout = config.createLayout(constraints.maxWidth);
+        _width = constraints.maxWidth;
+        _previous = config;
+      }
+      return CustomPaint(
+        key: const ValueKey('mobile_lyric_glow_layer'),
+        isComplex: true,
+        willChange: false,
+        painter: MobileLyricGlowPainter(
+          text: config.text,
+          style: config.style,
+          color: config.color,
+          blurRadius: config.blurRadius,
+          textAlign: config.textAlign,
+          textDirection: config.textDirection,
+          textScaler: config.textScaler,
+          locale: config.locale,
+          primaryRowOnly: config.primaryRowOnly,
+          preparedLayout: _layout,
+        ),
+      );
+    },
+  );
+}
+
 class MobileLyricGlowPainter extends CustomPainter {
   const MobileLyricGlowPainter({
     required this.text,
@@ -3128,6 +3227,7 @@ class MobileLyricGlowPainter extends CustomPainter {
     required this.textScaler,
     required this.locale,
     this.primaryRowOnly = false,
+    this.preparedLayout,
   });
 
   final String text;
@@ -3139,12 +3239,26 @@ class MobileLyricGlowPainter extends CustomPainter {
   final TextScaler textScaler;
   final Locale? locale;
   final bool primaryRowOnly;
+  final TextPainter? preparedLayout;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (text.isEmpty || size.isEmpty || color.a <= 0 || blurRadius <= 0) {
       return;
     }
+    final painter = preparedLayout ?? createLayout(size.width);
+    try {
+      painter.paint(canvas, Offset(0, (size.height - painter.height) / 2));
+    } finally {
+      if (preparedLayout == null) painter.dispose();
+    }
+  }
+
+  TextPainter createLayout(double width) {
+    assert(() {
+      debugMobileLyricGlowLayoutCount++;
+      return true;
+    }());
     final baseStyle = style.copyWith(color: Colors.transparent, shadows: null);
     final glowingStyle = baseStyle.copyWith(
       shadows: [Shadow(color: color, blurRadius: blurRadius)],
@@ -3162,14 +3276,13 @@ class MobileLyricGlowPainter extends CustomPainter {
             ],
           )
         : TextSpan(text: text, style: glowingStyle);
-    final painter = TextPainter(
+    return TextPainter(
       text: content,
       textAlign: textAlign,
       textDirection: textDirection,
       textScaler: textScaler,
       locale: locale,
-    )..layout(maxWidth: size.width);
-    painter.paint(canvas, Offset(0, (size.height - painter.height) / 2));
+    )..layout(maxWidth: width);
   }
 
   @override
@@ -3307,6 +3420,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
   bool _imageRequested = false;
   int _cacheGeneration = 0;
   Timer? _preparationTimer;
+  bool _preparationWorkNeeded() => mounted;
 
   @override
   void initState() {
@@ -3357,7 +3471,13 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
       oldWidget.positionListenable?.removeListener(_readSourcePosition);
       widget.positionListenable?.addListener(_readSourcePosition);
     }
-    if (widget.entryPreparing || widget.seekTargetPosition != null) {
+    final newPreparation = widget.entryPreparing && !oldWidget.entryPreparing;
+    final newSeekTarget =
+        widget.seekTargetPosition != null &&
+        (widget.seekTargetPosition != oldWidget.seekTargetPosition ||
+            oldWidget.cacheIdentity != widget.cacheIdentity ||
+            !oldWidget.active && widget.active);
+    if (newPreparation || newSeekTarget) {
       // A retained exit/entry clock must not wake up after the page is visible.
       // Keep the shaped cache; only calibrate media time and ink envelopes.
       _isExiting = false;
@@ -3432,6 +3552,9 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
 
   @override
   void dispose() {
+    InteractionPerformanceController.instance.cancelIdleWork(
+      _preparationWorkNeeded,
+    );
     widget.positionListenable?.removeListener(_readSourcePosition);
     widget.actualPlaybackListenable?.removeListener(_syncTickerState);
     widget.playbackRateListenable?.removeListener(_readPlaybackRate);
@@ -3492,6 +3615,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
         (widget.actualPlaybackListenable?.value ?? true) &&
         widget.positionListenable != null) {
       if (!_followingFrames) {
+        _clock.rebaseElapsed();
         _clock.setRunning(true, _sourcePosition);
         _followingFrames = true;
         widget.frameClock.addListener(_tickPosition);
@@ -3512,6 +3636,9 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
   }
 
   void _rebuildCache() {
+    InteractionPerformanceController.instance.cancelIdleWork(
+      _preparationWorkNeeded,
+    );
     _preparationTimer?.cancel();
     _cacheGeneration++;
     _preparationScheduled = false;
@@ -3542,28 +3669,38 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
     // not in the scroll/layout callback; revalidate before adopting ownership.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted || generation != _cacheGeneration) return;
-      _preparationTimer = Timer(Duration.zero, () {
+      _preparationTimer = Timer(Duration.zero, () async {
         _preparationTimer = null;
-        if (!mounted || generation != _cacheGeneration) return;
-        _preparationScheduled = false;
-        if (_paintCache != null) return;
-        final prepared =
-            widget.prewarm.take(widget.cacheIdentity) ??
-            _KaraokePaintCache(
-              text: _text,
-              ranges: _ranges,
-              synthetic: widget.synthetic,
-              width: width,
-              style: style,
-              textAlign: widget.textAlign,
-              textDirection: direction,
-              textScaler: scaler,
-              locale: locale,
-              pixelRatio: pixelRatio,
+        final lease = await InteractionPerformanceController.instance
+            .acquireIdleWork(
+              priority: InteractionWorkPriority.userVisible,
+              isStillNeeded: _preparationWorkNeeded,
             );
-        _paintCache = prepared;
-        if (_imageRequested || !widget.active) prepared.prepareImage();
-        setState(() {});
+        try {
+          if (!lease.isGranted) return;
+          if (!mounted || generation != _cacheGeneration) return;
+          _preparationScheduled = false;
+          if (_paintCache != null) return;
+          final prepared =
+              widget.prewarm.take(widget.cacheIdentity) ??
+              _KaraokePaintCache(
+                text: _text,
+                ranges: _ranges,
+                synthetic: widget.synthetic,
+                width: width,
+                style: style,
+                textAlign: widget.textAlign,
+                textDirection: direction,
+                textScaler: scaler,
+                locale: locale,
+                pixelRatio: pixelRatio,
+              );
+          _paintCache = prepared;
+          if (_imageRequested || !widget.active) prepared.prepareImage();
+          setState(() {});
+        } finally {
+          lease.release();
+        }
       });
     });
   }

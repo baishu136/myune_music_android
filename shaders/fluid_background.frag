@@ -20,12 +20,16 @@ uniform float uTargetGlow;
 
 out vec4 fragColor;
 
-// A plateau core and finite, C1-continuous edge. A core's pigment is painted
+// A plateau core and broad, C2-continuous radial edge. A core's pigment is painted
 // at full opacity, not averaged with every other field on the screen.
 float fluidBlobMask(vec2 point, vec2 center, vec2 radius, float outer) {
   vec2 delta = (point - center) / radius;
-  float d2 = dot(delta, delta);
-  return 1.0 - smoothstep(0.10, outer, d2);
+  // Fade in radius rather than radius squared: avoids compressing most of
+  // the colour change into a thin ring. No extra layers/blur or additive wash.
+  float radiusDistance = length(delta);
+  float x = clamp((radiusDistance - 0.20) / (outer - 0.20), 0.0, 1.0);
+  float eased = x * x * x * (x * (x * 6.0 - 15.0) + 10.0);
+  return 1.0 - eased;
 }
 
 float interleavedGradientNoise(vec2 pixel) {
@@ -35,9 +39,9 @@ float interleavedGradientNoise(vec2 pixel) {
 void main() {
   vec2 size = max(uSize, vec2(1.0));
   vec2 uv = FlutterFragCoord().xy / size;
-  // uTime is visible, unblocked wall-clock seconds. One orbit = 96.66s;
+  // uTime is visible, unblocked wall-clock seconds. One orbit = 64.44s;
   // integer temporal harmonics preserve continuity at the Dart clock wrap.
-  float phase = uTime * 0.065;
+  float phase = uTime * 0.0975;
   float motion = clamp(uMotion, 0.0, 1.0);
   // Large-scale silk folds, never a high-frequency stripe/noise texture.
   vec2 firstWarp = vec2(sin(uv.y * 1.8 + phase),
@@ -63,12 +67,17 @@ void main() {
                  0.74 + sin(phase + 2.85) * 0.30 * motion);
   vec2 pa = vec2(0.48 + cos(phase + 1.3) * 0.12 * motion,
                  0.50 + sin(phase + 1.3) * 0.10 * motion);
-  float mask1 = fluidBlobMask(warped, p1, vec2(0.62, 0.78), 1.0);
-  float mask2 = fluidBlobMask(warped, p2, vec2(0.55, 0.70), 1.0);
-  float ambientMask = fluidBlobMask(warped, pa, vec2(1.10, 1.0), 1.6) * 0.16;
+  float mask1 = fluidBlobMask(warped, p1, vec2(0.62, 0.78), 1.20);
+  float mask2 = fluidBlobMask(warped, p2, vec2(0.55, 0.70), 1.20);
+  float ambientMask = fluidBlobMask(warped, pa, vec2(1.10, 1.0), 1.50) * 0.16;
   // Fixed layer order: canvas -> diffuse tint -> blob 1 -> blob 2.
   // Ambient cannot bleach an opaque core. No energy sum or weight division.
-  vec3 color = mix(base, ambient, ambientMask);
+  // Broad pigment wash on uncovered canvas: no fixed central dark disk when
+  // the two blobs wander to opposite edges. Convex lerp, never additive light;
+  // opaque blob cores and genuinely black artwork remain untouched.
+  float canvasFill = 0.30 * (1.0 - smoothstep(0.10, 0.65, max(mask1, mask2)));
+  vec3 color = mix(base, blob1, canvasFill);
+  color = mix(color, ambient, ambientMask);
   color = mix(color, blob1, mask1);
   color = mix(color, blob2, mask2);
   // Preserve the existing 48-float ABI; slot 0 / glow are legacy metadata,

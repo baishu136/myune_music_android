@@ -582,11 +582,16 @@ void main() {
       final initialLayouts = debugKaraokeTextLayoutCount;
       await tester.pumpWidget(_host(lines, position: position));
       final layoutCount = debugKaraokeTextLayoutCount;
+      final dynamic initialCache = _painter(tester, 0).cache;
+      final fragments = initialCache.tokens.fold<int>(
+        0,
+        (int count, dynamic token) => count + (token.fragments.length as int),
+      );
       expect(
         layoutCount - initialLayouts,
-        lessThanOrEqualTo(8),
+        lessThanOrEqualTo(5 + fragments),
         reason:
-            'bounded geometry/ink layouts plus complex native fallback, not per glyph',
+            'geometry/ink plus one owned vector mask per token fragment; never per frame',
       );
       final livePictures = debugKaraokeLivePictureCount;
       final painter = _painter(tester, 0);
@@ -634,7 +639,13 @@ void main() {
       await tester.pumpWidget(_host(lines));
       final painter = _painter(tester, 0);
       final layouts = debugKaraokeTextLayoutCount;
-      await tester.runAsync(() => painter.cache.prepareImage() as Future<void>);
+      painter.cache.prepareImage();
+      for (var i = 0; i < 80 && !painter.cache.imageReady; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+      }
       expect(painter.cache.imageReady, isTrue);
       var before = debugKaraokeSolidLayerCount;
       _draw(painter, -120000);

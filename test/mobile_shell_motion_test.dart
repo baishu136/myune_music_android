@@ -1,13 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/mobile/mobile_shell.dart';
+import 'package:myune_music/widgets/home_tab_viewport.dart';
 
 void main() {
-  test('distant home navigation animates only across an adjacent bridge', () {
-    expect(homePageAnimationBridge(0, 4), 3);
-    expect(homePageAnimationBridge(4, 0), 1);
-    expect(homePageAnimationBridge(1, 2), isNull);
-    expect(homePageAnimationBridge(3, 3), isNull);
+  test('home motion and header share the 300ms transition', () {
+    expect(homeTabTransitionDuration, const Duration(milliseconds: 300));
+    expect(homeTabTransitionCurve, Curves.easeOutCubic);
   });
 
   test('library entrance is claimed exactly when songs first appear', () {

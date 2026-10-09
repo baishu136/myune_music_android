@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:developer' as developer;
 import 'dart:math' as math;
 import 'dart:ui' as ui;
 
@@ -33,6 +34,7 @@ import '../widgets/now_playing_immersive_layout.dart';
 import '../widgets/fullscreen_lyrics_double_tap.dart';
 import '../widgets/playback_jump_feedback.dart';
 import '../widgets/home_tab_viewport.dart';
+import '../widgets/optional_shader_mask.dart';
 import '../widgets/lyrics_song_swipe_transition.dart';
 import '../widgets/now_playing_cover_image.dart';
 import '../widgets/play_pause_button.dart';
@@ -49,15 +51,44 @@ import '../services/artwork_prefetch_plan.dart';
 import '../services/interaction_performance_controller.dart';
 import '../theme/theme_provider.dart';
 import '../theme/playback_theme_policy.dart';
+import '../theme/home_theme_scope.dart';
+import '../theme/home_background_policy.dart';
+import '../widgets/home_glass_surface.dart';
 import '../widgets/custom_theme_background.dart';
 import '../widgets/custom_theme_image_editor.dart';
 import '../widgets/artwork_image.dart';
 import '../widgets/playback_background/playback_background.dart';
+import '../widgets/playback_background/fluid_background.dart';
+import '../services/artwork_palette_cache.dart';
 
 bool _hasCustomPlaybackTheme(SettingsProvider settings) {
   final path = settings.playbackThemeImagePath;
   return settings.playbackThemeImageEnabled && path != null && path.isNotEmpty;
 }
+
+Object _nowPlayingSettingsSignature(SettingsProvider s) => (
+  s.followAlbumArtOnPlayback,
+  s.playbackThemeImageEnabled,
+  s.playbackThemeImagePath,
+  s.playbackThemeImageDim,
+  s.playbackThemeImageBlur,
+  s.playbackAlbumArtBackgroundDim,
+  s.playbackAlbumArtBackgroundBlur,
+  s.playbackArtworkBackgroundStyle,
+  s.fluidBackgroundQuality,
+  s.playbackImmersiveEnabled,
+  s.fontSize,
+  s.lyricFontWeight,
+  s.lyricAlignment,
+  s.lyricScrollEffect,
+  s.enableKaraokeLyrics,
+  s.karaokeLyricsMode,
+  s.enableLyricBlur,
+  s.highlightActiveLyric,
+  s.playbackLyricGlowEnabled,
+  s.playbackLyricGlowRadius,
+  s.showAudioAnalysis,
+);
 
 bool _hasUsableAlbumArt(Song? song) =>
     song?.albumArt != null && song!.albumArt!.isNotEmpty;
@@ -216,11 +247,6 @@ class MobileShell extends StatefulWidget {
   State<MobileShell> createState() => _MobileShellState();
 }
 
-int? homePageAnimationBridge(int current, int target) {
-  if ((target - current).abs() <= 1) return null;
-  return target > current ? target - 1 : target + 1;
-}
-
 bool shouldStartLibraryEntrance({
   required bool enabled,
   required bool libraryLoaded,
@@ -242,7 +268,9 @@ class _MobileShellState extends State<MobileShell>
   static const _notificationPromptedKey = 'notification_permission_prompted';
   static const _overlayPromptedKey = 'overlay_permission_prompted';
   int _tab = 0;
-  late final PageController _homePageController;
+  late final HomeTabController _homePageController;
+  InteractionWorkLease? _homeWorkGuard;
+  InteractionWorkLease? _libraryWorkGuard;
   int? _programmaticTabTarget;
   int _homeNavigationRevision = 0;
   String _query = '';
@@ -269,7 +297,7 @@ class _MobileShellState extends State<MobileShell>
       vsync: this,
       duration: const Duration(milliseconds: 620),
     );
-    _homePageController = PageController();
+    _homePageController = HomeTabController();
     _homePageController.addListener(_markHomePageTransition);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       unawaited(_requestFirstLaunchPermissions());
@@ -277,10 +305,22 @@ class _MobileShellState extends State<MobileShell>
   }
 
   void _markHomePageTransition() {
-    InteractionPerformanceController.instance.pulse(
-      InteractionPhase.transition,
-      settleAfter: const Duration(milliseconds: 140),
-    );
+    final visible = ModalRoute.of(context)?.isCurrent ?? true;
+    if (_homePageController.isTransitioning && visible) {
+      _homeWorkGuard ??= InteractionPerformanceController.instance
+          .beginTransition();
+    } else {
+      _homeWorkGuard?.release();
+      _homeWorkGuard = null;
+    }
+    if (!visible || _homePageController.targetIndex != 0) {
+      _libraryWorkGuard?.release();
+      _libraryWorkGuard = null;
+    } else if (_libraryEntranceController.isAnimating &&
+        !_libraryEntranceCompleted) {
+      _libraryWorkGuard ??= InteractionPerformanceController.instance
+          .beginVisualAnimation();
+    }
   }
 
   Future<void> _requestFirstLaunchPermissions() async {
@@ -338,6 +378,7 @@ class _MobileShellState extends State<MobileShell>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    _markHomePageTransition();
     if (_noticeStreamsBound) return;
     _noticeStreamsBound = true;
     final notifier = context.read<PlaylistContentNotifier>();
@@ -351,6 +392,10 @@ class _MobileShellState extends State<MobileShell>
     _homeNavigationRevision++;
     _libraryEntranceController.dispose();
     _homePageController.dispose();
+    _homeWorkGuard?.release();
+    _homeWorkGuard = null;
+    _libraryWorkGuard?.release();
+    _libraryWorkGuard = null;
     _errorSubscription?.cancel();
     _infoSubscription?.cancel();
     super.dispose();
@@ -366,13 +411,15 @@ class _MobileShellState extends State<MobileShell>
       if (!mounted || _libraryEntranceCompleted) return;
       SchedulerBinding.instance.scheduleFrameCallback((_) {
         if (!mounted || _libraryEntranceCompleted) return;
-        InteractionPerformanceController.instance.pulse(
-          InteractionPhase.visualAnimation,
-          settleAfter: const Duration(milliseconds: 720),
-        );
+        if (_tab == 0 && (ModalRoute.of(context)?.isCurrent ?? true)) {
+          _libraryWorkGuard ??= InteractionPerformanceController.instance
+              .beginVisualAnimation();
+        }
         _libraryEntranceController.forward(from: 0).whenComplete(() {
           if (!mounted) return;
           _libraryEntranceCompleted = true;
+          _libraryWorkGuard?.release();
+          _libraryWorkGuard = null;
         });
       });
     });
@@ -386,9 +433,7 @@ class _MobileShellState extends State<MobileShell>
 
     final storageStatus = await Permission.storage.request();
     if (!storageStatus.isGranted && mounted) {
-      context.read<NotificationService>().warning(
-        '未授予音频访问权限，仍可通过系统文件选择器导入',
-      );
+      context.read<NotificationService>().warning('未授予音频访问权限，仍可通过系统文件选择器导入');
     }
   }
 
@@ -440,7 +485,7 @@ class _MobileShellState extends State<MobileShell>
       _ => _SettingsTab(
         onSwipeBack: () => _selectTab(3),
         onSectionChanged: (title) {
-          if (_settingsSectionTitle == title) return;
+          if (_tab != 4 || _settingsSectionTitle == title) return;
           setState(() => _settingsSectionTitle = title);
         },
       ),
@@ -451,6 +496,13 @@ class _MobileShellState extends State<MobileShell>
 
   @override
   Widget build(BuildContext context) {
+    return HomeThemeScope(
+      disabled: context.watch<SettingsProvider>().disableHomeThemeColor,
+      builder: _buildHome,
+    );
+  }
+
+  Widget _buildHome(BuildContext context) {
     final currentSong = context.select<PlaylistContentNotifier, Song?>(
       (notifier) => notifier.currentSong,
     );
@@ -478,16 +530,15 @@ class _MobileShellState extends State<MobileShell>
     final selecting = librarySelecting || playlistSelecting;
     final screen = MediaQuery.sizeOf(context);
     final isTablet = screen.shortestSide >= 600;
-    final useCustomHomeTheme =
-        settings.homeThemeImageEnabled &&
-        settings.homeThemeImagePath != null &&
-        settings.homeThemeImagePath!.isNotEmpty;
+    final homeBackground = homeBackgroundPolicy(
+      settings,
+      hasSong: currentSong != null,
+    );
+    final useCustomHomeTheme = homeBackground.customImage;
     // Keep the shell styling stable while artwork resolves. Only the background
     // below listens for cover changes, so song grids are not rebuilt into
     // temporary placeholders when the current thumbnail becomes available.
-    final useHomeTheme =
-        useCustomHomeTheme ||
-        (settings.followAlbumArtOnHome && currentSong != null);
+    final useHomeTheme = homeBackground.hasBackground;
     final page = Listener(
       onPointerDown: selecting
           ? null
@@ -500,6 +551,11 @@ class _MobileShellState extends State<MobileShell>
         scrollEnabled: !selecting,
         onPageChanged: _handleHomePageChanged,
         itemCount: _titles.length,
+        progressiveWarmup: true,
+        preparePage: (index) => index == 2 || index == 3
+            ? context.read<PlaylistContentNotifier>().prepareLibraryGroups()
+            : Future<void>.value(),
+        loadingBuilder: (_, index) => const HomePagePreparationPlaceholder(),
         itemBuilder: (context, index) => _buildHomePage(index, useHomeTheme),
       ),
     );
@@ -520,18 +576,21 @@ class _MobileShellState extends State<MobileShell>
         backgroundColor: useHomeTheme ? Colors.transparent : null,
         scrolledUnderElevation: useHomeTheme ? 0 : null,
         leading: selecting
-            ? IconButton(
-                tooltip: '退出多选',
-                icon: const Icon(Icons.close),
-                onPressed: librarySelecting
-                    ? _exitLibrarySelection
-                    : notifier.exitMultiSelectMode,
+            ? HomeGlassControls(
+                cornerRadius: 28,
+                child: IconButton(
+                  tooltip: '退出多选',
+                  icon: const Icon(Icons.close),
+                  onPressed: librarySelecting
+                      ? _exitLibrarySelection
+                      : notifier.exitMultiSelectMode,
+                ),
               )
             : null,
         title: ClipRect(
           child: AnimatedSwitcher(
-            duration: const Duration(milliseconds: 380),
-            reverseDuration: const Duration(milliseconds: 320),
+            duration: homeTabTransitionDuration,
+            reverseDuration: homeTabTransitionDuration,
             switchInCurve: Curves.easeOutCubic,
             switchOutCurve: Curves.easeInCubic,
             layoutBuilder: (currentChild, previousChildren) => Stack(
@@ -562,162 +621,166 @@ class _MobileShellState extends State<MobileShell>
           ),
         ),
         actions: [
-          ClipRect(
-            child: AnimatedSwitcher(
-              duration: const Duration(milliseconds: 380),
-              reverseDuration: const Duration(milliseconds: 320),
-              switchInCurve: Curves.easeOutCubic,
-              switchOutCurve: Curves.easeInCubic,
-              layoutBuilder: (currentChild, previousChildren) => Stack(
-                alignment: Alignment.centerRight,
-                children: [
-                  ...previousChildren,
-                  if (currentChild != null) currentChild,
-                ],
-              ),
-              transitionBuilder: (child, animation) {
-                final isIncoming =
-                    child.key == ValueKey<String>(actionsTransitionKey);
-                final slideAnimation = Tween<Offset>(
-                  begin: isIncoming
-                      ? const Offset(1.1, 0)
-                      : const Offset(-1.1, 0),
-                  end: Offset.zero,
-                ).animate(animation);
-                return FadeTransition(
-                  opacity: animation,
-                  child: SlideTransition(
-                    position: slideAnimation,
-                    child: child,
-                  ),
-                );
-              },
-              child: selecting
-                  ? Row(
-                      key: ValueKey<String>(actionsTransitionKey),
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        IconButton(
-                          tooltip: '全选',
-                          icon: const Icon(Icons.select_all),
-                          onPressed: librarySelecting
-                              ? _selectAllLibrarySongs
-                              : notifier.selectAllSongs,
-                        ),
-                        if (librarySelecting &&
-                            (_pendingPlaylistName != null ||
-                                _pendingPlaylistId != null))
-                          IconButton(
-                            tooltip: _pendingPlaylistId == null
-                                ? '创建歌单'
-                                : '添加到歌单',
-                            icon: const Icon(Icons.playlist_add_check),
-                            onPressed: _finishPlaylistSelection,
-                          )
-                        else if (librarySelecting) ...[
-                          IconButton(
-                            tooltip: '移除歌曲',
-                            icon: const Icon(Icons.delete_outline),
-                            onPressed: _removeSelectedLibrarySongs,
-                          ),
-                          IconButton(
-                            tooltip: '收藏',
-                            icon: const Icon(Icons.favorite_border),
-                            onPressed: _favoriteSelectedLibrarySongs,
-                          ),
-                        ] else
-                          IconButton(
-                            tooltip: '从当前歌单移除',
-                            icon: const Icon(Icons.delete_outline),
-                            onPressed: playlistSelection.count == 0
-                                ? null
-                                : notifier.removeSelectedSongs,
-                          ),
-                      ],
-                    )
-                  : Row(
-                      key: ValueKey<String>(actionsTransitionKey),
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (_tab < 4)
-                          IconButton(
-                            tooltip: sortEnabled ? '排序当前页面' : '当前查看方式使用固定排序',
-                            icon: const Icon(Icons.sort),
-                            onPressed: sortEnabled ? _showSortDialog : null,
-                          ),
-                        if (_tab == 0 || _tab == 1)
-                          IconButton(
-                            tooltip: '切换查看方式',
-                            icon: AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 180),
-                              switchInCurve: Curves.easeOutCubic,
-                              switchOutCurve: Curves.easeInCubic,
-                              child: Icon(
-                                _tab == 0
-                                    ? settings.libraryViewMode ==
-                                              LibraryViewMode.indexed
-                                          ? Icons.sort_by_alpha
-                                          : Icons.view_list_outlined
-                                    : settings.playlistViewMode ==
-                                          PlaylistViewMode.split
-                                    ? Icons.view_sidebar_outlined
-                                    : Icons.view_carousel_outlined,
-                                key: ValueKey(
-                                  _tab == 0
-                                      ? settings.libraryViewMode
-                                      : settings.playlistViewMode,
-                                ),
-                              ),
-                            ),
-                            onPressed: _togglePrimaryViewMode,
-                          ),
-                        if (_tab == 2 || _tab == 3)
-                          IconButton(
-                            tooltip:
-                                (_tab == 2
-                                        ? settings.artistGroupViewMode
-                                        : settings.albumGroupViewMode) ==
-                                    GroupViewMode.list
-                                ? '切换到字母分组'
-                                : '切换到列表',
-                            icon: AnimatedSwitcher(
-                              duration: const Duration(milliseconds: 180),
-                              switchInCurve: Curves.easeOutCubic,
-                              switchOutCurve: Curves.easeInCubic,
-                              child: Icon(
-                                (_tab == 2
-                                            ? settings.artistGroupViewMode
-                                            : settings.albumGroupViewMode) ==
-                                        GroupViewMode.list
-                                    ? Icons.view_list_outlined
-                                    : Icons.sort_by_alpha,
-                                key: ValueKey(
-                                  _tab == 2
-                                      ? settings.artistGroupViewMode
-                                      : settings.albumGroupViewMode,
-                                ),
-                              ),
-                            ),
-                            onPressed: _toggleGroupViewMode,
-                          ),
-                        if (_tab != 4)
-                          IconButton(
-                            tooltip: '搜索',
-                            icon: const Icon(Icons.search),
-                            onPressed: () => _showSearch(context),
-                          ),
-                        if (_tab == 4)
-                          IconButton(
-                            tooltip: '播放统计',
-                            icon: const Icon(Icons.leaderboard_outlined),
-                            onPressed: () => Navigator.of(context).push(
-                              CupertinoPageRoute<void>(
-                                builder: (_) => const StatisticsPage(),
-                              ),
-                            ),
-                          ),
-                      ],
+          HomeGlassControls(
+            // Top-right actions stay transparent in every theme.
+            enabled: false,
+            child: ClipRect(
+              child: AnimatedSwitcher(
+                duration: homeTabTransitionDuration,
+                reverseDuration: homeTabTransitionDuration,
+                switchInCurve: Curves.easeOutCubic,
+                switchOutCurve: Curves.easeInCubic,
+                layoutBuilder: (currentChild, previousChildren) => Stack(
+                  alignment: Alignment.centerRight,
+                  children: [
+                    ...previousChildren,
+                    if (currentChild != null) currentChild,
+                  ],
+                ),
+                transitionBuilder: (child, animation) {
+                  final isIncoming =
+                      child.key == ValueKey<String>(actionsTransitionKey);
+                  final slideAnimation = Tween<Offset>(
+                    begin: isIncoming
+                        ? const Offset(1.1, 0)
+                        : const Offset(-1.1, 0),
+                    end: Offset.zero,
+                  ).animate(animation);
+                  return FadeTransition(
+                    opacity: animation,
+                    child: SlideTransition(
+                      position: slideAnimation,
+                      child: child,
                     ),
+                  );
+                },
+                child: selecting
+                    ? Row(
+                        key: ValueKey<String>(actionsTransitionKey),
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: '全选',
+                            icon: const Icon(Icons.select_all),
+                            onPressed: librarySelecting
+                                ? _selectAllLibrarySongs
+                                : notifier.selectAllSongs,
+                          ),
+                          if (librarySelecting &&
+                              (_pendingPlaylistName != null ||
+                                  _pendingPlaylistId != null))
+                            IconButton(
+                              tooltip: _pendingPlaylistId == null
+                                  ? '创建歌单'
+                                  : '添加到歌单',
+                              icon: const Icon(Icons.playlist_add_check),
+                              onPressed: _finishPlaylistSelection,
+                            )
+                          else if (librarySelecting) ...[
+                            IconButton(
+                              tooltip: '移除歌曲',
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: _removeSelectedLibrarySongs,
+                            ),
+                            IconButton(
+                              tooltip: '收藏',
+                              icon: const Icon(Icons.favorite_border),
+                              onPressed: _favoriteSelectedLibrarySongs,
+                            ),
+                          ] else
+                            IconButton(
+                              tooltip: '从当前歌单移除',
+                              icon: const Icon(Icons.delete_outline),
+                              onPressed: playlistSelection.count == 0
+                                  ? null
+                                  : notifier.removeSelectedSongs,
+                            ),
+                        ],
+                      )
+                    : Row(
+                        key: ValueKey<String>(actionsTransitionKey),
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (_tab < 4)
+                            IconButton(
+                              tooltip: sortEnabled ? '排序当前页面' : '当前查看方式使用固定排序',
+                              icon: const Icon(Icons.sort),
+                              onPressed: sortEnabled ? _showSortDialog : null,
+                            ),
+                          if (_tab == 0 || _tab == 1)
+                            IconButton(
+                              tooltip: '切换查看方式',
+                              icon: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 180),
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                child: Icon(
+                                  _tab == 0
+                                      ? settings.libraryViewMode ==
+                                                LibraryViewMode.indexed
+                                            ? Icons.sort_by_alpha
+                                            : Icons.view_list_outlined
+                                      : settings.playlistViewMode ==
+                                            PlaylistViewMode.split
+                                      ? Icons.view_sidebar_outlined
+                                      : Icons.view_carousel_outlined,
+                                  key: ValueKey(
+                                    _tab == 0
+                                        ? settings.libraryViewMode
+                                        : settings.playlistViewMode,
+                                  ),
+                                ),
+                              ),
+                              onPressed: _togglePrimaryViewMode,
+                            ),
+                          if (_tab == 2 || _tab == 3)
+                            IconButton(
+                              tooltip:
+                                  (_tab == 2
+                                          ? settings.artistGroupViewMode
+                                          : settings.albumGroupViewMode) ==
+                                      GroupViewMode.list
+                                  ? '切换到字母分组'
+                                  : '切换到列表',
+                              icon: AnimatedSwitcher(
+                                duration: const Duration(milliseconds: 180),
+                                switchInCurve: Curves.easeOutCubic,
+                                switchOutCurve: Curves.easeInCubic,
+                                child: Icon(
+                                  (_tab == 2
+                                              ? settings.artistGroupViewMode
+                                              : settings.albumGroupViewMode) ==
+                                          GroupViewMode.list
+                                      ? Icons.view_list_outlined
+                                      : Icons.sort_by_alpha,
+                                  key: ValueKey(
+                                    _tab == 2
+                                        ? settings.artistGroupViewMode
+                                        : settings.albumGroupViewMode,
+                                  ),
+                                ),
+                              ),
+                              onPressed: _toggleGroupViewMode,
+                            ),
+                          if (_tab != 4)
+                            IconButton(
+                              tooltip: '搜索',
+                              icon: const Icon(Icons.search),
+                              onPressed: () => _showSearch(context),
+                            ),
+                          if (_tab == 4)
+                            IconButton(
+                              tooltip: '播放统计',
+                              icon: const Icon(Icons.leaderboard_outlined),
+                              onPressed: () => Navigator.of(context).push(
+                                CupertinoPageRoute<void>(
+                                  builder: (_) => const StatisticsPage(),
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+              ),
             ),
           ),
         ],
@@ -781,7 +844,7 @@ class _MobileShellState extends State<MobileShell>
                         child: Column(
                           children: [
                             Expanded(child: page),
-                            _MiniPlayer(translucent: useHomeTheme),
+                            const _MiniPlayer(),
                           ],
                         ),
                       ),
@@ -793,10 +856,18 @@ class _MobileShellState extends State<MobileShell>
           : page,
       floatingActionButton:
           _tab == 1 && settings.playlistViewMode != PlaylistViewMode.split
-          ? FloatingActionButton.extended(
-              onPressed: _showImportOptions,
-              icon: const Icon(Icons.add),
-              label: const Text('添加歌曲'),
+          ? HomeGlassControls(
+              cornerRadius: 16,
+              child: FloatingActionButton.extended(
+                backgroundColor: Colors.transparent,
+                elevation: 0,
+                focusElevation: 0,
+                hoverElevation: 0,
+                highlightElevation: 0,
+                onPressed: _showImportOptions,
+                icon: const Icon(Icons.add),
+                label: const Text('添加歌曲'),
+              ),
             )
           : null,
       bottomNavigationBar: isTablet
@@ -806,42 +877,42 @@ class _MobileShellState extends State<MobileShell>
               child: Column(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  _MiniPlayer(translucent: useHomeTheme),
-                  NavigationBar(
-                    backgroundColor: useHomeTheme
-                        ? Theme.of(
-                            context,
-                          ).colorScheme.surface.withValues(alpha: 0.78)
-                        : null,
-                    selectedIndex: _tab,
-                    onDestinationSelected: _selectTab,
-                    destinations: const [
-                      NavigationDestination(
-                        icon: Icon(Icons.library_music_outlined),
-                        selectedIcon: Icon(Icons.library_music),
-                        label: '音乐库',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.playlist_play_outlined),
-                        selectedIcon: Icon(Icons.playlist_play),
-                        label: '歌单',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.person_outline),
-                        selectedIcon: Icon(Icons.person),
-                        label: '歌手',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.album_outlined),
-                        selectedIcon: Icon(Icons.album),
-                        label: '专辑',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.settings_outlined),
-                        selectedIcon: Icon(Icons.settings),
-                        label: '设置',
-                      ),
-                    ],
+                  const _MiniPlayer(),
+                  HomeGlassSurface(
+                    child: NavigationBar(
+                      backgroundColor: Colors.transparent,
+                      selectedIndex: _tab,
+                      onDestinationSelected: _selectTab,
+                      surfaceTintColor: Colors.transparent,
+                      elevation: 0,
+                      destinations: const [
+                        NavigationDestination(
+                          icon: Icon(Icons.library_music_outlined),
+                          selectedIcon: Icon(Icons.library_music),
+                          label: '音乐库',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.playlist_play_outlined),
+                          selectedIcon: Icon(Icons.playlist_play),
+                          label: '歌单',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.person_outline),
+                          selectedIcon: Icon(Icons.person),
+                          label: '歌手',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.album_outlined),
+                          selectedIcon: Icon(Icons.album),
+                          label: '专辑',
+                        ),
+                        NavigationDestination(
+                          icon: Icon(Icons.settings_outlined),
+                          selectedIcon: Icon(Icons.settings),
+                          label: '设置',
+                        ),
+                      ],
+                    ),
                   ),
                 ],
               ),
@@ -857,7 +928,7 @@ class _MobileShellState extends State<MobileShell>
         dim: settings.homeThemeImageDim,
         blurSigma: settings.homeThemeImageBlur,
         coverBytes: currentAlbumArt,
-        coverEnabled: settings.followAlbumArtOnHome && currentAlbumArt != null,
+        coverEnabled: homeBackground.albumCover && currentAlbumArt != null,
         coverDim: settings.homeAlbumArtBackgroundDim,
         coverBlurSigma: settings.homeAlbumArtBackgroundBlur,
         child: child,
@@ -887,7 +958,7 @@ class _MobileShellState extends State<MobileShell>
     if (index == _tab) return;
     InteractionPerformanceController.instance.pulse(
       InteractionPhase.transition,
-      settleAfter: const Duration(milliseconds: 420),
+      settleAfter: const Duration(milliseconds: 380),
     );
     if (index != 1) {
       context.read<PlaylistContentNotifier>().exitMultiSelectMode();
@@ -1027,9 +1098,6 @@ class _MobileShellState extends State<MobileShell>
     }
     final navigationRevision = ++_homeNavigationRevision;
     _programmaticTabTarget = index;
-    final current = (_homePageController.page ?? _tab.toDouble()).round();
-    final bridge = homePageAnimationBridge(current, index);
-    if (bridge != null) _homePageController.jumpToPage(bridge);
     unawaited(_completeHomePageAnimation(index, navigationRevision));
   }
 
@@ -1038,19 +1106,7 @@ class _MobileShellState extends State<MobileShell>
     int navigationRevision,
   ) async {
     try {
-      await _homePageController
-          .animateToPage(
-            target,
-            duration: const Duration(milliseconds: 320),
-            curve: Curves.easeOutCubic,
-          )
-          .timeout(const Duration(milliseconds: 700));
-    } on TimeoutException {
-      if (mounted &&
-          navigationRevision == _homeNavigationRevision &&
-          _homePageController.hasClients) {
-        _homePageController.jumpToPage(target);
-      }
+      await _homePageController.animateToPage(target);
     } catch (_) {
       // A newer navigation cancels the old scroll activity. Its revision owns
       // the final page state, so the superseded animation needs no recovery.
@@ -1511,11 +1567,8 @@ class _PlaylistsTab extends StatelessWidget {
           }) => Expanded(
             child: Tooltip(
               message: label,
-              child: Material(
-                color: Theme.of(
-                  context,
-                ).colorScheme.surfaceContainer.withValues(alpha: .72),
-                borderRadius: BorderRadius.circular(12),
+              child: HomeGlassControls(
+                cornerRadius: 12,
                 child: InkWell(
                   borderRadius: BorderRadius.circular(12),
                   onTap: onTap,
@@ -1568,16 +1621,9 @@ class _PlaylistsTab extends StatelessWidget {
                             final selected = index == view.selectedIndex;
                             return Padding(
                               padding: const EdgeInsets.only(bottom: 7),
-                              child: Material(
-                                color: selected
-                                    ? Theme.of(
-                                        context,
-                                      ).colorScheme.secondaryContainer
-                                    : Theme.of(context)
-                                          .colorScheme
-                                          .surfaceContainerLow
-                                          .withValues(alpha: .55),
-                                borderRadius: BorderRadius.circular(12),
+                              child: HomePlaylistSurface(
+                                selected: selected,
+                                cornerRadius: 12,
                                 child: InkWell(
                                   borderRadius: BorderRadius.circular(12),
                                   onTap: () => notifier.setSelectedIndex(index),
@@ -1901,17 +1947,58 @@ class _PlaylistsTab extends StatelessWidget {
   }
 }
 
-class _GroupTab extends StatelessWidget {
+class _GroupTab extends StatefulWidget {
   const _GroupTab({required this.kind, required this.useHomeTheme});
   final String kind;
   final bool useHomeTheme;
 
   @override
+  State<_GroupTab> createState() => _GroupTabState();
+}
+
+class _GroupTabState extends State<_GroupTab> {
+  Widget? _lastView;
+  bool _retryScheduled = false;
+  String get kind => widget.kind;
+  bool get useHomeTheme => widget.useHomeTheme;
+
+  void _retryWhenIdle() {
+    if (_retryScheduled) return;
+    _retryScheduled = true;
+    unawaited(() async {
+      final lease = await InteractionPerformanceController.instance
+          .acquireIdleWork(
+            priority: InteractionWorkPriority.userVisible,
+            isStillNeeded: () => mounted,
+          );
+      try {
+        if (mounted && lease.isGranted) setState(() {});
+      } finally {
+        _retryScheduled = false;
+        lease.release();
+      }
+    }());
+  }
+
+  @override
   Widget build(BuildContext context) {
-    context.select<PlaylistContentNotifier, int>(
-      (notifier) => notifier.libraryRevision,
+    context.select<PlaylistContentNotifier, (int, bool)>(
+      (notifier) => (notifier.libraryRevision, notifier.libraryGroupsReady),
     );
+    // Retain the last prepared presentation during navigation/data changes.
+    // All provider dependencies remain subscribed even on the deferred path.
+    context.watch<SettingsProvider>();
+    context.watch<CoverOverrideService>();
+    context.watch<StatisticsManager>();
+    if (InteractionPerformanceController.instance.isCritical) {
+      _retryWhenIdle();
+      return _lastView ?? const HomePagePreparationPlaceholder();
+    }
     final notifier = context.read<PlaylistContentNotifier>();
+    if (!notifier.libraryGroupsReady) {
+      unawaited(notifier.prepareLibraryGroups());
+      return _lastView ?? const HomePagePreparationPlaceholder();
+    }
     final groups = kind == '歌手'
         ? notifier.songsByArtist
         : notifier.songsByAlbum;
@@ -2172,7 +2259,7 @@ class _GroupTab extends StatelessWidget {
         },
       ),
     };
-    return Column(
+    return _lastView = Column(
       children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 2, 16, 8),
@@ -2660,7 +2747,8 @@ class _TopEdgeFadeState extends State<_TopEdgeFade>
         child: RepaintBoundary(child: widget.child),
         builder: (context, child) {
           final opacity = Curves.fastOutSlowIn.transform(_controller.value);
-          return ShaderMask(
+          return OptionalShaderMask(
+            active: widget.enabled && opacity > 0,
             blendMode: BlendMode.dstIn,
             shaderCallback: (bounds) {
               final fadeStop = bounds.height <= 0
@@ -3460,6 +3548,8 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
     required double velocity,
   }) {
     if (!mounted || widget.songs.isEmpty) return;
+    final homeSlot = context.findAncestorWidgetOfExactType<TickerMode>();
+    final hidden = homeSlot?.enabled == false;
     final plan = planArtworkPrefetch(
       itemCount: widget.songs.length,
       pixels: pixels,
@@ -3493,7 +3583,7 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
     final generation = ++_generation;
 
     final notifier = context.read<PlaylistContentNotifier>();
-    notifier.beginArtworkPrefetchWindow();
+    if (!hidden) notifier.beginArtworkPrefetchWindow();
 
     // Only visible rows need completion futures and Flutter image precaching.
     // Near/far rows are queued in batches below, avoiding dozens of short-lived
@@ -3523,6 +3613,10 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
             }
           });
     }
+
+    // Hidden home warmup prepares only this viewport. Do not multiply the
+    // 4–8 screen scrolling window by five retained tabs.
+    if (hidden) return;
 
     final near = <Song>[];
     final far = <Song>[];
@@ -3562,8 +3656,7 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
 }
 
 class _MiniPlayer extends StatelessWidget {
-  const _MiniPlayer({this.translucent = false});
-  final bool translucent;
+  const _MiniPlayer();
   @override
   Widget build(BuildContext context) {
     final playback = context
@@ -3585,10 +3678,7 @@ class _MiniPlayer extends StatelessWidget {
       final totalMs = playback.totalDuration.inMilliseconds;
       return _NowPlayingArtworkWarmup(
         song: song,
-        child: Material(
-          color: Theme.of(context).colorScheme.surfaceContainerHigh.withValues(
-            alpha: translucent ? 0.82 : 1,
-          ),
+        child: HomeGlassMaterial(
           child: InkWell(
             onTap: () => _openNowPlaying(context),
             child: SizedBox(
@@ -3672,10 +3762,7 @@ class _MiniPlayer extends StatelessWidget {
     }
     return _NowPlayingArtworkWarmup(
       song: song,
-      child: Material(
-        color: Theme.of(context).colorScheme.surfaceContainerHigh.withValues(
-          alpha: translucent ? 0.82 : 1,
-        ),
+      child: HomeGlassMaterial(
         child: ListTile(
           leading: NowPlayingCoverHero(
             normalizedSongPath: song.normalizedPath,
@@ -3710,7 +3797,7 @@ void _openNowPlaying(BuildContext context) {
   notifier.postponeForegroundArtworkRecovery();
   InteractionPerformanceController.instance.pulse(
     InteractionPhase.transition,
-    settleAfter: const Duration(milliseconds: 640),
+    settleAfter: const Duration(milliseconds: 180),
   );
   unawaited(
     Navigator.of(context).push(
@@ -3794,6 +3881,7 @@ class _PlaybackBackgroundFrame {
 
 _PreparedPlaybackArtwork? _preparedPlaybackArtwork;
 _PreparedPlaybackArtwork? _previousPreparedPlaybackArtwork;
+bool _playbackRouteMounted = false;
 String? _playbackArtworkHandoffTargetPath;
 final ValueNotifier<int> _preparedPlaybackArtworkSignal = ValueNotifier(0);
 
@@ -3825,7 +3913,19 @@ class _PlaybackArtworkPreparationCoordinatorState
   bool _retryAfterDecode = false;
   bool _prewarmDecodeInFlight = false;
   bool _retryPrewarmDecode = false;
+  Object? _backgroundPreparationKey;
+  bool _backgroundPreparing = false;
   Timer? _handoffExpiryTimer;
+  ImageStream? _retainedCoverStream;
+  ImageStreamListener? _retainedCoverListener;
+
+  void _releaseRetainedCover() {
+    final listener = _retainedCoverListener;
+    if (listener != null) _retainedCoverStream?.removeListener(listener);
+    _retainedCoverStream = null;
+    _retainedCoverListener = null;
+  }
+
   static const _maximumPreviousCoverHandoff = Duration(milliseconds: 220);
 
   @override
@@ -3866,6 +3966,7 @@ class _PlaybackArtworkPreparationCoordinatorState
     _observedPath = path;
     _beginArtworkHandoff(path);
     if (path == null) {
+      _releaseRetainedCover();
       if (_preparedPlaybackArtwork != null) {
         _preparedPlaybackArtwork = null;
         _previousPreparedPlaybackArtwork = null;
@@ -3911,6 +4012,7 @@ class _PlaybackArtworkPreparationCoordinatorState
   }
 
   void _clearPreparedArtwork() {
+    _releaseRetainedCover();
     if (_preparedPlaybackArtwork == null &&
         _previousPreparedPlaybackArtwork == null) {
       return;
@@ -3941,6 +4043,7 @@ class _PlaybackArtworkPreparationCoordinatorState
     if (notifier == null) return;
     final cacheGeneration = notifier.artworkImageCacheGeneration;
     if (_observedImageCacheGeneration != cacheGeneration) {
+      _releaseRetainedCover();
       _observedImageCacheGeneration = cacheGeneration;
       _generation++;
       _prewarmGeneration++;
@@ -4000,7 +4103,93 @@ class _PlaybackArtworkPreparationCoordinatorState
     );
   }
 
+  void _scheduleBackgroundPreparation() {
+    final notifier = _notifier;
+    final path = _observedPath;
+    if (!mounted ||
+        notifier == null ||
+        path == null ||
+        !notifier.isAppForeground ||
+        _backgroundPreparing) {
+      return;
+    }
+    final settings = context.read<SettingsProvider>();
+    final song = notifier.currentSong;
+    final fluid =
+        settings.playbackArtworkBackgroundStyle ==
+        PlaybackArtworkBackgroundStyle.fluid;
+    final bytes =
+        (fluid && song?.normalizedPath == path
+            ? notifier.displayThumbnailForSong(song!)
+            : null) ??
+        notifier.displayPlaybackCoverForPath(path);
+    if (!settings.followAlbumArtOnPlayback ||
+        bytes == null ||
+        bytes.isEmpty ||
+        _hasCustomPlaybackTheme(settings)) {
+      return;
+    }
+    final cacheGeneration = notifier.artworkImageCacheGeneration;
+    final key = (
+      fluid,
+      fluid
+          ? fluidArtworkPaletteKey(path, cacheGeneration, bytes)
+          : (path, cacheGeneration, identityHashCode(bytes)),
+    );
+    if (_backgroundPreparationKey == key) return;
+    _backgroundPreparing = true;
+    final seed = context
+        .read<ThemeProvider>()
+        .darkThemeData
+        .colorScheme
+        .primary;
+    unawaited(() async {
+      try {
+        final prepared = await InteractionPerformanceController.instance
+            .runIdleResource<bool>(
+              () async {
+                if (fluid) {
+                  await FluidPlaybackBackground.prewarm(
+                    bytes: bytes,
+                    identity: path,
+                    cacheGeneration: cacheGeneration,
+                    fallbackSeed: seed,
+                  );
+                } else {
+                  // Use the exact native provider displayed by the static
+                  // background. The cover's target-size decode is a different
+                  // cache entry; it cannot warm this texture. Do not pin a
+                  // second full-resolution image outside Flutter's cache.
+                  Object? decodeError;
+                  await precacheImage(
+                    MemoryImage(bytes),
+                    context,
+                    onError: (error, _) => decodeError = error,
+                  );
+                  if (decodeError != null) throw decodeError!;
+                }
+                return true;
+              },
+              isStillNeeded: () =>
+                  mounted &&
+                  notifier.isAppForeground &&
+                  path == _observedPath &&
+                  cacheGeneration == notifier.artworkImageCacheGeneration,
+            );
+        if (prepared == true) _backgroundPreparationKey = key;
+      } catch (error) {
+        // The visible background keeps its existing fallback/error handling.
+        _backgroundPreparationKey = key;
+        debugPrint('Playback background prewarm failed: $error');
+      } finally {
+        _backgroundPreparing = false;
+        if (mounted) _scheduleBackgroundPreparation();
+      }
+    }());
+  }
+
   void _schedulePreparation() {
+    _scheduleBackgroundPreparation();
     final notifier = _notifier;
     final path = _observedPath;
     if (notifier == null || path == null || !notifier.isAppForeground) return;
@@ -4045,12 +4234,23 @@ class _PlaybackArtworkPreparationCoordinatorState
     required int cacheGeneration,
     required int generation,
   }) async {
+    InteractionWorkLease? preparationLease;
     try {
-      // Start on the next frame instead of waiting behind the 280 ms transport
-      // protection window. Flutter performs the codec work asynchronously and
-      // this coordinator still serializes exact decodes, keeping frame cost
-      // bounded while removing the visible old-cover delay.
-      await WidgetsBinding.instance.endOfFrame;
+      if (!_playbackRouteMounted) {
+        preparationLease = await InteractionPerformanceController.instance
+            .acquireIdleWork(
+              priority: InteractionWorkPriority.background,
+              isStillNeeded: () =>
+                  mounted &&
+                  generation == _generation &&
+                  path == _observedPath &&
+                  notifier.isAppForeground,
+            );
+        if (!preparationLease.isGranted) return;
+      } else {
+        // Visible track changes keep the existing timely cover handoff.
+        await WidgetsBinding.instance.endOfFrame;
+      }
       if (!mounted ||
           generation != _generation ||
           path != _observedPath ||
@@ -4060,6 +4260,7 @@ class _PlaybackArtworkPreparationCoordinatorState
       }
       Object? decodeError;
       StackTrace? decodeStackTrace;
+      preparationLease?.release();
       await precacheImage(
         CoverMemoryImage(artwork, targetPixels: targetPixels),
         context,
@@ -4081,6 +4282,27 @@ class _PlaybackArtworkPreparationCoordinatorState
         return;
       }
       final previousPrepared = _preparedPlaybackArtwork;
+      _releaseRetainedCover();
+      // Keep exactly one current-song decode live. Five home viewports must
+      // not evict it between Mini Player warmup and opening the route.
+      final stream = CoverMemoryImage(
+        artwork,
+        targetPixels: targetPixels,
+      ).resolve(createLocalImageConfiguration(context));
+      final listener = ImageStreamListener((image, _) {
+        if (image.image.width * image.image.height * 4 > 8 * 1024 * 1024) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (identical(_retainedCoverStream, stream)) {
+              _releaseRetainedCover();
+            }
+          });
+        }
+        // Each listener owns its ImageInfo clone; the stream retains the decode.
+        image.dispose();
+      }, onError: (_, __) {});
+      _retainedCoverStream = stream;
+      _retainedCoverListener = listener;
+      stream.addListener(listener);
       if (previousPrepared != null && previousPrepared.path != path) {
         _previousPreparedPlaybackArtwork = previousPrepared;
       }
@@ -4101,6 +4323,7 @@ class _PlaybackArtworkPreparationCoordinatorState
         }
       }
     } finally {
+      preparationLease?.release();
       _decodeInFlight = false;
       final retry = _retryAfterDecode;
       _retryAfterDecode = false;
@@ -4176,6 +4399,7 @@ class _PlaybackArtworkPreparationCoordinatorState
             continue;
           }
           Object? decodeError;
+          lease.release();
           await precacheImage(
             imageProvider,
             context,
@@ -4204,6 +4428,7 @@ class _PlaybackArtworkPreparationCoordinatorState
   @override
   void dispose() {
     _generation++;
+    _releaseRetainedCover();
     _handoffExpiryTimer?.cancel();
     if (_playbackArtworkHandoffTargetPath == _observedPath) {
       _playbackArtworkHandoffTargetPath = null;
@@ -4217,7 +4442,18 @@ class _PlaybackArtworkPreparationCoordinatorState
   }
 
   @override
-  Widget build(BuildContext context) => widget.child;
+  Widget build(BuildContext context) {
+    context.select<SettingsProvider, Object>(
+      (settings) => (
+        settings.followAlbumArtOnPlayback,
+        settings.playbackArtworkBackgroundStyle,
+        settings.playbackThemeImageEnabled,
+        settings.playbackThemeImagePath,
+      ),
+    );
+    _scheduleBackgroundPreparation();
+    return widget.child;
+  }
 }
 
 bool _isNowPlayingArtworkPrepared(PlaylistContentNotifier notifier, Song song) {
@@ -4314,6 +4550,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   bool _routeTransitionComplete = false;
   bool _routeTransitionActive = true;
   bool _playbackGlassReady = false;
+  InteractionWorkLease? _routeWorkGuard;
   bool _playbackForeground = true;
   int _playbackGlassGeneration = 0;
   _PlaybackBackgroundFrame? _renderedPlaybackBackground;
@@ -4322,6 +4559,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   @override
   void initState() {
     super.initState();
+    _playbackRouteMounted = true;
+    _routeWorkGuard = InteractionPerformanceController.instance
+        .beginTransition();
     WidgetsBinding.instance.addObserver(this);
     _preparedPlaybackArtworkSignal.addListener(
       _handlePreparedPlaybackArtworkChanged,
@@ -4402,6 +4642,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         routeAnimation.status == AnimationStatus.completed;
     _routeTransitionActive = !_routeTransitionComplete;
     if (_routeTransitionComplete) {
+      _routeWorkGuard?.release();
+      _routeWorkGuard = null;
       _schedulePlaybackGlassRestore();
     }
     _lyricsRealtimeVisualsEnabled = shouldRunNowPlayingLyricsRealtime(
@@ -4417,10 +4659,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       // Push and pop both render the home and playback routes. Protect the
       // complete bidirectional animation so queued artwork, palette, lyric and
       // persistence work cannot start during a reverse transition.
-      InteractionPerformanceController.instance.pulse(
-        InteractionPhase.transition,
-        settleAfter: nowPlayingRouteTransitionDuration,
-      );
+      _routeWorkGuard ??= InteractionPerformanceController.instance
+          .beginTransition();
       _routeTransitionActive = true;
       _routeTransitionSignal.value = true;
       _playbackGlassGeneration++;
@@ -4446,6 +4686,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       );
     });
     _routeTransitionSignal.value = false;
+    _routeWorkGuard?.release();
+    _routeWorkGuard = null;
     if (_lyricsEntryPreparing) {
       _scheduleLyricsEntryHandoff(_lyricsEntryRevision);
     }
@@ -4639,6 +4881,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   @override
   void dispose() {
     _playbackGlassGeneration++;
+    _playbackRouteMounted = false;
+    _routeWorkGuard?.release();
+    _routeWorkGuard = null;
     WidgetsBinding.instance.removeObserver(this);
     _preparedPlaybackArtworkSignal.removeListener(
       _handlePreparedPlaybackArtworkChanged,
@@ -4914,8 +5159,12 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
 
   @override
   Widget build(BuildContext context) {
-    final themeProvider = context.watch<ThemeProvider>();
-    final settings = context.watch<SettingsProvider>();
+    context.select<ThemeProvider, Object>(
+      (theme) => (theme.currentFontFamily, theme.darkThemeData),
+    );
+    context.select<SettingsProvider, Object>(_nowPlayingSettingsSignature);
+    final themeProvider = context.read<ThemeProvider>();
+    final settings = context.read<SettingsProvider>();
     final forceDarkPlaybackTheme = shouldForceDarkPlaybackTheme(
       customBackgroundActive: _hasCustomPlaybackTheme(settings),
       followAlbumArtEnabled: settings.followAlbumArtOnPlayback,
@@ -4940,6 +5189,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   Widget _buildNowPlayingPage(
     BuildContext context, {
     required String? lyricFontFamily,
+  }) => developer.Timeline.timeSync<Widget>(
+    'NowPlaying.compose',
+    () => _composeNowPlayingPage(context, lyricFontFamily: lyricFontFamily),
+  );
+
+  Widget _composeNowPlayingPage(
+    BuildContext context, {
+    required String? lyricFontFamily,
   }) {
     final playback = context
         .select<
@@ -4948,11 +5205,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             Song? song,
             List<LyricLine> lyrics,
             Duration totalDuration,
-            bool isPlaying,
-            bool isFavorite,
-            PlayMode playMode,
-            String equalizerPreset,
-            double playbackRate,
             Uint8List? cover,
           })
         >((notifier) {
@@ -4961,16 +5213,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             song: song,
             lyrics: notifier.currentLyrics,
             totalDuration: notifier.totalDuration,
-            isPlaying: notifier.isPlaying,
-            isFavorite: song != null && notifier.isFavorite(song),
-            playMode: notifier.playMode,
-            equalizerPreset: notifier.equalizerPresetName,
-            playbackRate: notifier.currentPlaybackRate,
             cover: song == null ? null : notifier.displayCoverForSong(song),
           );
         });
     final notifier = context.read<PlaylistContentNotifier>();
-    final settings = context.watch<SettingsProvider>();
+    final settings = context.read<SettingsProvider>();
     final song = playback.song;
     final useCustomPlaybackTheme = _hasCustomPlaybackTheme(settings);
     if (song == null) {
@@ -5183,7 +5430,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required Uint8List? fallbackArtwork,
     required double maxCoverSize,
   }) {
-    final activeLyricColor = context.watch<ThemeProvider>().currentSeedColor;
+    final activeLyricColor = context.select<ThemeProvider, Color>(
+      (theme) => theme.currentSeedColor,
+    );
     Widget buildLyricsList(int activeLyric) => MobileLyricsList(
       controller: _lyricsListController,
       lines: lyrics,
@@ -5382,7 +5631,6 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                         enabled:
                             settings.playbackImmersiveEnabled && _showLyrics,
                         songIdentity: song.normalizedPath,
-                        onSwipeStart: _lyricsListController.recenter,
                         onError: (error, _) {
                           context.read<NotificationService>().error(
                             '切歌失败：$error',
@@ -5418,7 +5666,17 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                                         ? notifier.lyricLineIndexListenable
                                         : _frozenLyricLineIndex,
                                     builder: (context, activeLyric, _) =>
-                                        buildLyricsList(activeLyric),
+                                        Selector<
+                                          PlaylistContentNotifier,
+                                          (bool, double)
+                                        >(
+                                          selector: (_, value) => (
+                                            value.isPlaying,
+                                            value.currentPlaybackRate,
+                                          ),
+                                          builder: (_, playback, _) =>
+                                              buildLyricsList(activeLyric),
+                                        ),
                                   ),
                                 ),
                               ),
@@ -5517,11 +5775,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                     color: colorScheme.onPrimaryContainer,
                   ),
                   const SizedBox(height: 4),
-                  Text(
-                    '${(notifier.currentPlaybackRate * 2).toStringAsFixed(2)}×',
-                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
-                      color: colorScheme.onPrimaryContainer,
-                      fontWeight: FontWeight.w700,
+                  Selector<PlaylistContentNotifier, double>(
+                    selector: (_, value) => value.currentPlaybackRate,
+                    builder: (context, rate, _) => Text(
+                      '${(rate * 2).toStringAsFixed(2)}×',
+                      style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                        color: colorScheme.onPrimaryContainer,
+                        fontWeight: FontWeight.w700,
+                      ),
                     ),
                   ),
                 ],
@@ -5544,49 +5805,41 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required bool useFluidBackground,
   }) {
     final colorScheme = Theme.of(context).colorScheme;
-    final timelineControls = ValueListenableBuilder<double?>(
-      valueListenable: _seekPosition,
-      builder: (context, seekPosition, _) => ValueListenableBuilder<Duration>(
-        valueListenable: notifier.positionListenable,
-        builder: (context, position, _) {
-          final playerPosition = position.inMilliseconds
-              .toDouble()
-              .clamp(0, totalMs > 0 ? totalMs : 1)
-              .toDouble();
-          final displayPosition = (seekPosition ?? playerPosition)
-              .clamp(0, totalMs > 0 ? totalMs : 1)
-              .toDouble();
-          return Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              SizedBox(
-                height: tablet ? 42 : 34,
-                child: Slider(
-                  value: displayPosition,
-                  max: totalMs > 0 ? totalMs : 1,
-                  onChangeStart: _beginSeek,
-                  onChanged: _updateSeek,
-                  onChangeEnd: (value) => _commitSeek(value, notifier),
+    final timelineControls = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SizedBox(
+          height: tablet ? 42 : 34,
+          child: ValueListenableBuilder<double?>(
+            valueListenable: _seekPosition,
+            builder: (context, seekPosition, _) =>
+                ValueListenableBuilder<Duration>(
+                  valueListenable: notifier.positionListenable,
+                  builder: (context, position, _) => Slider(
+                    value: (seekPosition ?? position.inMilliseconds.toDouble())
+                        .clamp(0, totalMs > 0 ? totalMs : 1)
+                        .toDouble(),
+                    max: totalMs > 0 ? totalMs : 1,
+                    onChangeStart: _beginSeek,
+                    onChanged: _updateSeek,
+                    onChangeEnd: (value) => _commitSeek(value, notifier),
+                  ),
                 ),
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(
-                      _duration(
-                        Duration(milliseconds: displayPosition.round()),
-                      ),
-                    ),
-                    Text(_duration(notifier.totalDuration)),
-                  ],
-                ),
-              ),
-            ],
-          );
-        },
-      ),
+          ),
+        ),
+        PlaybackClockBuilder(
+          positionListenable: notifier.positionListenable,
+          previewPositionListenable: _seekPosition,
+          totalDuration: Duration(milliseconds: totalMs.round()),
+          builder: (context, clock) => Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [Text(clock.elapsed), Text(clock.total)],
+            ),
+          ),
+        ),
+      ],
     );
     final transportControls = SizedBox(
       height: tablet ? 80 : 72,
@@ -5594,15 +5847,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         children: [
           Expanded(
             child: Center(
-              child: IconButton(
-                tooltip: notifier.isFavorite(song) ? '取消收藏' : '收藏',
-                icon: Icon(
-                  notifier.isFavorite(song)
-                      ? Icons.favorite
-                      : Icons.favorite_border,
+              child: Selector<PlaylistContentNotifier, bool>(
+                selector: (_, value) => value.isFavorite(song),
+                builder: (context, favorite, _) => IconButton(
+                  tooltip: favorite ? '取消收藏' : '收藏',
+                  icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
+                  color: favorite ? colorScheme.primary : null,
+                  onPressed: () => notifier.toggleFavorite(song),
                 ),
-                color: notifier.isFavorite(song) ? colorScheme.primary : null,
-                onPressed: () => notifier.toggleFavorite(song),
               ),
             ),
           ),
@@ -5620,20 +5872,23 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           ),
           Expanded(
             child: Center(
-              child: PlayPauseButton(
-                isPlaying: notifier.isPlaying,
-                size: 42,
-                padding: const EdgeInsets.all(8),
-                tooltip: notifier.isPlaying ? '暂停' : '播放',
-                color: colorScheme.onSurface,
-                onPressed: () {
-                  if (notifier.isPlaying) {
-                    notifier.pause();
-                  } else {
-                    _resetSeekTracking();
-                    notifier.play();
-                  }
-                },
+              child: Selector<PlaylistContentNotifier, bool>(
+                selector: (_, value) => value.isPlaying,
+                builder: (context, playing, _) => PlayPauseButton(
+                  isPlaying: playing,
+                  size: 42,
+                  padding: const EdgeInsets.all(8),
+                  tooltip: playing ? '暂停' : '播放',
+                  color: colorScheme.onSurface,
+                  onPressed: () {
+                    if (notifier.isPlaying) {
+                      notifier.pause();
+                    } else {
+                      _resetSeekTracking();
+                      notifier.play();
+                    }
+                  },
+                ),
               ),
             ),
           ),
@@ -5651,10 +5906,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           ),
           Expanded(
             child: Center(
-              child: IconButton(
-                tooltip: _modeLabel(notifier.playMode),
-                icon: Icon(_modeIcon(notifier.playMode), size: 28),
-                onPressed: notifier.togglePlayMode,
+              child: Selector<PlaylistContentNotifier, PlayMode>(
+                selector: (_, value) => value.playMode,
+                builder: (context, mode, _) => IconButton(
+                  tooltip: _modeLabel(mode),
+                  icon: Icon(_modeIcon(mode), size: 28),
+                  onPressed: notifier.togglePlayMode,
+                ),
               ),
             ),
           ),
@@ -5715,11 +5973,14 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                 ),
               ),
               const SizedBox(width: 8),
-              _buildEqualizerPresetButton(
-                context,
-                notifier: notifier,
-                usePlaybackTheme: usePlaybackTheme,
-                useFluidBackground: useFluidBackground,
+              Selector<PlaylistContentNotifier, String>(
+                selector: (_, value) => value.equalizerPresetName,
+                builder: (context, preset, _) => _buildEqualizerPresetButton(
+                  context,
+                  notifier: notifier,
+                  usePlaybackTheme: usePlaybackTheme,
+                  useFluidBackground: useFluidBackground,
+                ),
               ),
             ],
           ),
@@ -5915,10 +6176,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             child: ClipRRect(
               borderRadius: radius,
               child: BackdropFilter.grouped(
-                filter: ui.ImageFilter.blur(
-                  sigmaX: blurSigma,
-                  sigmaY: blurSigma,
-                ),
+                filter: blurSigma == _fluidPlaybackGlassBlur
+                    ? _fluidPlaybackFeatureBlurFilter
+                    : _playbackFeatureBlurFilter,
                 child: surface(alpha: _playbackGlassFillAlpha),
               ),
             ),
@@ -7799,7 +8059,7 @@ class _RequestedGroupArtworkState extends State<_RequestedGroupArtwork> {
   }
 }
 
-class _AtomicNowPlayingCover extends StatelessWidget {
+class _AtomicNowPlayingCover extends StatefulWidget {
   const _AtomicNowPlayingCover({
     required this.songPath,
     required this.size,
@@ -7811,16 +8071,46 @@ class _AtomicNowPlayingCover extends StatelessWidget {
   final bool transitionsEnabled;
 
   @override
+  State<_AtomicNowPlayingCover> createState() => _AtomicNowPlayingCoverState();
+}
+
+class _AtomicNowPlayingCoverState extends State<_AtomicNowPlayingCover> {
+  Listenable? _changes;
+  PlaylistContentNotifier? _source;
+  String? _path;
+
+  void _syncChanges() {
+    final notifier = context.read<PlaylistContentNotifier>();
+    if (identical(_source, notifier) && _path == widget.songPath) return;
+    _source = notifier;
+    _path = widget.songPath;
+    _changes = Listenable.merge([
+      _preparedPlaybackArtworkSignal,
+      notifier.coverListenableForSongPath(widget.songPath),
+      notifier.artworkRecoveryListenable,
+    ]);
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncChanges();
+  }
+
+  @override
+  void didUpdateWidget(covariant _AtomicNowPlayingCover oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _syncChanges();
+  }
+
+  @override
   Widget build(BuildContext context) {
     final notifier = context.read<PlaylistContentNotifier>();
+    final songPath = widget.songPath;
     return NowPlayingCoverImage(
-      size: size,
-      transitionsEnabled: transitionsEnabled,
-      changes: Listenable.merge([
-        _preparedPlaybackArtworkSignal,
-        notifier.coverListenableForSongPath(songPath),
-        notifier.artworkRecoveryListenable,
-      ]),
+      size: widget.size,
+      transitionsEnabled: widget.transitionsEnabled,
+      changes: _changes!,
       onImageError: (image) {
         if (image is CoverMemoryImage) {
           notifier.reportUndecodableCover(songPath, image.bytes);
@@ -7873,7 +8163,7 @@ class _AtomicNowPlayingCover extends StatelessWidget {
               context,
               artwork,
               size: ArtworkSize.large,
-              logicalSize: size,
+              logicalSize: widget.size,
             );
       },
     );
@@ -8028,11 +8318,8 @@ class _PlaylistCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.only(right: 10),
-      child: Material(
-        color: selected
-            ? Theme.of(context).colorScheme.secondaryContainer
-            : Theme.of(context).colorScheme.surfaceContainer,
-        borderRadius: BorderRadius.circular(14),
+      child: HomePlaylistSurface(
+        selected: selected,
         child: InkWell(
           onTap: onTap,
           onLongPress: onLongPress,

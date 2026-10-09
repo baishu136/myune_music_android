@@ -39,7 +39,7 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
   Playlist? _selectedPlaylist;
   PlaylistContentNotifier? _notifier;
   PlaybackSourceSnapshot? _originalSource;
-  String _drawerArtist = '';
+  final _searchController = TextEditingController();
 
   @override
   void didChangeDependencies() {
@@ -48,11 +48,6 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
     final notifier = context.read<PlaylistContentNotifier>();
     _notifier = notifier;
     _originalSource = notifier.capturePlaybackSource();
-    final song = notifier.currentSong;
-    if (song != null) {
-      final artists = notifier.getIndividualArtists(song.artist);
-      _drawerArtist = artists.isEmpty ? song.artist : artists.first;
-    }
   }
 
   @override
@@ -66,6 +61,7 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
       unawaited(notifier.restorePlaybackSource(originalSource));
     }
     _scopeEntranceController.dispose();
+    _searchController.dispose();
     scrollController.dispose();
     super.dispose();
   }
@@ -76,17 +72,41 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
       builder: (context, notifier, settings, child) {
         final currentSong = notifier.currentSong;
         final librarySongs = notifier.allSongs;
-        final artistSongs = librarySongs
-            .where(
-              (song) => notifier
-                  .getIndividualArtists(song.artist)
-                  .contains(_drawerArtist),
-            )
-            .toList(growable: false);
-        final playlistSongs = _songsForPlaylist(notifier, _selectedPlaylist);
+        // Resolve live metadata on every notifier update, not only on entry.
+        final artists = currentSong == null
+            ? const <String>[]
+            : notifier.getIndividualArtists(currentSong.artist);
+        final drawerArtist = artists.isEmpty ? '' : artists.first;
+        final drawerAlbum = currentSong?.album ?? '';
+        final artistSongs = _scope != _QueueScope.artist
+            ? const <Song>[]
+            : librarySongs
+                  .where(
+                    (song) =>
+                        currentSong != null &&
+                        notifier
+                            .getIndividualArtists(song.artist)
+                            .contains(drawerArtist),
+                  )
+                  .toList(growable: false);
+        final albumSongs = _scope != _QueueScope.album
+            ? const <Song>[]
+            : librarySongs
+                  .where(
+                    (song) => currentSong != null && song.album == drawerAlbum,
+                  )
+                  .toList(growable: false);
+        final playlistSongs = _scope == _QueueScope.playlists
+            ? _songsForPlaylist(notifier, _selectedPlaylist)
+            : const <Song>[];
         final songs = switch (_scope) {
           _QueueScope.library => librarySongs,
           _QueueScope.artist => artistSongs,
+          _QueueScope.album => albumSongs,
+          _QueueScope.search => notifier.searchSongs(
+            _searchController.text,
+            librarySongs,
+          ),
           _QueueScope.playlists => playlistSongs,
         };
 
@@ -105,23 +125,36 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
                       onTap: () => _setSongScope(_QueueScope.library),
                     ),
                   ),
-                  const SizedBox(
-                    height: 38,
-                    child: VerticalDivider(width: 1, thickness: 1),
+                  Expanded(
+                    child: _QueueScopeButton(
+                      label: '歌手',
+                      icon: Icons.person_outline,
+                      selected: _scope == _QueueScope.artist,
+                      enabled: drawerArtist.trim().isNotEmpty,
+                      onTap: () => _setSongScope(_QueueScope.artist),
+                    ),
                   ),
                   Expanded(
                     child: _QueueScopeButton(
-                      label: '歌手歌曲',
-                      icon: Icons.person_outline,
-                      selected: _scope == _QueueScope.artist,
-                      enabled: _drawerArtist.trim().isNotEmpty,
-                      onTap: () => _setSongScope(_QueueScope.artist),
+                      label: '专辑',
+                      icon: Icons.album_outlined,
+                      selected: _scope == _QueueScope.album,
+                      enabled: drawerAlbum.trim().isNotEmpty,
+                      onTap: () => _setSongScope(_QueueScope.album),
+                    ),
+                  ),
+                  Expanded(
+                    child: _QueueScopeButton(
+                      label: '搜索',
+                      icon: Icons.search,
+                      selected: _scope == _QueueScope.search,
+                      onTap: () => _setSongScope(_QueueScope.search),
                     ),
                   ),
                   IconButton(
                     tooltip: '歌单',
                     color: _scope == _QueueScope.playlists
-                        ? Colors.white
+                        ? Theme.of(context).colorScheme.primary
                         : Theme.of(context).colorScheme.onSurfaceVariant,
                     icon: const Icon(Icons.playlist_play),
                     onPressed: () => _setSongScope(_QueueScope.playlists),
@@ -130,6 +163,27 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
               ),
             ),
             const Divider(height: 1),
+            if (_scope == _QueueScope.search)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                child: TextField(
+                  key: const ValueKey('queue-library-search'),
+                  controller: _searchController,
+                  autofocus: true,
+                  decoration: InputDecoration(
+                    hintText: '搜索音乐库',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchController.text.isEmpty
+                        ? null
+                        : IconButton(
+                            tooltip: '清除搜索',
+                            icon: const Icon(Icons.clear),
+                            onPressed: () => setState(_searchController.clear),
+                          ),
+                  ),
+                  onChanged: (_) => setState(() {}),
+                ),
+              ),
 
             if (_scope == _QueueScope.playlists && _selectedPlaylist == null)
               Expanded(child: _buildPlaylistList(context, notifier))
@@ -196,7 +250,16 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
             : currentSong == null
             ? null
             : notifier.coverForSongPath(currentSong.filePath);
-        final safeContent = SafeArea(child: queueContent);
+        final safeContent = SafeArea(
+          child: Padding(
+            padding: EdgeInsets.only(
+              bottom: _scope == _QueueScope.search
+                  ? MediaQuery.viewInsetsOf(context).bottom
+                  : 0,
+            ),
+            child: queueContent,
+          ),
+        );
         final content = !widget.syncHomeBackground
             ? safeContent
             : CustomThemeBackground(
@@ -232,6 +295,8 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
   String get _emptyMessage => switch (_scope) {
     _QueueScope.library => '音乐库中没有歌曲',
     _QueueScope.artist => '当前歌手没有可用歌曲',
+    _QueueScope.album => '当前专辑没有可用歌曲',
+    _QueueScope.search => '没有匹配的歌曲',
     _QueueScope.playlists => '歌单中没有歌曲',
   };
 
@@ -292,7 +357,11 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
         await notifier.playSongFromAllSongs(index);
         return;
       case _QueueScope.artist:
+      case _QueueScope.album:
         await notifier.playFromDynamicList(songs, index);
+        return;
+      case _QueueScope.search:
+        await notifier.playAllSongsSearchResult(songs[index]);
         return;
       case _QueueScope.playlists:
         final playlist = _selectedPlaylist;
@@ -311,6 +380,7 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
     if (scrollController.hasClients) {
       scrollController.jumpTo(0);
     }
+    FocusScope.of(context).unfocus();
     _scopeEntranceController.stop();
     setState(() {
       _scope = scope;
@@ -329,7 +399,7 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
   }
 }
 
-enum _QueueScope { library, artist, playlists }
+enum _QueueScope { library, artist, album, search, playlists }
 
 class _QueueEntranceItem extends StatelessWidget {
   const _QueueEntranceItem({
@@ -395,32 +465,14 @@ class _QueueScopeButton extends StatelessWidget {
     final color = !enabled
         ? Theme.of(context).disabledColor
         : selected
-        ? Colors.white
+        ? scheme.primary
         : scheme.onSurfaceVariant;
-    return InkWell(
-      borderRadius: BorderRadius.circular(18),
-      onTap: enabled ? onTap : null,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(icon, size: 22, color: color),
-            const SizedBox(width: 8),
-            Flexible(
-              child: Text(
-                label,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: Theme.of(context).textTheme.titleMedium?.copyWith(
-                  color: color,
-                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
+    return IconButton(
+      tooltip: label,
+      isSelected: selected,
+      color: color,
+      icon: Icon(icon, size: 22),
+      onPressed: enabled ? onTap : null,
     );
   }
 }
