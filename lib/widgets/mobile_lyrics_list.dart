@@ -3410,6 +3410,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
   bool _followingFrames = false;
   Duration _frameOrigin = Duration.zero;
   late final KaraokeMediaClock _clock;
+  late final KaraokePaintClock _paintClock;
   late final AnimationController _exitController;
   late final AnimationController _entryController;
   double _exitStartStrength = 1;
@@ -3430,6 +3431,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
         widget.positionListenable?.value ??
         widget.position;
     _clock = KaraokeMediaClock(initialPosition, rate: _playbackRate);
+    _paintClock = KaraokePaintClock(_clock);
     if (widget.seekTargetPosition != null) {
       _clock.seek(initialPosition, protectFromStaleSource: true);
     }
@@ -3565,6 +3567,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
     _preparationTimer?.cancel();
     _exitController.dispose();
     _entryController.dispose();
+    _paintClock.dispose();
     _clock.dispose();
     _paintCache?.dispose();
     super.dispose();
@@ -3788,6 +3791,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
           _paintCache = cache;
         }
         if (widget.active || _isExiting) cache.prepareImage();
+        _paintClock.settleAfterUs = cache.settleAfterUs;
         var colors = _paintStyle;
         if (colors == null ||
             colors.active != widget.playedColor ||
@@ -3807,7 +3811,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
               painter: _SinglePassKaraokePainter(
                 cache: cache,
                 colors: colors,
-                positionListenable: _clock,
+                positionListenable: _paintClock,
                 exitAnimation: _exitController,
                 isExiting: _isExiting,
                 entryAnimation: _entryController,

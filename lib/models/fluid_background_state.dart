@@ -8,8 +8,8 @@ enum FluidBackgroundQuality { automatic, powerSaving, smooth }
 
 // uTime is wall-clock seconds; the shader alone converts to orbital radians.
 // Every temporal harmonic is an integer, so all masks/warps wrap together.
-const fluidShaderTimeScale = .0975; // 1.5x the 361 orbit speed.
-const fluidPhaseCycle = math.pi * 2 / fluidShaderTimeScale; // 64.44 seconds
+const fluidShaderTimeScale = .15;
+const fluidPhaseCycle = math.pi * 2 / fluidShaderTimeScale; // 41.89 seconds
 
 double wrapFluidPhase(double phase) => phase % fluidPhaseCycle;
 
@@ -45,7 +45,7 @@ class FluidPalette {
   final bool warmAccentLocked;
   // Actual vivid lead owns slot 1; never relabel a grey as the lead.
   final bool vividAccentLocked;
-  // Layer roles: baseColor=canvas, second=blob1, fourth=blob2, third=ambient.
+  // Orbit pigments: second=lead, third=real accent, fourth=secondary.
   // first remains extraction metadata for existing callers, not a fourth light.
   // Extraction locks roles so closest-colour matching cannot swap a blob with
   // an ambient accent. Colour interpolation itself remains continuous.

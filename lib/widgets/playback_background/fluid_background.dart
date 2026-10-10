@@ -110,7 +110,8 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
     _controller = FluidBackgroundController(
       vsync: this,
       initialPalette: _entryPalette,
-      initialEffectiveTime: snapshot?.phase ?? 0,
+      initialEffectiveTime:
+          snapshot?.phase ?? math.Random().nextDouble() * fluidPhaseCycle,
       quality: widget.quality,
     );
     final loadedProgram = _program;

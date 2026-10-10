@@ -584,6 +584,23 @@ class _KaraokePaintCache extends ChangeNotifier {
     highlights = Float64List(unitCount);
     fragmentPhases = Float64List(fragmentCount);
     fragmentFronts = Float64List(fragmentCount);
+    var settled = 0;
+    for (final token in tokens) {
+      for (final unit in token.units) {
+        final timing = unit.timing;
+        settled = math.max(
+          settled,
+          math.max(
+            timing.highlightEndUs,
+            timing.liftStartUs +
+                (karaokeDefaultMotion.liftDuration.inMicroseconds * 1.35)
+                    .ceil(),
+          ),
+        );
+      }
+      settled = math.max(settled, token.visualStartUs + token.spanUs);
+    }
+    settleAfterUs = settled;
   }
 
   final String text;
@@ -633,6 +650,7 @@ class _KaraokePaintCache extends ChangeNotifier {
   late final ui.Picture _baseMask;
   late final Float64List lifts;
   late final Float64List highlights;
+  late final int settleAfterUs;
   late final KaraokeFollowerTimeline followerTimeline;
 
   void _buildFollowerTimeline() {

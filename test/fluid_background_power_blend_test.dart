@@ -18,6 +18,43 @@ const _pigments = [
 ];
 
 void main() {
+  testWidgets('orbital pigments avoid opaque colour plateaus', (tester) async {
+    await tester.runAsync(() async {
+      final shader = (await ui.FragmentProgram.fromAsset(
+        'shaders/fluid_background.frag',
+      )).fragmentShader();
+      const palette = FluidPalette(
+        Colors.black,
+        Colors.green,
+        Colors.black,
+        Colors.red,
+        baseColor: Colors.black,
+      );
+      try {
+        for (var step = 0; step < 24; step++) {
+          final pixels = await _render(
+            shader,
+            palette,
+            time: fluidPhaseCycle * step / 24,
+            motion: 1,
+          );
+          var peakRed = 0, peakGreen = 0;
+          for (var y = 0; y < 160; y++) {
+            for (var x = 0; x < 96; x++) {
+              final i = (y * 96 + x) * 4;
+              peakRed = math.max(peakRed, pixels[i]);
+              peakGreen = math.max(peakGreen, pixels[i + 1]);
+            }
+          }
+          // Three orbiting fields use convex mixing and subdued coverage.
+          expect(peakRed, lessThan(220), reason: 'red orbit $step');
+          expect(peakGreen, lessThan(165), reason: 'green orbit $step');
+        }
+      } finally {
+        shader.dispose();
+      }
+    });
+  });
   testWidgets('exposed centre retains cover colour throughout an orbit', (
     tester,
   ) async {
@@ -230,124 +267,115 @@ void main() {
     }
   });
 
-  testWidgets('production shader follows layered masks and retains pigment', (
-    tester,
-  ) async {
-    await tester.runAsync(() async {
-      final shader = (await ui.FragmentProgram.fromAsset(
-        'shaders/fluid_background.frag',
-      )).fragmentShader();
-      try {
-        const palette = FluidPalette(
-          Color(0xFFEE2288),
-          Color(0xFFEE2288),
-          Color(0xFFFFB820),
-          Color(0xFF22BF9C),
-          baseColor: Color(0xFF721943),
-        );
-        final bytes = await _render(shader, palette);
-        var saturation = 0.0;
-        var oldSaturation = 0.0;
-        for (var y = 0; y < 160; y++) {
-          for (var x = 0; x < 96; x++) {
-            final i = (y * 96 + x) * 4;
-            final actual = Color.fromARGB(
-              255,
-              bytes[i],
-              bytes[i + 1],
-              bytes[i + 2],
-            );
-            saturation += HSLColor.fromColor(actual).saturation;
-            final old = _screenOracle(palette, (x + .5) / 96, (y + .5) / 160);
-            oldSaturation += HSLColor.fromColor(
-              Color.from(alpha: 1, red: old[0], green: old[1], blue: old[2]),
-            ).saturation;
-            if (x % 12 == 0 && y % 20 == 0) {
-              final expected = _layerOracle(
-                palette,
-                (x + .5) / 96,
-                (y + .5) / 160,
+  testWidgets(
+    'production shader follows convex orbital mixing and retains pigments',
+    (tester) async {
+      await tester.runAsync(() async {
+        final shader = (await ui.FragmentProgram.fromAsset(
+          'shaders/fluid_background.frag',
+        )).fragmentShader();
+        try {
+          const palette = FluidPalette(
+            Color(0xFFEE2288),
+            Color(0xFFEE2288),
+            Color(0xFFFFB820),
+            Color(0xFF22BF9C),
+            baseColor: Color(0xFF721943),
+          );
+          final bytes = await _render(shader, palette);
+          var saturation = 0.0;
+          var oldSaturation = 0.0;
+          for (var y = 0; y < 160; y++) {
+            for (var x = 0; x < 96; x++) {
+              final i = (y * 96 + x) * 4;
+              final actual = Color.fromARGB(
+                255,
+                bytes[i],
+                bytes[i + 1],
+                bytes[i + 2],
               );
-              for (var channel = 0; channel < 3; channel++) {
-                expect(
-                  bytes[i + channel],
-                  closeTo(expected[channel] * 255, 2),
-                  reason: '$x,$y channel $channel',
+              saturation += HSLColor.fromColor(actual).saturation;
+              final old = _screenOracle(palette, (x + .5) / 96, (y + .5) / 160);
+              oldSaturation += HSLColor.fromColor(
+                Color.from(alpha: 1, red: old[0], green: old[1], blue: old[2]),
+              ).saturation;
+              if (x % 12 == 0 && y % 20 == 0) {
+                final expected = _layerOracle(
+                  palette,
+                  (x + .5) / 96,
+                  (y + .5) / 160,
                 );
+                for (var channel = 0; channel < 3; channel++) {
+                  expect(
+                    bytes[i + channel],
+                    closeTo(expected[channel] * 255, 2),
+                    reason: '$x,$y channel $channel',
+                  );
+                }
+                expect(bytes[i + 3], 255);
               }
-              expect(bytes[i + 3], 255);
             }
           }
-        }
-        // Same synthetic pigments/grid as the old Screen diagnostic. This is
-        // not an album measurement or a global saturation guarantee.
-        expect(saturation, greaterThan(oldSaturation));
-        debugPrint(
-          'Synthetic grid HSL saturation: layers=${saturation / (96 * 160)}, old Screen=${oldSaturation / (96 * 160)}',
-        );
-        // Two distinct opaque cores keep their original pigment saturation.
-        for (final point in [
-          (25, 44, palette.second),
-          (74, 118, palette.fourth),
-        ]) {
-          final i = (point.$2 * 96 + point.$1) * 4;
-          final channels = [point.$3.r, point.$3.g, point.$3.b];
-          for (var c = 0; c < 3; c++) {
-            expect(bytes[i + c], closeTo(channels[c] * .925 * 255, 2));
-          }
-        }
-        // Changing metadata slot zero cannot create a fourth light.
-        final metadata = await _render(
-          shader,
-          FluidPalette(
-            Colors.white,
-            palette.second,
-            palette.third,
-            palette.fourth,
-            baseColor: palette.baseColor,
-          ),
-        );
-        expect(metadata, bytes);
-        // A distinct base must affect uncovered canvas, unlike 358.
-        final differentBase = await _render(
-          shader,
-          FluidPalette(
-            palette.first,
-            palette.second,
-            palette.third,
-            palette.fourth,
-            baseColor: Colors.black,
-          ),
-        );
-        expect(differentBase, isNot(bytes));
-        // Equal pigments must stay that hue where both masks overlap.
-        final same = await _render(
-          shader,
-          FluidPalette(
-            palette.first,
-            palette.first,
-            baseColor: palette.first,
-            palette.first,
-            palette.first,
-          ),
-        );
-        const centre = (80 * 96 + 48) * 4;
-        expect(
-          HSLColor.fromColor(
-            Color.fromARGB(
-              255,
-              same[centre],
-              same[centre + 1],
-              same[centre + 2],
+          // Same synthetic pigments/grid as the old Screen diagnostic. This is
+          // not an album measurement or a global saturation guarantee.
+          // Wide three-colour joins may reduce chroma; still reject washout.
+          expect(saturation / (96 * 160), greaterThan(.40));
+          debugPrint(
+            'Synthetic grid HSL saturation: orbital=${saturation / (96 * 160)}, old Screen=${oldSaturation / (96 * 160)}',
+          );
+          // Changing metadata slot zero cannot create a fourth light.
+          final metadata = await _render(
+            shader,
+            FluidPalette(
+              Colors.white,
+              palette.second,
+              palette.third,
+              palette.fourth,
+              baseColor: palette.baseColor,
             ),
-          ).saturation,
-          greaterThan(.70),
-        );
-      } finally {
-        shader.dispose();
-      }
-    });
-  });
+          );
+          expect(metadata, bytes);
+          // The base supports every field's veil rather than making black holes.
+          final differentBase = await _render(
+            shader,
+            FluidPalette(
+              palette.first,
+              palette.second,
+              palette.third,
+              palette.fourth,
+              baseColor: Colors.black,
+            ),
+          );
+          expect(differentBase, isNot(bytes));
+          // Equal pigments must stay that hue where both masks overlap.
+          final same = await _render(
+            shader,
+            FluidPalette(
+              palette.first,
+              palette.first,
+              baseColor: palette.first,
+              palette.first,
+              palette.first,
+            ),
+          );
+          const centre = (80 * 96 + 48) * 4;
+          expect(
+            HSLColor.fromColor(
+              Color.fromARGB(
+                255,
+                same[centre],
+                same[centre + 1],
+                same[centre + 2],
+              ),
+            ).saturation,
+            greaterThan(.70),
+          );
+        } finally {
+          shader.dispose();
+        }
+      });
+    },
+  );
 }
 
 Future<Uint8List> _render(
@@ -388,33 +416,40 @@ Future<Uint8List> _render(
 
 // Independent scalar oracle, with motion=0/time=0 from the production painter.
 List<double> _layerOracle(FluidPalette palette, double x, double y) {
-  double mask(double cx, double cy, double rx, double ry, double outer) {
-    final dx = (x - cx) / rx, dy = (y - cy) / ry;
-    final radius = math.sqrt(dx * dx + dy * dy);
-    final t = ((radius - .20) / (outer - .20)).clamp(0.0, 1.0);
-    return 1 - t * t * t * (t * (t * 6 - 15) + 10);
-  }
-
-  final blob1 = mask(.26, .28, .62, .78, 1.20);
-  final blob2 = mask(.78, .74, .55, .70, 1.20);
-  final ambient = mask(.48, .50, 1.10, 1.0, 1.50) * .16;
+  final phase = .10 * math.sin(1.7);
+  final phase2 = .26 * math.sin(2.1) + .09 * math.sin(.8);
+  final weights = List<double>.generate(3, (i) {
+    final angle = phase + math.pi * 2 * i / 3;
+    final dx = (x - .5 - .26 * math.cos(angle)) / .32;
+    final dy = (y - .5 - .26 * 1.08 * math.sin(angle)) / .32;
+    return math.pow(1 / (1 + dx * dx + dy * dy), 3).toDouble();
+  });
+  final sum = weights.reduce((a, b) => a + b);
   final distance = math.sqrt(math.pow(x - .5, 2) + math.pow(y - .48, 2));
   final edge = ((distance - .35) / (1.10 - .35)).clamp(0.0, 1.0);
   final vignette = 1 - edge * edge * (3 - 2 * edge);
   return List<double>.generate(3, (channel) {
     double component(Color c) => [c.r, c.g, c.b][channel];
     double lerp(double a, double b, double mask) => a + (b - a) * mask;
-    final coverage = math.max(blob1, blob2);
-    final exposure = ((coverage - .10) / .55).clamp(0.0, 1.0);
-    final canvasFill = .30 * (1 - exposure * exposure * (3 - 2 * exposure));
-    var mixed = lerp(
-      component(palette.baseColor),
-      component(palette.second),
-      canvasFill,
-    );
-    mixed = lerp(mixed, component(palette.third), ambient);
-    mixed = lerp(mixed, component(palette.second), blob1);
-    mixed = lerp(mixed, component(palette.fourth), blob2);
+    final colours = [
+      lerp(component(palette.second), component(palette.third), .08),
+      lerp(
+        component(palette.third),
+        component(palette.fourth),
+        .08 + .05 * math.sin(1.4),
+      ),
+      lerp(
+        component(palette.fourth),
+        component(palette.second),
+        .08 + .05 * math.sin(2.1),
+      ),
+    ];
+    var pigment = 0.0;
+    for (var i = 0; i < 3; i++) {
+      pigment += colours[i] * weights[i] / sum;
+    }
+    final coverage = .66 + .16 * (.5 + .5 * math.sin(y * 2.8 + phase2));
+    final mixed = lerp(component(palette.baseColor), pigment, coverage);
     return mixed * (.98 + .02 * vignette) * (1 - .3 * .25);
   });
 }

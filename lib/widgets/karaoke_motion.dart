@@ -287,6 +287,9 @@ double _recoilAt(
   KaraokeMotionConfig config,
 ) {
   if (amplitude == 0) return 0;
+  final elapsed = mediaUs - startUs;
+  final duration = config.liftDuration.inMicroseconds;
+  if (elapsed <= duration * .55 || elapsed >= duration * 1.35) return 0;
   final phase = (mediaUs - startUs) / config.liftDuration.inMicroseconds;
   // One C2 compact hump (zero position/velocity/acceleration at each end).
   // Peak at .95 of the slow lift; settled exactly by 1.35. It is not passed
@@ -297,6 +300,9 @@ double _recoilAt(
 }
 
 double _liftAt(int mediaTimeUs, int startUs, KaraokeMotionConfig config) {
+  final elapsed = mediaTimeUs - startUs;
+  if (elapsed <= 0) return 0;
+  if (elapsed >= config.liftDuration.inMicroseconds) return 1;
   final liftPhase =
       ((mediaTimeUs - startUs) / config.liftDuration.inMicroseconds).clamp(
         0.0,

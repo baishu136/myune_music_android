@@ -24,6 +24,32 @@ class ProjectChangelogEntry {
 /// 0.99 集中记录 0.9.8-android.129 之后的全部有效改动。
 const projectChangelogEntries = <ProjectChangelogEntry>[
   ProjectChangelogEntry(
+    version: '1.0.0-android.377',
+    date: '2026-10-10',
+    optimizations: [
+      '封面背景淡入时长按新旧图片颜色跨度自适应，近色较快、跨色较慢。',
+      '动态背景改成三色块围绕中心不规则运动，分别连续变速和调整轨道，全程柔和混色。',
+    ],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.376',
+    date: '2026-10-10',
+    optimizations: [
+      '重做动态背景：开放柔和色带沿舒缓波形流动，相邻交界保持间距，避免色团挤压与包裹。',
+      '主色、副色和真实环境色平滑衔接，沿色带加入缓慢明暗流动，减少巨大实色色块。',
+    ],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.375',
+    date: '2026-10-10',
+    features: ['封面背景在新图解码完成后淡入，快速切歌只保留最新待切目标。'],
+    fixes: ['逐字歌词过滤启动时重复的旧位置样本，暂停及恢复保留已显示姿态，避免误判复位。'],
+    optimizations: [
+      '动态背景缩小浓色色域，以相邻色域替代色团叠套；平滑随机化初始运动阶段，增加连续变速与速度上限。',
+      '歌词扫光、上浮及回弹完成后停止重复重绘，跳转重新唤醒；稳定字形减少曲线计算。',
+    ],
+  ),
+  ProjectChangelogEntry(
     version: '1.0.0-android.374',
     date: '2026-10-08',
     fixes: ['封面静态背景统一保留原生高斯模糊，取消播放后的预模糊替换；修复细纹采样及边缘拉伸。'],

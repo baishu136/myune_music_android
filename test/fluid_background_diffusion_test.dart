@@ -278,7 +278,7 @@ void main() {
   });
 
   testWidgets(
-    'actual shader keeps a lit centre, convergent territories and continuous motion',
+    'actual shader keeps a lit centre, orbital fields and continuous motion',
     (tester) async {
       await tester.runAsync(() async {
         final program = await ui.FragmentProgram.fromAsset(
@@ -288,7 +288,8 @@ void main() {
         try {
           final centre = await _render(shader, _colourful, label: 'colourful');
           final centreLuma = _meanLuma(centre, 32, 56, 64, 104);
-          expect(centreLuma, greaterThan(90), reason: '$centreLuma');
+          // Reduced dense areas expose more canvas; still reject a dark hole.
+          expect(centreLuma, greaterThan(75), reason: '$centreLuma');
           // Test the complete extraction-to-shader path too. Broad diffusion
           // must not wash a vivid cover into a nearly white lyrics backdrop.
           final calibrated = await _render(
@@ -297,7 +298,7 @@ void main() {
             label: 'production-colourful',
           );
           final calibratedLuma = _meanLuma(calibrated, 32, 56, 64, 104);
-          expect(calibratedLuma, inExclusiveRange(90, 175));
+          expect(calibratedLuma, inExclusiveRange(75, 175));
           // Whole-cycle checkpoints use an actually extracted palette, not
           // hand-picked shader colours. Bound catastrophic global desaturation
           // without pretending complementary boundary lerps stay pure.
@@ -331,10 +332,14 @@ void main() {
             glowStrength: .70,
           );
           final broad = await _render(shader, isolated, motion: 0);
-          final peak = _meanLuma(broad, 23, 30, 31, 46);
-          final distant = _meanLuma(broad, 78, 128, 86, 144);
-          // Opaque pigment cores remain distinct from the new 30% canvas wash.
-          expect(peak, greaterThan(160));
+          var peak = 0, distant = 255;
+          for (var i = 0; i < broad.length; i += 4) {
+            if (broad[i] > peak) peak = broad[i];
+            if (broad[i] < distant) distant = broad[i];
+          }
+          // All three fields move now; keep pigment contrast without assuming
+          // a fixed left-edge core or demanding a full-opacity plateau.
+          expect(peak, greaterThan(135));
           expect(distant, lessThan(peak * .40));
           final dim0 = await _render(shader, _colourful, dim: 0);
           final dim6 = await _render(shader, _colourful, dim: .6);

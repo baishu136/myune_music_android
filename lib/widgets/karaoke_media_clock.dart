@@ -2,6 +2,36 @@ part of 'mobile_lyrics_list.dart';
 
 enum KaraokeSourceUpdate { continuous, stale, discontinuity }
 
+/// Media time keeps advancing through long rests. Ink only needs a repaint
+/// until every sweep, lift and compact recoil is settled; seeks wake it again.
+class KaraokePaintClock extends ChangeNotifier
+    implements ValueListenable<Duration> {
+  KaraokePaintClock(this.source) : _previous = source.value {
+    source.addListener(_changed);
+  }
+  final ValueListenable<Duration> source;
+  Duration _previous;
+  int? settleAfterUs;
+  @override
+  Duration get value => source.value;
+  void _changed() {
+    final next = value;
+    final end = settleAfterUs;
+    final settled =
+        end != null &&
+        _previous.inMicroseconds >= end &&
+        next.inMicroseconds >= end;
+    _previous = next;
+    if (!settled) notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    source.removeListener(_changed);
+    super.dispose();
+  }
+}
+
 /// Explicit seeks bypass this filter. Ordinary samples may arrive late or out
 /// of order; a moderate isolated outlier must not install a seek lock.
 class KaraokePositionSampleTracker {
@@ -31,11 +61,14 @@ class KaraokePositionSampleTracker {
     final confirmed =
         candidate != null &&
         candidateStamp != null &&
+        // Repeated zero/old startup values are not evidence of relocation.
+        // While playing, confirm only a second advancing media sample.
+        (rate <= 0 || source > candidate) &&
         ((source - candidate).inMicroseconds -
                     math.max(0, (stamp - candidateStamp).inMicroseconds) * rate)
                 .abs() <=
             160000;
-    if (drift.abs() > 1000000 || confirmed) {
+    if (delta > 0 && drift > 1000000 || confirmed) {
       reset(source, stamp);
       return KaraokeSourceUpdate.discontinuity;
     }
@@ -75,12 +108,16 @@ class KaraokeMediaClock extends ValueNotifier<Duration> {
     final stale =
         _seekGuardUntil > Duration.zero &&
         (source - value).inMicroseconds.abs() > 160000;
-    _anchor = stale || !running ? value : source;
-    _samples.reset(source, Duration.zero);
+    _anchor = value;
+    _samples.reset(value, Duration.zero);
     // Small final decoder corrections must not rewind a frozen glyph pose.
     // On resume they are handled by the same gradual drift correction as play.
-    if (!stale && (source - value).inMicroseconds.abs() > 160000) {
+    // Running state is not a seek. A lagging decoder value must never reset
+    // a visible pose; subsequent advancing samples calibrate the clock.
+    if (!stale && source > value + const Duration(milliseconds: 160)) {
       value = source;
+      _anchor = source;
+      _samples.reset(source, Duration.zero);
     }
   }
 
@@ -124,6 +161,12 @@ class KaraokeMediaClock extends ValueNotifier<Duration> {
       return;
     }
     if (!_running) {
+      // Audio output may still be starting after a restored position. Paused
+      // ordinary samples need confirmation too; explicit seeks bypass this.
+      if (_samples.observe(source, _lastElapsed, 0) ==
+          KaraokeSourceUpdate.stale) {
+        return;
+      }
       if ((source - value).inMicroseconds.abs() > 160000) seek(source);
       return;
     }

@@ -88,7 +88,7 @@ void main() {
       );
       await tester.pump(const Duration(seconds: 10));
       expect(controller.effectiveTime, before);
-      expect(fluidPhaseCycle, inInclusiveRange(64, 65));
+      expect(fluidPhaseCycle, inInclusiveRange(41, 42));
     },
   );
 }

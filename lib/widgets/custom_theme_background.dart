@@ -93,6 +93,10 @@ class _CustomThemeBackgroundState extends State<CustomThemeBackground> {
           ),
           child: GaussianArtworkSurface(
             provider: provider,
+            adaptiveColorTransition: showCover,
+            transitionDuration: showCover
+                ? const Duration(milliseconds: 450)
+                : Duration.zero,
             sigma: backgroundGaussianSigma(
               showCover ? widget.coverBlurSigma : widget.blurSigma,
             ),
