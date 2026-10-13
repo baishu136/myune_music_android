@@ -66,7 +66,7 @@ class _PlaybarState extends State<Playbar> {
     // 顶级 Consumer，确保 Playbar 整体能响应 PlaylistContentNotifier 的变化
     return Consumer<PlaylistContentNotifier>(
       builder: (context, playlistNotifier, child) {
-        final Player player = playlistNotifier.mediaPlayer;
+        final PlayerApi player = playlistNotifier.mediaPlayer;
 
         return Container(
           height: 70,

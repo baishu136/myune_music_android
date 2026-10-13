@@ -18,7 +18,7 @@ class AudioAnalysisPage extends StatefulWidget {
 }
 
 class _AudioAnalysisPageState extends State<AudioAnalysisPage> {
-  late final Player _player;
+  late final PlayerApi _player;
   StreamSubscription<dynamic>? _playlistSub;
 
   @override

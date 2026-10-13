@@ -11,6 +11,73 @@ import 'package:myune_music/widgets/karaoke_motion.dart';
 
 void main() {
   testWidgets(
+    'real narrow-letter onset uses ink bounds with no frame-time scan',
+    (tester) async {
+      await _fonts(tester);
+      final line = LyricLine(
+        timestamp: Duration.zero,
+        texts: ['I'],
+        tokens: [
+          [
+            LyricToken(
+              text: 'I',
+              start: const Duration(seconds: 1),
+              end: const Duration(milliseconds: 1600),
+            ),
+          ],
+        ],
+      );
+      await tester.pumpWidget(_host('I', sourceLine: line, fontSize: 32));
+      final dynamic painter = _painter(tester), cache = painter.cache;
+      final dynamic colours = painter.colors.withColors(
+        Colors.white,
+        Colors.black,
+      );
+      int sum(Uint8List bytes) {
+        var total = 0;
+        for (var i = 0; i < bytes.length; i += 4) {
+          total += bytes[i];
+        }
+        return total;
+      }
+
+      late int cold;
+      await tester.runAsync(() async {
+        cold = sum(
+          await _render(
+            cache,
+            (canvas) => cache.paint(canvas, 1015000, 1.0, colours),
+          ),
+        );
+      });
+      await _warm(tester, cache);
+      final scans = debugKaraokeInkBoundsScanCount,
+          layouts = debugKaraokeTextLayoutCount;
+      final dynamic unit = cache.tokens.single.units.single;
+      expect(unit.sweep.length, lessThan(unit.bounds.width));
+      expect(unit.timing.sourceTokenStartUs, 1000000);
+      expect(unit.timing.sourceTokenEndUs, 1600000);
+      await tester.runAsync(() async {
+        var previous = 0;
+        for (final time in [1015000, 1030000, 1045000]) {
+          final current = sum(
+            await _render(
+              cache,
+              (canvas) => cache.paint(canvas, time, 1.0, colours),
+            ),
+          );
+          if (time == 1015000) {
+            expect(current, greaterThan(cold * 2 + 100));
+          }
+          expect(current, greaterThan(previous));
+          previous = current;
+        }
+      });
+      expect(debugKaraokeInkBoundsScanCount, scans);
+      expect(debugKaraokeTextLayoutCount, layouts);
+    },
+  );
+  testWidgets(
     'slow real syllable retains feather and coverage across cold/hot rendering',
     (tester) async {
       await _fonts(tester);

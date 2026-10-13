@@ -1,6 +1,7 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'now_playing_cover_glow.dart';
 
 const nowPlayingCoverReplacementDuration = Duration(milliseconds: 320);
 
@@ -33,6 +34,13 @@ class NowPlayingCoverImage extends StatelessWidget {
         child: Center(child: Icon(Icons.music_note, size: size * .5)),
       );
       final image = readImage();
+      if (image == null) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (context.mounted) {
+            NowPlayingCoverGlow.reportImageReady(context, false);
+          }
+        });
+      }
       return ClipRRect(
         borderRadius: BorderRadius.circular(8),
         child: SizedBox.square(
@@ -58,6 +66,7 @@ class NowPlayingCoverImage extends StatelessWidget {
                           image: (child as RawImage).image,
                           invertColors: child.invertColors,
                           size: size,
+                          decodedReady: frame != null,
                           enabled:
                               transitionsEnabled &&
                               !MediaQuery.disableAnimationsOf(context),
@@ -67,7 +76,10 @@ class NowPlayingCoverImage extends StatelessWidget {
                     // A failed byte candidate is rejected outside build. The
                     // normal source notifier can then publish its fallback.
                     WidgetsBinding.instance.addPostFrameCallback((_) {
-                      if (context.mounted) onImageError?.call(image);
+                      if (context.mounted) {
+                        NowPlayingCoverGlow.reportImageReady(context, false);
+                        onImageError?.call(image);
+                      }
                     });
                     return placeholder();
                   },
@@ -88,11 +100,13 @@ class _DecodedCoverTransition extends StatefulWidget {
     required this.invertColors,
     required this.size,
     required this.enabled,
+    required this.decodedReady,
   });
   final ui.Image? image;
   final bool invertColors;
   final double size;
   final bool enabled;
+  final bool decodedReady;
 
   @override
   State<_DecodedCoverTransition> createState() =>
@@ -113,6 +127,23 @@ class _DecodedCoverTransitionState extends State<_DecodedCoverTransition>
   ui.Image? _current;
   ui.Image? _previous;
   ui.Image? _queued;
+  int _readinessRevision = 0;
+  bool? _reportedReady;
+
+  void _scheduleReadiness() {
+    final revision = ++_readinessRevision;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || revision != _readinessRevision) return;
+      final ready =
+          widget.decodedReady &&
+          _current != null &&
+          !_controller.isAnimating &&
+          _queued == null;
+      if (ready == _reportedReady) return;
+      _reportedReady = ready;
+      NowPlayingCoverGlow.reportImageReady(context, ready);
+    });
+  }
 
   @override
   void initState() {
@@ -200,22 +231,25 @@ class _DecodedCoverTransitionState extends State<_DecodedCoverTransition>
   );
 
   @override
-  Widget build(BuildContext context) => Stack(
-    fit: StackFit.expand,
-    children: [
-      if (_previous != null)
-        RepaintBoundary(
-          child: _pixels(_previous, 'now-playing-cover-previous'),
+  Widget build(BuildContext context) {
+    _scheduleReadiness();
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        if (_previous != null)
+          RepaintBoundary(
+            child: _pixels(_previous, 'now-playing-cover-previous'),
+          ),
+        // Keep the old cover opaque below the incoming fade. Two opposing alpha
+        // fades would darken the midpoint. No layout or per-frame source reads.
+        FadeTransition(
+          key: const ValueKey('now-playing-cover-fade'),
+          opacity: _opacity,
+          child: RepaintBoundary(
+            child: _pixels(_current, 'now-playing-cover-current'),
+          ),
         ),
-      // Keep the old cover opaque below the incoming fade. Two opposing alpha
-      // fades would darken the midpoint. No layout or per-frame source reads.
-      FadeTransition(
-        key: const ValueKey('now-playing-cover-fade'),
-        opacity: _opacity,
-        child: RepaintBoundary(
-          child: _pixels(_current, 'now-playing-cover-current'),
-        ),
-      ),
-    ],
-  );
+      ],
+    );
+  }
 }

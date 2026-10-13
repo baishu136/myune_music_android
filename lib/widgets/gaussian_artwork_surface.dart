@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import '../models/fluid_background_state.dart';
 
 /// A single native Gaussian path for the entire image lifetime. Mirrored
 /// source texels extend beyond the viewport BEFORE blur; clipping happens last.
@@ -88,7 +89,10 @@ class _ArtworkTransitionState extends State<_ArtworkTransition>
     }
     _fade = AnimationController(vsync: this, duration: widget.duration)
       ..addStatusListener(_finished);
-    _opacity = CurvedAnimation(parent: _fade, curve: Curves.easeInOutCubic);
+    _opacity = CurvedAnimation(
+      parent: _fade,
+      curve: const BackgroundColorBlendCurve(),
+    );
   }
 
   @override
@@ -251,7 +255,7 @@ Duration _colorSpanDuration(Uint8List before, Uint8List after) {
   }
   final span = (math.sqrt(squared / (before.length / 4)) / .70).clamp(0.0, 1.0);
   final smooth = span * span * (3 - 2 * span);
-  return Duration(milliseconds: (280 + 620 * smooth).round());
+  return Duration(milliseconds: (280 + 1120 * smooth).round());
 }
 
 class _GaussianFrame extends StatefulWidget {

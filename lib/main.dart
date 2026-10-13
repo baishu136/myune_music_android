@@ -31,6 +31,7 @@ import 'services/cover_override_service.dart';
 import 'services/fault_log_service.dart';
 import 'services/frame_performance_monitor.dart';
 import 'services/page_transition_work_observer.dart';
+import 'widgets/android_system_bars.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -44,6 +45,7 @@ void main() async {
   FramePerformanceMonitor.start();
 
   if (Platform.isAndroid) {
+    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
     await SystemChrome.setPreferredOrientations(const [
       DeviceOrientation.portraitUp,
     ]);
@@ -513,7 +515,9 @@ class _MyAppState extends State<MyApp> with TrayListener {
               : Duration.zero,
           themeAnimationCurve: ThemeMotion.transitionCurve,
           builder: (context, materialAppChild) => Platform.isAndroid
-              ? GlobalNoticeOverlay(child: materialAppChild!)
+              ? AndroidSystemBars(
+                  child: GlobalNoticeOverlay(child: materialAppChild!),
+                )
               : DragToResizeArea(child: Hotkeys(child: materialAppChild!)),
 
           home: Platform.isAndroid ? const MobileShell() : const AppShell(),

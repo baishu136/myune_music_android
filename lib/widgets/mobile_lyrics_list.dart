@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
 import 'package:flutter/rendering.dart'
     show RenderComparison, ScrollCacheExtent;
-import 'package:flutter/physics.dart';
 import 'package:flutter/scheduler.dart' show SchedulerBinding;
 
 import '../page/playlist/playlist_models.dart';
@@ -18,6 +17,7 @@ import 'interlude_animation_widget.dart';
 import 'karaoke_motion.dart';
 import 'lyric_seek_guide.dart';
 import 'lyric_scroll_motion.dart';
+import 'lyric_elastic_motion.dart';
 import 'lyric_normalized_motion.dart';
 import 'lyric_phase_transition.dart';
 import 'lyric_frame_clock.dart';
@@ -31,6 +31,8 @@ export 'synthetic_karaoke_timing.dart';
 part 'karaoke_media_clock.dart';
 part 'karaoke_paint_cache.dart';
 part 'karaoke_prewarm.dart';
+part 'lyric_elastic_rows.dart';
+part 'karaoke_ink_bounds.dart';
 
 double mobileLyricWholeLineHighlight(int distance, {bool hasFocus = true}) =>
     !hasFocus
@@ -65,6 +67,7 @@ const Duration mobileLyricsKaraokeLineShiftDuration =
 const double mobileLyricsDefaultScrollFrequency = 8.8;
 const double mobileLyricsRenderOverflow = 180;
 const double mobileLyricsActiveScale = 1.1;
+const double mobileLyricsVerticalPadding = 6;
 
 double mobileLyricsLargeFontProgress(double fontSize) =>
     ((fontSize - 20) / 16).clamp(0.0, 1.0).toDouble();
@@ -225,11 +228,15 @@ class _LyricElasticPulse {
     this.displacement = 0,
     this.anchorIndex = 0,
     this.lineDurationSeconds = 1.5,
+    this.departingIndex,
+    this.startedAt = Duration.zero,
   });
 
   final int id;
   final double displacement;
   final int anchorIndex;
+  final int? departingIndex;
+  final Duration startedAt;
   final double lineDurationSeconds;
 }
 
@@ -930,6 +937,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   void didChangeDependencies() {
     super.didChangeDependencies();
     _motionVisible = TickerMode.valuesOf(context).enabled;
+    _frameClock.setEnabled(_motionVisible);
     _syncScrollProtection();
   }
 
@@ -1392,7 +1400,6 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       _focusDuration = mobileLyricsFocusTransitionDuration;
       _focusCurve = mobileLyricsFocusTransitionCurve;
       final displacement = clampedTarget - _scrollController.offset;
-      _stopMotion();
       if (displacement.abs() >= .35) {
         final previous = _elasticPulse.value;
         final visualDisplacement = !boundedTravel && _normalExitIndex != null
@@ -1408,21 +1415,13 @@ class _MobileLyricsListState extends State<MobileLyricsList>
           id: previous.id + 1,
           displacement: visualDisplacement,
           anchorIndex: anchorIndex ?? widget.active,
+          departingIndex: _normalExitIndex,
+          startedAt: _frameClock.elapsed,
           lineDurationSeconds: isLongJump
               ? lineDuration.clamp(.35, .75).toDouble()
               : lineDuration,
         );
-        _scrollController.jumpTo(clampedTarget);
       }
-      _motion.sync(clampedTarget, viewportExtent: _viewportHeight);
-      return true;
-    }
-
-    if (_usesRowElastic) {
-      _motion.offset = _scrollController.offset;
-      _motion.retarget(clampedTarget, viewportExtent: _viewportHeight);
-      _startMotion();
-      return true;
     }
 
     var animationStart = _scrollController.offset;
@@ -1908,6 +1907,18 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       return true;
     }
 
+    final geometryChanged =
+        _layoutWidth > 0 &&
+        ((_layoutWidth - width).abs() >= .5 ||
+            _layoutDirection != direction ||
+            (_layoutTextScale - textScale).abs() >= .001);
+    if (geometryChanged && !_isManuallyBrowsing && !_lyricsPointerDown) {
+      // Rotation/window changes must not paint new wrapping at an old scroll
+      // offset and then replay a spring against that different geometry.
+      _pendingTypographyReanchor = true;
+      _stopMotion();
+      _elasticPulse.value = _LyricElasticPulse(id: _elasticPulse.value.id + 1);
+    }
     _layoutInvalid = false;
     _fullTextLayoutCount++;
     _layoutLines = widget.lines;
@@ -1935,7 +1946,8 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       textScaler: scaler,
       locale: _prewarmLocale,
     )..layout(maxWidth: availableWidth);
-    _browseMinimumHitHeight = lineMetricPainter.height * 3 + 10;
+    _browseMinimumHitHeight =
+        lineMetricPainter.height * 3 + mobileLyricsVerticalPadding * 2;
     lineMetricPainter.dispose();
     final heights = List<double>.filled(widget.lines.length, 0);
     final offsets = List<double>.filled(widget.lines.length, 0);
@@ -1951,10 +1963,11 @@ class _MobileLyricsListState extends State<MobileLyricsList>
         textScaler: scaler,
         locale: _prewarmLocale,
       )..layout(maxWidth: availableWidth);
-      final contentHeight = (painter.height + 10).clamp(
-        widget.fontSize * 1.2 + 10,
-        double.infinity,
-      );
+      final contentHeight = (painter.height + mobileLyricsVerticalPadding * 2)
+          .clamp(
+            widget.fontSize * 1.2 + mobileLyricsVerticalPadding * 2,
+            double.infinity,
+          );
       painter.dispose();
       // AnimatedScale changes paint bounds without changing sliver geometry.
       // Reserve the maximum painted extent so a departing active line stays
@@ -1994,7 +2007,10 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       // Font metrics and the scroll anchor must become visible in the same
       // frame. A post-frame jump briefly paints the resized line at its old
       // offset, which looks like a one-frame twitch while dragging the slider.
-      final anchor = widget.active.clamp(0, _itemOffsets.length - 1);
+      final anchor = (_seekTargetIndex ?? widget.active).clamp(
+        0,
+        _itemOffsets.length - 1,
+      );
       final target = _itemOffsets[anchor];
       controller.position.correctPixels(target);
       _motion.sync(target, viewportExtent: _viewportHeight);
@@ -2231,6 +2247,16 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                                   'mobile_lyric_elastic_${_lyricContentRevision}_$index',
                                 ),
                                 index: index,
+                                splitPhysicalRows: _hasChineseLyric(
+                                  widget.lines[index].texts.join('\n'),
+                                ),
+                                fontSize: widget.fontSize,
+                                contentCenter:
+                                    _itemOffsets[index] +
+                                    _viewportHeight * _focusAnchor,
+                                viewportHeight: _viewportHeight,
+                                scrollController: _scrollController,
+                                extent: _itemHeights[index],
                                 pulse: _elasticPulse,
                                 frameClock: _frameClock,
                                 child: item,
@@ -2447,30 +2473,38 @@ class _ElasticLyricLine extends StatefulWidget {
     required this.pulse,
     required this.frameClock,
     required this.child,
+    required this.splitPhysicalRows,
+    required this.fontSize,
+    required this.contentCenter,
+    required this.viewportHeight,
+    required this.scrollController,
+    required this.extent,
   });
 
   final int index;
   final ValueListenable<_LyricElasticPulse> pulse;
   final LyricFrameClock frameClock;
   final Widget child;
+  final bool splitPhysicalRows;
+  final double fontSize, contentCenter, viewportHeight;
+  final double extent;
+  final ScrollController scrollController;
 
   @override
   State<_ElasticLyricLine> createState() => _ElasticLyricLineState();
 }
 
 class _ElasticLyricLineState extends State<_ElasticLyricLine> {
-  final _offset = ValueNotifier<double>(0);
-  SpringSimulation? _simulation;
+  final _frame = _LyricElasticFrame();
   Duration _origin = Duration.zero;
-  double _delaySeconds = 0;
   bool _following = false;
   int _lastPulseId = 0;
-  double _pendingDurationSeconds = 1.5;
 
   @override
   void initState() {
     super.initState();
     widget.pulse.addListener(_handlePulse);
+    _handlePulse();
   }
 
   @override
@@ -2485,74 +2519,62 @@ class _ElasticLyricLineState extends State<_ElasticLyricLine> {
     final pulse = widget.pulse.value;
     if (pulse.id == _lastPulseId) return;
     _lastPulseId = pulse.id;
-    final elapsed = (widget.frameClock.elapsed - _origin).inMicroseconds / 1e6;
-    final velocity =
-        _following && _simulation != null && elapsed >= _delaySeconds
-        ? _simulation!.dx(elapsed - _delaySeconds)
-        : 0.0;
     _stopFrames();
 
     if (pulse.displacement.abs() < .35) {
-      _offset.value = 0;
+      _frame.clear();
+      return;
+    }
+    if (widget.frameClock.elapsed - pulse.startedAt >=
+        const Duration(milliseconds: 860)) {
+      _frame.clear();
       return;
     }
 
-    // A redirected list jump is added to the residual row offset, preserving
-    // screen position and spring velocity instead of restarting from a snap.
-    _offset.value += pulse.displacement;
-    _pendingDurationSeconds = pulse.lineDurationSeconds;
-    final distance = (widget.index - pulse.anchorIndex).abs();
-    if (distance > 4) {
+    final scroll = widget.scrollController.hasClients
+        ? widget.scrollController.offset
+        : 0.0;
+    final centre = widget.contentCenter - scroll;
+    if (widget.index != pulse.anchorIndex &&
+        widget.index != pulse.departingIndex &&
+        (centre + widget.extent / 2 < -widget.fontSize * 2 ||
+            centre - widget.extent / 2 >
+                widget.viewportHeight + widget.fontSize * 2)) {
       // Cached rows outside the visible elastic wave must not keep their own
       // spring ticker alive. They cannot be seen, but collectively add raster
       // and scheduling pressure when glow is enabled.
-      _offset.value = 0;
+      _frame.clear();
       return;
     }
-    final delayStep = (_pendingDurationSeconds * 38).clamp(10.0, 44.0);
-    _delaySeconds = distance * delayStep / 1000;
-    _startSpring(velocity);
+    final role = widget.index == pulse.anchorIndex
+        ? LyricElasticRole.arriving
+        : widget.index == pulse.departingIndex
+        ? LyricElasticRole.departing
+        : LyricElasticRole.surrounding;
+    _frame.retarget(
+      displacement: pulse.displacement,
+      role: role,
+      fontSize: widget.fontSize,
+      viewportHeight: widget.viewportHeight,
+      centre: centre,
+      lineSeconds: pulse.lineDurationSeconds,
+    );
+    _startFrames(pulse.startedAt);
   }
 
-  void _startSpring(double velocity) {
+  void _startFrames(Duration startedAt) {
     if (!mounted) return;
-    final durationSquared = _pendingDurationSeconds * _pendingDurationSeconds;
-    final stiffness = (210 / (durationSquared > 0 ? durationSquared : 1))
-        .clamp(105.0, 210.0)
-        .toDouble();
-    final durationProgress = (_pendingDurationSeconds / 1.5)
-        .clamp(0.0, 1.0)
-        .toDouble();
-    final spring = SpringDescription.withDampingRatio(
-      mass: 1,
-      stiffness: stiffness,
-      ratio: .74 - .10 * durationProgress,
-    );
-    _simulation = SpringSimulation(
-      spring,
-      _offset.value,
-      0,
-      velocity,
-      tolerance: const Tolerance(distance: .5, velocity: .1),
-    );
     _following = true;
     widget.frameClock.addListener(_tick);
-    _origin = widget.frameClock.elapsed;
+    _origin = startedAt;
+    _frame.tick((widget.frameClock.elapsed - _origin).inMicroseconds / 1e6);
     widget.frameClock.beginElasticRow();
   }
 
   void _tick() {
-    final time =
-        (widget.frameClock.elapsed - _origin).inMicroseconds / 1e6 -
-        _delaySeconds;
-    if (time < 0) return;
-    final simulation = _simulation!;
-    if (simulation.isDone(time)) {
-      _offset.value = 0;
-      _stopFrames();
-    } else {
-      _offset.value = simulation.x(time);
-    }
+    final time = (widget.frameClock.elapsed - _origin).inMicroseconds / 1e6;
+    _frame.tick(time);
+    if (_frame.settled) _stopFrames();
   }
 
   void _stopFrames() {
@@ -2566,17 +2588,21 @@ class _ElasticLyricLineState extends State<_ElasticLyricLine> {
   void dispose() {
     widget.pulse.removeListener(_handlePulse);
     _stopFrames();
-    _offset.dispose();
+    _frame.dispose();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) => AnimatedBuilder(
-    animation: _offset,
-    child: widget.child,
+    animation: _frame,
+    child: _LyricElasticScope(
+      frame: _frame,
+      physical: widget.splitPhysicalRows,
+      child: widget.child,
+    ),
     builder: (context, child) => Transform.translate(
       key: ValueKey('mobile_lyric_elastic_transform_${widget.index}'),
-      offset: Offset(0, _offset.value),
+      offset: Offset(0, widget.splitPhysicalRows ? 0 : _frame.offset(0)),
       child: child,
     ),
   );
@@ -2866,7 +2892,11 @@ class _LyricLineItem extends StatelessWidget {
         if (karaokeLyricsEnabled && !browseHighlighted) {
           return _staticKaraokeLyric(inactiveColor);
         }
-        return Text(line.texts.join('\n'), textAlign: textAlign);
+        return _elasticPlainText(
+          context,
+          TextSpan(text: line.texts.join('\n')),
+          textAlign,
+        );
       }
       // Distant rows have no changing glyph state. Keep a single shaped
       // paragraph instead of building hundreds of per-glyph Pictures while
@@ -2943,7 +2973,9 @@ class _LyricLineItem extends StatelessWidget {
     final sigma = _blurSigma;
     final lyricPaintLayer = Padding(
       key: const ValueKey('mobile_lyric_filter_safe_area'),
-      padding: const EdgeInsets.symmetric(vertical: 5),
+      padding: const EdgeInsets.symmetric(
+        vertical: mobileLyricsVerticalPadding,
+      ),
       child: lyricWithGlow,
     );
     final blurredLyric = lineBlurEnabled
@@ -3006,7 +3038,13 @@ class _LyricLineItem extends StatelessWidget {
               preservePhase: true,
               scale: _scale,
               duration: focusDuration,
-              curve: focusCurve,
+              curve: _LyricElasticScope.of(context) != null
+                  ? normalExit
+                        ? const LyricElasticRetreatCurve()
+                        : active
+                        ? const LyricElasticArrivalCurve()
+                        : focusCurve
+                  : focusCurve,
               alignment: _alignment,
               // Keep the expensive glyph and glow raster below the transform.
               // The scale-safe parent reserves the transformed paint bounds, so
@@ -3037,20 +3075,23 @@ class _LyricLineItem extends StatelessWidget {
     );
   }
 
-  Widget _staticKaraokeLyric(Color inactiveColor) => Text.rich(
-    TextSpan(
-      children: [
-        TextSpan(text: line.texts.isEmpty ? '' : line.texts.first),
-        if (line.texts.length > 1)
-          TextSpan(
-            text: '\n${line.texts.skip(1).join('\n')}',
-            style: TextStyle(
-              color: inactiveColor.withValues(alpha: inactiveColor.a * .6),
+  Widget _staticKaraokeLyric(Color inactiveColor) => Builder(
+    builder: (context) => _elasticPlainText(
+      context,
+      TextSpan(
+        children: [
+          TextSpan(text: line.texts.isEmpty ? '' : line.texts.first),
+          if (line.texts.length > 1)
+            TextSpan(
+              text: '\n${line.texts.skip(1).join('\n')}',
+              style: TextStyle(
+                color: inactiveColor.withValues(alpha: inactiveColor.a * .6),
+              ),
             ),
-          ),
-      ],
+        ],
+      ),
+      textAlign,
     ),
-    textAlign: textAlign,
   );
 }
 
@@ -3177,9 +3218,11 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
   TextPainter? _layout;
   MobileLyricGlowPainter? _previous;
   double? _width;
+  _PhysicalLyricPictures? _rowPictures;
   @override
   void dispose() {
     _layout?.dispose();
+    _rowPictures?.dispose();
     super.dispose();
   }
 
@@ -3187,13 +3230,45 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
   Widget build(BuildContext context) => LayoutBuilder(
     builder: (context, constraints) {
       final config = widget.painter;
+      final elastic = _LyricElasticScope.of(context);
+      final geometry = elastic?.physical == true
+          ? MobileLyricGlowPainter(
+              text: config.text,
+              style: config.style,
+              color: Colors.white,
+              blurRadius: config.blurRadius,
+              textAlign: config.textAlign,
+              textDirection: config.textDirection,
+              textScaler: config.textScaler,
+              locale: config.locale,
+              primaryRowOnly: config.primaryRowOnly,
+            )
+          : config;
       if (_layout == null ||
           _width != constraints.maxWidth ||
-          config.shouldRepaint(_previous!)) {
+          geometry.shouldRepaint(_previous!)) {
         _layout?.dispose();
-        _layout = config.createLayout(constraints.maxWidth);
+        _rowPictures?.dispose();
+        _rowPictures = null;
+        _layout = geometry.createLayout(constraints.maxWidth);
         _width = constraints.maxWidth;
-        _previous = config;
+        _previous = geometry;
+      }
+      if (elastic?.physical == true) {
+        _rowPictures ??= _PhysicalLyricPictures(_layout!, constraints.maxWidth);
+        _rowPictures!.prepareRaster(MediaQuery.devicePixelRatioOf(context));
+        return ColorFiltered(
+          colorFilter: ColorFilter.mode(config.color, BlendMode.modulate),
+          child: CustomPaint(
+            key: const ValueKey('mobile_lyric_glow_layer'),
+            isComplex: true,
+            painter: _ElasticPhysicalPainter(
+              _rowPictures!,
+              elastic!.frame,
+              center: true,
+            ),
+          ),
+        );
       }
       return CustomPaint(
         key: const ValueKey('mobile_lyric_glow_layer'),
@@ -3460,6 +3535,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
     widget.actualPlaybackListenable?.addListener(_syncTickerState);
     widget.playbackRateListenable?.addListener(_readPlaybackRate);
     widget.seekPositionListenable?.addListener(_readExplicitSeek);
+    widget.frameClock.available.addListener(_handleFrameAvailability);
     _rebuildCache();
     _syncTickerState();
   }
@@ -3488,7 +3564,14 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
       _entryController.stop();
       _entryController.value = widget.active ? 1 : 0;
       _stopFollowingFrames();
-      _resetVisualPosition();
+      _resetVisualPosition(
+        preserveContinuity:
+            newPreparation &&
+            !newSeekTarget &&
+            oldWidget.active &&
+            widget.active &&
+            oldWidget.cacheIdentity == widget.cacheIdentity,
+      );
       _syncTickerState();
     } else if (oldWidget.active &&
         !widget.active &&
@@ -3517,7 +3600,13 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
         (sourceChanged ||
             (widget.positionListenable == null &&
                 oldWidget.position != widget.position))) {
-      _resetVisualPosition();
+      _resetVisualPosition(
+        preserveContinuity:
+            sourceChanged &&
+            oldWidget.active &&
+            widget.active &&
+            oldWidget.cacheIdentity == widget.cacheIdentity,
+      );
     }
     if (oldWidget.actualPlaybackListenable != widget.actualPlaybackListenable) {
       oldWidget.actualPlaybackListenable?.removeListener(_syncTickerState);
@@ -3549,7 +3638,15 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
       _rebuildCache();
       _resetVisualPosition();
     }
-    if (oldWidget.isPlaying != widget.isPlaying) _syncTickerState();
+    if (oldWidget.frameClock != widget.frameClock) {
+      oldWidget.frameClock.available.removeListener(_handleFrameAvailability);
+      if (_followingFrames) {
+        oldWidget.frameClock.removeListener(_tickPosition);
+        _followingFrames = false;
+      }
+      widget.frameClock.available.addListener(_handleFrameAvailability);
+    }
+    _syncTickerState();
   }
 
   @override
@@ -3561,6 +3658,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
     widget.actualPlaybackListenable?.removeListener(_syncTickerState);
     widget.playbackRateListenable?.removeListener(_readPlaybackRate);
     widget.seekPositionListenable?.removeListener(_readExplicitSeek);
+    widget.frameClock.available.removeListener(_handleFrameAvailability);
     if (_followingFrames) widget.frameClock.removeListener(_tickPosition);
     widget.prewarm.mounted.remove(widget.cacheIdentity);
     widget.prewarm.warmers.remove(widget.cacheIdentity);
@@ -3599,22 +3697,42 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
     );
   }
 
-  void _resetVisualPosition() => _clock.seek(
-    widget.seekTargetPosition ?? _sourcePosition,
-    protectFromStaleSource: widget.seekTargetPosition != null,
-  );
+  void _resetVisualPosition({bool preserveContinuity = false}) {
+    if (preserveContinuity) {
+      _clock.handoffSource(_sourcePosition);
+    } else {
+      _clock.seek(
+        widget.seekTargetPosition ?? _sourcePosition,
+        protectFromStaleSource: widget.seekTargetPosition != null,
+      );
+    }
+  }
 
-  void _readSourcePosition() => _clock.readSource(_sourcePosition);
+  void _readSourcePosition() {
+    if (widget.frameClock.available.value && !widget.entryPreparing) {
+      _clock.readSource(_sourcePosition);
+    }
+  }
+
+  void _handleFrameAvailability() {
+    if (widget.frameClock.available.value && widget.active) {
+      _clock.handoffSource(_sourcePosition);
+    }
+    _syncTickerState();
+  }
 
   void _syncTickerState() {
-    if (_isExiting) {
+    if (_isExiting ||
+        !widget.frameClock.available.value ||
+        widget.entryPreparing) {
       _stopFollowingFrames();
       _clock.freeze();
       return;
     }
     // A static position is primarily used by previews and tests. Only keep a
     // frame clock alive when a real playback position source can correct it.
-    if (widget.isPlaying &&
+    if (widget.active &&
+        widget.isPlaying &&
         (widget.actualPlaybackListenable?.value ?? true) &&
         widget.positionListenable != null) {
       if (!_followingFrames) {
@@ -3733,7 +3851,8 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
             locale,
             pixelRatio,
           );
-          return Text.rich(
+          return _elasticPlainText(
+            context,
             TextSpan(
               children: [
                 TextSpan(text: widget.line.texts.first),
@@ -3748,7 +3867,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
                   ),
               ],
             ),
-            textAlign: widget.textAlign,
+            widget.textAlign,
           );
         }
         if (cache == null ||
@@ -3791,6 +3910,9 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
           _paintCache = cache;
         }
         if (widget.active || _isExiting) cache.prepareImage();
+        final elastic = _LyricElasticScope.of(context);
+        final rowMotion = elastic?.physical == true ? elastic!.frame : null;
+        rowMotion?.configureRows(cache.rowCentres, cache.height);
         _paintClock.settleAfterUs = cache.settleAfterUs;
         var colors = _paintStyle;
         if (colors == null ||
@@ -3816,6 +3938,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
                 isExiting: _isExiting,
                 entryAnimation: _entryController,
                 exitStartStrength: _exitStartStrength,
+                rowMotion: rowMotion,
               ),
             ),
           ),

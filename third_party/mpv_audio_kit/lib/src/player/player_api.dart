@@ -22,6 +22,7 @@ import '../types/settings/cache_settings.dart';
 import '../types/settings/demuxer_settings.dart';
 import '../types/settings/replay_gain_settings.dart';
 import '../types/settings/spectrum_settings.dart';
+import '../types/settings/music_dsp_settings.dart';
 import 'player_configuration.dart';
 import 'player_state.dart';
 import 'player_stream.dart';
@@ -267,6 +268,10 @@ abstract interface class PlayerApi {
 
   /// Replaces the whole DSP rack atomically with [effects].
   Future<void> setAudioEffects(AudioEffects effects);
+
+  MusicDspSettings get musicDsp;
+  Future<void> setMusicDsp(MusicDspSettings settings);
+  Future<void> updateMusicDsp(MusicDspSettings Function(MusicDspSettings) mapper);
 
   /// Mutates the current DSP rack incrementally by applying [mapper] to it
   /// and reapplying the result.

@@ -6,7 +6,7 @@ enum PlaybackArtworkBackgroundStyle { blurred, fluid }
 
 enum FluidBackgroundQuality { automatic, powerSaving, smooth }
 
-// uTime is wall-clock seconds; the shader alone converts to orbital radians.
+// Visible wall-clock seconds; frame uniforms convert to orbital radians.
 // Every temporal harmonic is an integer, so all masks/warps wrap together.
 const fluidShaderTimeScale = .15;
 const fluidPhaseCycle = math.pi * 2 / fluidShaderTimeScale; // 41.89 seconds
@@ -17,6 +17,30 @@ double wrapFluidPhase(double phase) => phase % fluidPhaseCycle;
 double fluidPaletteBlend(double progress) {
   final p = progress.clamp(0.0, 1.0);
   return p * p * p * (p * (p * 6 - 15) + 10);
+}
+
+class BackgroundColorBlendCurve extends Curve {
+  const BackgroundColorBlendCurve();
+  @override
+  double transformInternal(double t) => fluidPaletteBlend(t);
+}
+
+/// Bound the perceived rate for wide colour changes; calculated once per song.
+Duration fluidPaletteTransitionDuration(
+  FluidPalette source,
+  FluidPalette target,
+) {
+  var squared = 0.0;
+  for (var i = 0; i < 5; i++) {
+    final a = i == 4 ? source.baseColor : source[i];
+    final b = i == 4 ? target.baseColor : target[i];
+    squared +=
+        .30 * math.pow(a.r * a.a - b.r * b.a, 2) +
+        .40 * math.pow(a.g * a.a - b.g * b.a, 2) +
+        .30 * math.pow(a.b * a.a - b.b * b.a, 2);
+  }
+  final span = (math.sqrt(squared / 5) / .70).clamp(0.0, 1.0);
+  return Duration(milliseconds: (650 + 750 * fluidPaletteBlend(span)).round());
 }
 
 @immutable
@@ -45,8 +69,8 @@ class FluidPalette {
   final bool warmAccentLocked;
   // Actual vivid lead owns slot 1; never relabel a grey as the lead.
   final bool vividAccentLocked;
-  // Orbit pigments: second=lead, third=real accent, fourth=secondary.
-  // first remains extraction metadata for existing callers, not a fourth light.
+  // Orbit pigments: second=lead, third=real accent, fourth=secondary,
+  // first=the fourth retained artwork pigment (may repeat for simple covers).
   // Extraction locks roles so closest-colour matching cannot swap a blob with
   // an ambient accent. Colour interpolation itself remains continuous.
   final bool layeredRolesLocked;

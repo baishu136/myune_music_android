@@ -88,7 +88,10 @@ class LyricScrollMotion implements LyricScrollDriver {
       return offset;
     }
 
-    final elapsed = elapsedSeconds.clamp(0.0, .05);
+    if (!elapsedSeconds.isFinite) return offset;
+    // Analytic solutions remain stable across delayed frames. Discarding the
+    // time after 50ms made the list visibly lag behind its wall-time trajectory.
+    final elapsed = elapsedSeconds;
     final stiffness = frequency * frequency;
     final damping = 2 * dampingRatio * frequency;
 
@@ -134,7 +137,7 @@ class LyricScrollMotion implements LyricScrollDriver {
       return offset;
     }
 
-    var remaining = elapsed;
+    var remaining = elapsed.clamp(0.0, .05);
     const maxStep = 1 / 120;
 
     while (remaining > 0) {

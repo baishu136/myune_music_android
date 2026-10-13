@@ -32,11 +32,14 @@ import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/now_playing_cover_hero.dart';
 import '../widgets/now_playing_immersive_layout.dart';
 import '../widgets/fullscreen_lyrics_double_tap.dart';
+import '../widgets/fullscreen_swipe_song_hint.dart';
+import '../widgets/song_selection_actions.dart';
 import '../widgets/playback_jump_feedback.dart';
 import '../widgets/home_tab_viewport.dart';
 import '../widgets/optional_shader_mask.dart';
 import '../widgets/lyrics_song_swipe_transition.dart';
 import '../widgets/now_playing_cover_image.dart';
+import '../widgets/now_playing_cover_glow.dart';
 import '../widgets/play_pause_button.dart';
 import '../widgets/playback_progress_header.dart';
 import '../widgets/sort_dialog.dart';
@@ -77,6 +80,7 @@ Object _nowPlayingSettingsSignature(SettingsProvider s) => (
   s.playbackArtworkBackgroundStyle,
   s.fluidBackgroundQuality,
   s.playbackImmersiveEnabled,
+  s.playbackCoverScale,
   s.fontSize,
   s.lyricFontWeight,
   s.lyricAlignment,
@@ -510,11 +514,24 @@ class _MobileShellState extends State<MobileShell>
     final homeCoverListenable = currentSong == null
         ? null
         : notifier.coverListenableForSongPath(currentSong.normalizedPath);
+    final hiddenSongs = context.select<PlaylistContentNotifier, (bool, bool)>(
+      (value) => (value.hasHiddenLibrarySongs, value.showHiddenLibrarySongs),
+    );
     final playlistSelection = context
-        .select<PlaylistContentNotifier, ({bool enabled, int count})>(
+        .select<
+          PlaylistContentNotifier,
+          ({bool enabled, int count, bool hidden})
+        >(
           (value) => (
             enabled: value.isMultiSelectMode,
             count: value.selectedSongPaths.length,
+            hidden:
+                value.selectedSongPaths.isNotEmpty &&
+                value.currentPlaylistSongs.any(
+                  (song) =>
+                      value.selectedSongPaths.contains(song.filePath) &&
+                      value.isLibrarySongHidden(song),
+                ),
           ),
         );
     final settings = context.watch<SettingsProvider>();
@@ -528,6 +545,15 @@ class _MobileShellState extends State<MobileShell>
     final librarySelecting = _tab == 0 && _librarySelectionMode;
     final playlistSelecting = _tab == 1 && playlistSelection.enabled;
     final selecting = librarySelecting || playlistSelecting;
+    final selectedLibraryHidden =
+        librarySelecting &&
+        notifier.allSongs.any(
+          (song) =>
+              _selectedLibrarySongPaths.contains(
+                song.normalizedPath.toLowerCase(),
+              ) &&
+              notifier.isLibrarySongHidden(song),
+        );
     final screen = MediaQuery.sizeOf(context);
     final isTablet = screen.shortestSide >= 600;
     final homeBackground = homeBackgroundPolicy(
@@ -575,18 +601,6 @@ class _MobileShellState extends State<MobileShell>
       appBar: AppBar(
         backgroundColor: useHomeTheme ? Colors.transparent : null,
         scrolledUnderElevation: useHomeTheme ? 0 : null,
-        leading: selecting
-            ? HomeGlassControls(
-                cornerRadius: 28,
-                child: IconButton(
-                  tooltip: '退出多选',
-                  icon: const Icon(Icons.close),
-                  onPressed: librarySelecting
-                      ? _exitLibrarySelection
-                      : notifier.exitMultiSelectMode,
-                ),
-              )
-            : null,
         title: ClipRect(
           child: AnimatedSwitcher(
             duration: homeTabTransitionDuration,
@@ -655,47 +669,32 @@ class _MobileShellState extends State<MobileShell>
                   );
                 },
                 child: selecting
-                    ? Row(
+                    ? SongSelectionActions(
                         key: ValueKey<String>(actionsTransitionKey),
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            tooltip: '全选',
-                            icon: const Icon(Icons.select_all),
-                            onPressed: librarySelecting
-                                ? _selectAllLibrarySongs
-                                : notifier.selectAllSongs,
-                          ),
-                          if (librarySelecting &&
-                              (_pendingPlaylistName != null ||
-                                  _pendingPlaylistId != null))
-                            IconButton(
-                              tooltip: _pendingPlaylistId == null
-                                  ? '创建歌单'
-                                  : '添加到歌单',
-                              icon: const Icon(Icons.playlist_add_check),
-                              onPressed: _finishPlaylistSelection,
-                            )
-                          else if (librarySelecting) ...[
-                            IconButton(
-                              tooltip: '移除歌曲',
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: _removeSelectedLibrarySongs,
-                            ),
-                            IconButton(
-                              tooltip: '收藏',
-                              icon: const Icon(Icons.favorite_border),
-                              onPressed: _favoriteSelectedLibrarySongs,
-                            ),
-                          ] else
-                            IconButton(
-                              tooltip: '从当前歌单移除',
-                              icon: const Icon(Icons.delete_outline),
-                              onPressed: playlistSelection.count == 0
-                                  ? null
-                                  : notifier.removeSelectedSongs,
-                            ),
-                        ],
+                        onSelectAll: librarySelecting
+                            ? _selectAllLibrarySongs
+                            : notifier.selectAllSongs,
+                        onDeselectAll: librarySelecting
+                            ? () => setState(_selectedLibrarySongPaths.clear)
+                            : notifier.deselectAllSongs,
+                        onExit: librarySelecting
+                            ? _exitLibrarySelection
+                            : notifier.exitMultiSelectMode,
+                        restoreHidden: librarySelecting
+                            ? selectedLibraryHidden
+                            : playlistSelection.hidden,
+                        onVisibility:
+                            (librarySelecting
+                                    ? _selectedLibrarySongPaths.length
+                                    : playlistSelection.count) ==
+                                0
+                            ? null
+                            : () => _changeSelectedSongVisibility(
+                                library: librarySelecting,
+                                restore: librarySelecting
+                                    ? selectedLibraryHidden
+                                    : playlistSelection.hidden,
+                              ),
                       )
                     : Row(
                         key: ValueKey<String>(actionsTransitionKey),
@@ -778,6 +777,30 @@ class _MobileShellState extends State<MobileShell>
                                 ),
                               ),
                             ),
+                          if (_tab == 0 && hiddenSongs.$1)
+                            IconButton(
+                              tooltip: hiddenSongs.$2 ? '隐藏已隐藏歌曲' : '显示已隐藏歌曲',
+                              icon: Icon(
+                                hiddenSongs.$2
+                                    ? Icons.visibility
+                                    : Icons.visibility_off_outlined,
+                              ),
+                              onPressed: () => unawaited(
+                                notifier.toggleHiddenLibrarySongs(),
+                              ),
+                            ),
+                          if (_tab == 0 || _tab == 1)
+                            IconButton(
+                              tooltip: '多选',
+                              icon: const Icon(Icons.checklist),
+                              onPressed: () {
+                                if (_tab == 0) {
+                                  setState(() => _librarySelectionMode = true);
+                                } else {
+                                  notifier.enterMultiSelectMode();
+                                }
+                              },
+                            ),
                         ],
                       ),
               ),
@@ -855,7 +878,18 @@ class _MobileShellState extends State<MobileShell>
             )
           : page,
       floatingActionButton:
-          _tab == 1 && settings.playlistViewMode != PlaylistViewMode.split
+          librarySelecting &&
+              (_pendingPlaylistName != null || _pendingPlaylistId != null)
+          ? FloatingActionButton.extended(
+              onPressed: _selectedLibrarySongPaths.isEmpty
+                  ? null
+                  : _finishPlaylistSelection,
+              icon: const Icon(Icons.playlist_add_check),
+              label: Text(_pendingPlaylistId == null ? '创建歌单' : '添加到歌单'),
+            )
+          : _tab == 1 &&
+                !playlistSelecting &&
+                settings.playlistViewMode != PlaylistViewMode.split
           ? HomeGlassControls(
               cornerRadius: 16,
               child: FloatingActionButton.extended(
@@ -865,57 +899,64 @@ class _MobileShellState extends State<MobileShell>
                 hoverElevation: 0,
                 highlightElevation: 0,
                 onPressed: _showImportOptions,
+                foregroundColor: Theme.of(
+                  context,
+                ).colorScheme.onSurface.withValues(alpha: 1),
                 icon: const Icon(Icons.add),
-                label: const Text('添加歌曲'),
+                label: Text(
+                  '添加歌曲',
+                  style: TextStyle(
+                    color: Theme.of(
+                      context,
+                    ).colorScheme.onSurface.withValues(alpha: 1),
+                  ),
+                ),
               ),
             )
           : null,
       bottomNavigationBar: isTablet
           ? null
-          : SafeArea(
-              top: false,
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const _MiniPlayer(),
-                  HomeGlassSurface(
-                    child: NavigationBar(
-                      backgroundColor: Colors.transparent,
-                      selectedIndex: _tab,
-                      onDestinationSelected: _selectTab,
-                      surfaceTintColor: Colors.transparent,
-                      elevation: 0,
-                      destinations: const [
-                        NavigationDestination(
-                          icon: Icon(Icons.library_music_outlined),
-                          selectedIcon: Icon(Icons.library_music),
-                          label: '音乐库',
-                        ),
-                        NavigationDestination(
-                          icon: Icon(Icons.playlist_play_outlined),
-                          selectedIcon: Icon(Icons.playlist_play),
-                          label: '歌单',
-                        ),
-                        NavigationDestination(
-                          icon: Icon(Icons.person_outline),
-                          selectedIcon: Icon(Icons.person),
-                          label: '歌手',
-                        ),
-                        NavigationDestination(
-                          icon: Icon(Icons.album_outlined),
-                          selectedIcon: Icon(Icons.album),
-                          label: '专辑',
-                        ),
-                        NavigationDestination(
-                          icon: Icon(Icons.settings_outlined),
-                          selectedIcon: Icon(Icons.settings),
-                          label: '设置',
-                        ),
-                      ],
-                    ),
+          : Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const _MiniPlayer(),
+                HomeNavigationSurface(
+                  child: NavigationBar(
+                    backgroundColor: Colors.transparent,
+                    selectedIndex: _tab,
+                    onDestinationSelected: _selectTab,
+                    surfaceTintColor: Colors.transparent,
+                    elevation: 0,
+                    destinations: const [
+                      NavigationDestination(
+                        icon: Icon(Icons.library_music_outlined),
+                        selectedIcon: Icon(Icons.library_music),
+                        label: '音乐库',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.playlist_play_outlined),
+                        selectedIcon: Icon(Icons.playlist_play),
+                        label: '歌单',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.person_outline),
+                        selectedIcon: Icon(Icons.person),
+                        label: '歌手',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.album_outlined),
+                        selectedIcon: Icon(Icons.album),
+                        label: '专辑',
+                      ),
+                      NavigationDestination(
+                        icon: Icon(Icons.settings_outlined),
+                        selectedIcon: Icon(Icons.settings),
+                        label: '设置',
+                      ),
+                    ],
                   ),
-                ],
-              ),
+                ),
+              ],
             ),
     );
     Widget buildHomeBackground(Widget child) {
@@ -1004,11 +1045,6 @@ class _MobileShellState extends State<MobileShell>
       if (!_selectedLibrarySongPaths.add(path)) {
         _selectedLibrarySongPaths.remove(path);
       }
-      if (_selectedLibrarySongPaths.isEmpty &&
-          _pendingPlaylistName == null &&
-          _pendingPlaylistId == null) {
-        _librarySelectionMode = false;
-      }
     });
   }
 
@@ -1030,7 +1066,7 @@ class _MobileShellState extends State<MobileShell>
       _tab = 0;
     });
     _animateHomePageTo(0);
-    context.read<NotificationService>().info('请从音乐库选择歌曲，完成后点击右上角创建');
+    context.read<NotificationService>().info('请从音乐库选择歌曲，完成后点击创建歌单按钮');
   }
 
   void _startExistingPlaylistSelection(Playlist playlist) {
@@ -1043,7 +1079,7 @@ class _MobileShellState extends State<MobileShell>
     });
     _animateHomePageTo(0);
     context.read<NotificationService>().info(
-      '请选择要添加到“${playlist.name}”的歌曲，完成后点击右上角',
+      '请选择要添加到“${playlist.name}”的歌曲，完成后点击添加到歌单按钮',
     );
   }
 
@@ -1126,7 +1162,10 @@ class _MobileShellState extends State<MobileShell>
   }
 
   void _selectAllLibrarySongs() {
-    final songs = context.read<PlaylistContentNotifier>().allSongs;
+    final notifier = context.read<PlaylistContentNotifier>();
+    final songs = _query.isEmpty
+        ? notifier.allSongs
+        : notifier.searchSongs(_query, notifier.allSongs);
     setState(() {
       _selectedLibrarySongPaths
         ..clear()
@@ -1134,15 +1173,37 @@ class _MobileShellState extends State<MobileShell>
     });
   }
 
-  Future<void> _removeSelectedLibrarySongs() async {
-    if (_selectedLibrarySongPaths.isEmpty) return;
+  Future<void> _changeSelectedSongVisibility({
+    required bool library,
+    required bool restore,
+  }) async {
+    final notifier = context.read<PlaylistContentNotifier>();
+    final selectedSongs =
+        (library ? notifier.allSongs : notifier.currentPlaylistSongs)
+            .where(
+              (song) => library
+                  ? _selectedLibrarySongPaths.contains(
+                      song.normalizedPath.toLowerCase(),
+                    )
+                  : notifier.selectedSongPaths.contains(song.filePath),
+            )
+            .toList();
+    if (selectedSongs.isEmpty) return;
+    if (restore) {
+      await notifier.restoreSongsToLibrary(selectedSongs);
+      if (!mounted) return;
+      if (library) {
+        _exitLibrarySelection();
+      } else {
+        notifier.exitMultiSelectMode();
+      }
+      return;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (dialogContext) => AlertDialog(
-        title: const Text('移除歌曲'),
-        content: Text(
-          '将从音乐库隐藏 ${_selectedLibrarySongPaths.length} 首歌曲。再次导入相同文件后会恢复显示。',
-        ),
+        title: const Text('隐藏歌曲'),
+        content: Text('将从音乐库隐藏 ${selectedSongs.length} 首歌曲。可通过右上角隐藏按钮查看隐藏的歌曲。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(dialogContext, false),
@@ -1150,36 +1211,19 @@ class _MobileShellState extends State<MobileShell>
           ),
           FilledButton(
             onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('移除'),
+            child: const Text('隐藏'),
           ),
         ],
       ),
     );
     if (confirmed != true || !mounted) return;
-    final notifier = context.read<PlaylistContentNotifier>();
-    final selectedSongs = notifier.allSongs
-        .where(
-          (song) => _selectedLibrarySongPaths.contains(
-            song.normalizedPath.toLowerCase(),
-          ),
-        )
-        .toList();
     await notifier.hideSongsFromLibrary(selectedSongs);
-    if (mounted) _exitLibrarySelection();
-  }
-
-  Future<void> _favoriteSelectedLibrarySongs() async {
-    if (_selectedLibrarySongPaths.isEmpty) return;
-    final notifier = context.read<PlaylistContentNotifier>();
-    final selected = notifier.allSongs
-        .where(
-          (song) => _selectedLibrarySongPaths.contains(
-            song.normalizedPath.toLowerCase(),
-          ),
-        )
-        .toList();
-    await notifier.addSongsToFavorites(selected);
-    if (mounted) _exitLibrarySelection();
+    if (!mounted) return;
+    if (library) {
+      _exitLibrarySelection();
+    } else {
+      notifier.exitMultiSelectMode();
+    }
   }
 
   Future<void> _showSortDialog() async {
@@ -1199,8 +1243,11 @@ class _MobileShellState extends State<MobileShell>
 
     final result = await showDialog<Map<String, dynamic>>(
       context: context,
-      builder: (_) =>
-          SortDialog(initialPreference: notifier.currentSortPreference),
+      builder: (_) => SortDialog(
+        initialPreference: _tab == 0
+            ? notifier.librarySortPreference
+            : notifier.currentSortPreference,
+      ),
     );
     if (!mounted || result == null) return;
 
@@ -1504,6 +1551,7 @@ class _PlaylistsTab extends StatelessWidget {
             int selectedIndex,
             List<Song> songs,
             bool selecting,
+            int selectionSignature,
             Set<String> selectedPaths,
           })
         >(
@@ -1512,6 +1560,9 @@ class _PlaylistsTab extends StatelessWidget {
             selectedIndex: notifier.selectedIndex,
             songs: notifier.currentPlaylistSongs,
             selecting: notifier.isMultiSelectMode,
+            selectionSignature: Object.hashAllUnordered(
+              notifier.selectedSongPaths,
+            ),
             selectedPaths: notifier.selectedSongPaths,
           ),
         );
@@ -2803,7 +2854,7 @@ class _GroupPinBadge extends StatelessWidget {
   }
 }
 
-class _SongCollectionPage extends StatelessWidget {
+class _SongCollectionPage extends StatefulWidget {
   const _SongCollectionPage({
     required this.title,
     required this.songs,
@@ -2812,6 +2863,16 @@ class _SongCollectionPage extends StatelessWidget {
   final String title;
   final List<Song> songs;
   final String pinScope;
+
+  @override
+  State<_SongCollectionPage> createState() => _SongCollectionPageState();
+}
+
+class _SongCollectionPageState extends State<_SongCollectionPage> {
+  final _selectedPaths = <String>{};
+  bool _selecting = false;
+  String get title => widget.title;
+  String get pinScope => widget.pinScope;
 
   @override
   Widget build(BuildContext context) {
@@ -2828,7 +2889,14 @@ class _SongCollectionPage extends StatelessWidget {
     );
     final sortedSongs = notifier.pinnedFirst(
       pinScope,
-      SongGroupPresentation.sortByPlayCount(songs, playCounts),
+      SongGroupPresentation.sortByPlayCount(
+        pinScope.startsWith('artistSongs:')
+            ? notifier.songsByArtist[title] ?? []
+            : pinScope.startsWith('albumSongs:')
+            ? notifier.songsByAlbum[title] ?? []
+            : widget.songs,
+        playCounts,
+      ),
     );
     final settings = context.watch<SettingsProvider>();
     final customBackgroundEnabled =
@@ -2849,6 +2917,54 @@ class _SongCollectionPage extends StatelessWidget {
         backgroundColor: useBackground ? Colors.transparent : null,
         scrolledUnderElevation: useBackground ? 0 : null,
         actions: [
+          if (_selecting) ...[
+            IconButton(
+              tooltip: '退出多选',
+              icon: const Icon(Icons.close),
+              onPressed: () => setState(() {
+                _selecting = false;
+                _selectedPaths.clear();
+              }),
+            ),
+            IconButton(
+              tooltip: '收藏',
+              icon: const Icon(Icons.favorite_border),
+              onPressed: () async {
+                await notifier.addSongsToFavorites(
+                  sortedSongs.where(
+                    (song) => _selectedPaths.contains(
+                      song.normalizedPath.toLowerCase(),
+                    ),
+                  ),
+                );
+                if (mounted) {
+                  setState(() {
+                    _selecting = false;
+                    _selectedPaths.clear();
+                  });
+                }
+              },
+            ),
+            IconButton(
+              tooltip: '隐藏歌曲',
+              icon: const Icon(Icons.visibility_off_outlined),
+              onPressed: () async {
+                await notifier.hideSongsFromLibrary(
+                  sortedSongs.where(
+                    (song) => _selectedPaths.contains(
+                      song.normalizedPath.toLowerCase(),
+                    ),
+                  ),
+                );
+                if (mounted) {
+                  setState(() {
+                    _selecting = false;
+                    _selectedPaths.clear();
+                  });
+                }
+              },
+            ),
+          ],
           IconButton(
             tooltip: '在$title中搜索',
             icon: const Icon(Icons.search),
@@ -2864,11 +2980,30 @@ class _SongCollectionPage extends StatelessWidget {
               ),
             ),
           ),
+          IconButton(
+            tooltip: '全选',
+            icon: const Icon(Icons.select_all),
+            onPressed: () => setState(() {
+              _selecting = true;
+              _selectedPaths
+                ..clear()
+                ..addAll(
+                  sortedSongs.map((song) => song.normalizedPath.toLowerCase()),
+                );
+            }),
+          ),
         ],
       ),
       body: _SongList(
         songs: sortedSongs,
         pinScope: pinScope,
+        selectionMode: _selecting,
+        selectedPaths: _selectedPaths,
+        onToggleSelection: (song) => setState(() {
+          _selecting = true;
+          final key = song.normalizedPath.toLowerCase();
+          if (!_selectedPaths.add(key)) _selectedPaths.remove(key);
+        }),
         onPlay: (index) => notifier.playFromDynamicList(sortedSongs, index),
       ),
     );
@@ -3472,6 +3607,19 @@ class _SongList extends StatelessWidget {
                   notifier.removeSongFromCurrentPlaylist(actualIndex);
                 }
                 Navigator.pop(sheetContext);
+              },
+            ),
+          if (!showRemove)
+            ListTile(
+              leading: const Icon(Icons.visibility_off_outlined),
+              title: const Text('隐藏歌曲'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                unawaited(
+                  context.read<PlaylistContentNotifier>().hideSongsFromLibrary([
+                    song,
+                  ]),
+                );
               },
             ),
         ],
@@ -4522,6 +4670,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   final ValueNotifier<bool> _jumpPending = ValueNotifier(false);
   bool _playPausePending = false;
   final ValueNotifier<bool> _routeTransitionSignal = ValueNotifier(true);
+  final _fullscreenSwipeSong = FullscreenSwipeSongHintController();
   bool _isDraggingSeek = false;
   int _seekSessionId = 0;
   Timer? _seekSettleTimer;
@@ -4901,6 +5050,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _frozenLyricLineIndex.dispose();
     _seekPosition.dispose();
     _jumpPending.dispose();
+    _fullscreenSwipeSong.dispose();
     _routeTransitionSignal.dispose();
     super.dispose();
   }
@@ -5283,6 +5433,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       lyricFontFamily: lyricFontFamily,
       usePlaybackTheme: renderedPlaybackTheme,
       fallbackArtwork: currentAlbumArt,
+      useFluidBackground: useFluidBackground,
       maxCoverSize: useSplitLayout
           ? 520
           : isTablet
@@ -5321,41 +5472,80 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     final scaffold = Scaffold(
       backgroundColor: renderedPlaybackTheme ? Colors.transparent : null,
       body: SafeArea(
-        child: NowPlayingImmersiveLayout(
-          immersive: immersive,
-          tablet: isTablet,
-          split: useSplitLayout,
-          visual: visual,
-          controls: framedControls,
-          header: AppBar(
-            primary: false,
-            backgroundColor: renderedPlaybackTheme ? Colors.transparent : null,
-            scrolledUnderElevation: renderedPlaybackTheme ? 0 : null,
-            title: PlaybackProgressHeader(
-              positionListenable: notifier.positionListenable,
-              previewPositionListenable: _seekPosition,
-              totalDuration: playback.totalDuration,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            NowPlayingImmersiveLayout(
+              immersive: immersive,
+              tablet: isTablet,
+              split: useSplitLayout,
+              visual: visual,
+              controls: framedControls,
+              header: AppBar(
+                primary: false,
+                backgroundColor: renderedPlaybackTheme
+                    ? Colors.transparent
+                    : null,
+                scrolledUnderElevation: renderedPlaybackTheme ? 0 : null,
+                title: PlaybackProgressHeader(
+                  positionListenable: notifier.positionListenable,
+                  previewPositionListenable: _seekPosition,
+                  totalDuration: playback.totalDuration,
+                ),
+                actions: [
+                  IconButton(
+                    key: const ValueKey('playback-immersive-toggle'),
+                    tooltip: settings.playbackImmersiveEnabled
+                        ? '关闭沉浸模式'
+                        : '开启沉浸模式',
+                    isSelected: settings.playbackImmersiveEnabled,
+                    icon: const Icon(Icons.fullscreen),
+                    selectedIcon: const Icon(Icons.fullscreen_exit),
+                    onPressed: () => settings.setPlaybackImmersiveEnabled(
+                      !settings.playbackImmersiveEnabled,
+                    ),
+                  ),
+                  IconButton(
+                    tooltip: '歌曲详情',
+                    icon: const Icon(Icons.info_outline),
+                    onPressed: () => _showSongDetails(context, notifier, song),
+                  ),
+                ],
+              ),
             ),
-            actions: [
-              IconButton(
-                key: const ValueKey('playback-immersive-toggle'),
-                tooltip: settings.playbackImmersiveEnabled
-                    ? '关闭沉浸模式'
-                    : '开启沉浸模式',
-                isSelected: settings.playbackImmersiveEnabled,
-                icon: const Icon(Icons.fullscreen),
-                selectedIcon: const Icon(Icons.fullscreen_exit),
-                onPressed: () => settings.setPlaybackImmersiveEnabled(
-                  !settings.playbackImmersiveEnabled,
+            Positioned(
+              top: 8,
+              left: isTablet ? 28 : 16,
+              right: isTablet ? 28 : 16,
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 420),
+                  child: ValueListenableBuilder<bool>(
+                    valueListenable: _routeTransitionSignal,
+                    builder: (context, transitioning, _) =>
+                        FullscreenSwipeSongHint(
+                          enabled: immersive && !transitioning,
+                          currentSongIdentity: song.normalizedPath,
+                          songChanges: _fullscreenSwipeSong,
+                          lyricHighlightChanges:
+                              notifier.lyricLineIndexListenable,
+                          readHighlightedSongIdentity: () {
+                            if (!hasHighlightedLyricLine(
+                              lines: notifier.currentLyrics,
+                              activeIndex: notifier.currentLyricLineIndex,
+                              position: notifier.currentPosition,
+                            )) {
+                              return null;
+                            }
+                            return notifier.currentSong?.normalizedPath;
+                          },
+                        ),
+                  ),
                 ),
               ),
-              IconButton(
-                tooltip: '歌曲详情',
-                icon: const Icon(Icons.info_outline),
-                onPressed: () => _showSongDetails(context, notifier, song),
-              ),
-            ],
-          ),
+            ),
+          ],
         ),
       ),
     );
@@ -5428,6 +5618,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required String? lyricFontFamily,
     required bool usePlaybackTheme,
     required Uint8List? fallbackArtwork,
+    required bool useFluidBackground,
     required double maxCoverSize,
   }) {
     final activeLyricColor = context.select<ThemeProvider, Color>(
@@ -5574,9 +5765,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                       child: RepaintBoundary(
                         child: LayoutBuilder(
                           builder: (context, constraints) {
-                            final size = constraints.biggest.shortestSide
-                                .clamp(180.0, maxCoverSize)
-                                .toDouble();
+                            final size =
+                                constraints.biggest.shortestSide
+                                    .clamp(180.0, maxCoverSize)
+                                    .toDouble() *
+                                settings.playbackCoverScale;
                             return Center(
                               child: GestureDetector(
                                 onLongPress: () => _showSongCoverActions(
@@ -5584,20 +5777,28 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                                   notifier,
                                   song,
                                 ),
-                                child: NowPlayingCoverHero(
-                                  normalizedSongPath: song.normalizedPath,
-                                  enabled: shouldEnableNowPlayingCoverHero(
-                                    showLyrics: _showLyrics,
-                                    routeTransitionComplete:
-                                        _routeTransitionComplete,
-                                    initialCoverHeroReady:
-                                        widget.initialCoverHeroReady,
-                                  ),
-                                  child: _AtomicNowPlayingCover(
-                                    songPath: song.normalizedPath,
-                                    size: size,
-                                    transitionsEnabled:
-                                        !_showLyrics && !_routeTransitionActive,
+                                child: NowPlayingCoverGlow(
+                                  enabled: useFluidBackground,
+                                  entranceComplete:
+                                      _routeTransitionComplete && !_showLyrics,
+                                  coverTransition: _coverTransitionController,
+                                  waitForImage: true,
+                                  child: NowPlayingCoverHero(
+                                    normalizedSongPath: song.normalizedPath,
+                                    enabled: shouldEnableNowPlayingCoverHero(
+                                      showLyrics: _showLyrics,
+                                      routeTransitionComplete:
+                                          _routeTransitionComplete,
+                                      initialCoverHeroReady:
+                                          widget.initialCoverHeroReady,
+                                    ),
+                                    child: _AtomicNowPlayingCover(
+                                      songPath: song.normalizedPath,
+                                      size: size,
+                                      transitionsEnabled:
+                                          !_showLyrics &&
+                                          !_routeTransitionActive,
+                                    ),
                                   ),
                                 ),
                               ),
@@ -5631,6 +5832,20 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                         enabled:
                             settings.playbackImmersiveEnabled && _showLyrics,
                         songIdentity: song.normalizedPath,
+                        onSwitchStart: (next) =>
+                            _fullscreenSwipeSong.beginSwitch(next: next),
+                        onSwitchCompleted: (previousIdentity) {
+                          final current = notifier.currentSong;
+                          if (mounted &&
+                              _showLyrics &&
+                              settings.playbackImmersiveEnabled &&
+                              !_routeTransitionActive &&
+                              _playbackForeground &&
+                              current != null &&
+                              current.normalizedPath != previousIdentity) {
+                            _fullscreenSwipeSong.show(current);
+                          }
+                        },
                         onError: (error, _) {
                           context.read<NotificationService>().error(
                             '切歌失败：$error',

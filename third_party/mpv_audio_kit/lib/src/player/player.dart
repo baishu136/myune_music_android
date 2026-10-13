@@ -20,6 +20,7 @@ import '../events/mpv_hook_event.dart';
 import '../events/mpv_log_entry.dart';
 import '../events/mpv_player_error.dart';
 import '../generated/audio_effects_settings.dart';
+import '../dsp/af_chain_write.dart';
 import '../internals/debug_log.dart';
 import '../internals/duration_seconds.dart';
 import '../internals/event_isolate.dart';
@@ -64,6 +65,7 @@ import '../types/settings/cache_settings.dart';
 import '../types/settings/demuxer_settings.dart';
 import '../types/settings/replay_gain_settings.dart';
 import '../types/settings/spectrum_settings.dart';
+import '../types/settings/music_dsp_settings.dart';
 import 'audio_output_error.dart';
 import 'lifecycle_transitions.dart';
 import 'player_api.dart';
@@ -691,6 +693,8 @@ abstract class _PlayerBase {
   /// writes in the setters stay synchronous; only the mpv confirmation is
   /// deferred.
   Future<void> _prop(String name, String value);
+  String _effectiveAfChain(AudioEffects effects);
+  Future<void> _syncAfChain(String chain);
   Future<int> _propRc(String name, String value);
   Future<int> _command(List<String> args);
   Future<void> _commandChecked(List<String> args);

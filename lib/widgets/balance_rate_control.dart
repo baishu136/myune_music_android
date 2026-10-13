@@ -7,7 +7,7 @@ import 'package:provider/provider.dart';
 import '../page/playlist/playlist_content_notifier.dart';
 
 class BalanceRateControl extends StatelessWidget {
-  final Player player;
+  final PlayerApi player;
   final Color iconColor;
   final double size;
 

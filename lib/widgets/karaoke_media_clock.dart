@@ -125,6 +125,20 @@ class KaraokeMediaClock extends ValueNotifier<Duration> {
   /// the inactive row's pre-start preview position.
   void freeze() => _running = false;
 
+  /// Page/source handoff is not a seek. Keep an already displayed pose when
+  /// the replacement source lags; accept forward relocation after hidden play.
+  void handoffSource(Duration source) {
+    final guarded =
+        _lastElapsed < _seekGuardUntil &&
+        (source - value).inMicroseconds.abs() > 160000;
+    if (!guarded && source > value + const Duration(milliseconds: 160)) {
+      value = source;
+    }
+    _anchor = value;
+    _anchorElapsed = _lastElapsed;
+    _samples.reset(value, _lastElapsed);
+  }
+
   /// A subscription has its own elapsed origin, even if the shared ticker
   /// keeps running. Preserve the pose and the remaining explicit-seek guard.
   void rebaseElapsed([Duration elapsed = Duration.zero]) {

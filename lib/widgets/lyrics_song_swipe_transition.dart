@@ -13,6 +13,8 @@ class LyricsSongSwipeTransition extends StatefulWidget {
     required this.onPrevious,
     required this.child,
     this.onSwipeStart,
+    this.onSwitchCompleted,
+    this.onSwitchStart,
     this.onError,
   });
   final bool enabled;
@@ -20,6 +22,11 @@ class LyricsSongSwipeTransition extends StatefulWidget {
   final Future<void> Function() onNext;
   final Future<void> Function() onPrevious;
   final VoidCallback? onSwipeStart;
+
+  /// Called after the transport future succeeds, with the pre-swipe identity.
+  /// The caller checks the player's committed identity to exclude no-op loads.
+  final ValueChanged<Object>? onSwitchCompleted;
+  final ValueChanged<bool>? onSwitchStart;
   final void Function(Object error, StackTrace stack)? onError;
   final Widget child;
   @override
@@ -55,6 +62,8 @@ class _LyricsSongSwipeState extends State<LyricsSongSwipeTransition>
   Future<void> _switchSong(bool next) async {
     if (_switching || !widget.enabled) return;
     final generation = ++_generation;
+    final previousIdentity = widget.songIdentity;
+    widget.onSwitchStart?.call(next);
     setState(() {
       _switching = true;
       _entering = false;
@@ -70,6 +79,9 @@ class _LyricsSongSwipeState extends State<LyricsSongSwipeTransition>
           .orCancel;
       if (!mounted || generation != _generation || !widget.enabled) return;
       await (next ? widget.onNext() : widget.onPrevious());
+      if (mounted && generation == _generation && widget.enabled) {
+        widget.onSwitchCompleted?.call(previousIdentity);
+      }
     } on TickerCanceled {
       return;
     } catch (error, stack) {

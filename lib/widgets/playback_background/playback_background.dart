@@ -151,8 +151,15 @@ class _PlaybackBackgroundState extends State<PlaybackBackground> {
           layoutBuilder: (currentChild, previousChildren) => Stack(
             fit: StackFit.expand,
             children: [
-              ...previousChildren,
-              if (currentChild != null) currentChild,
+              // Freeze the outgoing display list; fade only its retained layer.
+              for (final previous in previousChildren)
+                TickerMode(key: previous.key, enabled: false, child: previous),
+              if (currentChild != null)
+                TickerMode(
+                  key: currentChild.key,
+                  enabled: true,
+                  child: currentChild,
+                ),
             ],
           ),
           transitionBuilder: (child, animation) => FadeTransition(

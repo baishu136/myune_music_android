@@ -92,7 +92,7 @@ class _KaraokeFragment {
   int index = 0;
   ui.Picture? mask;
   _KaraokeNativeInk? nativeInk;
-  late final KaraokeSweepPath sweep;
+  late KaraokeSweepPath sweep;
   late double feather;
   _KaraokeSweepRelay? relay;
 }
@@ -126,7 +126,7 @@ class _KaraokeUnit {
   int inkId = 0;
   ui.FragmentShader? shader;
   late final KaraokeGlyphTiming timing;
-  late final KaraokeSweepPath sweep;
+  late KaraokeSweepPath sweep;
 }
 
 class _KaraokePaintToken {
@@ -198,6 +198,7 @@ class _KaraokePaintCache extends ChangeNotifier {
     }
     _imageScale = imageScale;
     _lines = layout.computeLineMetrics();
+    _prepareRowGeometry();
     _textLines = List.generate(
       _lines.length,
       (row) => layout.getLineBoundary(
@@ -607,6 +608,36 @@ class _KaraokePaintCache extends ChangeNotifier {
   final List<_KaraokeTokenRange> ranges;
   final bool synthetic;
   final List<_KaraokeSweepRelay> sweepRelays = [];
+  late final List<double> rowCentres;
+  late final List<Rect> _rowClips;
+  void _prepareRowGeometry() {
+    rowCentres = _lines
+        .map((line) => line.baseline + (line.descent - line.ascent) / 2)
+        .toList(growable: false);
+    _rowClips = List.generate(
+      _lines.length,
+      (i) => Rect.fromLTRB(
+        fullBounds.left,
+        i == 0
+            ? fullBounds.top
+            : (_lines[i - 1].baseline +
+                      _lines[i - 1].descent +
+                      _lines[i].baseline -
+                      _lines[i].ascent) /
+                  2,
+        fullBounds.right,
+        i == _lines.length - 1
+            ? fullBounds.bottom
+            : (_lines[i].baseline +
+                      _lines[i].descent +
+                      _lines[i + 1].baseline -
+                      _lines[i + 1].ascent) /
+                  2,
+      ),
+      growable: false,
+    );
+  }
+
   final double width;
   final TextStyle style;
   final TextAlign textAlign;
@@ -936,6 +967,8 @@ class _KaraokePaintCache extends ChangeNotifier {
       }
       _image = image;
       _coverageImage = coverage;
+      if (!synthetic) await _calibrateInkPaths(image, coverage);
+      if (_disposed) return;
       if (!await _prepareShaders(program, image)) return;
       if (_originalNative && drawOriginal) {
         _originalNativeInk = await _prepareNativeInk(
@@ -1261,29 +1294,23 @@ class _KaraokePaintCache extends ChangeNotifier {
     double retention,
     _KaraokePaintStyle colors, [
     double highlightStrength = 1,
+    _LyricElasticFrame? rowMotion,
   ]) {
     if (mediaUs <= firstMotionUs) {
       for (var i = 0; i < lifts.length; i++) {
         lifts[i] = 0;
         highlights[i] = 0;
       }
-      if (!_primaryNative && _primaryShader != null) {
-        _ink(
-          canvas,
-          _primaryShader!,
-          fullBounds,
-          0,
-          colors.inactive,
-          colors.inactive,
-          0,
-          1,
-          0,
-        );
-      } else {
-        _solid(canvas, primaryMask, fullBounds, 0, colors.inactiveLayer);
-      }
+      _fixedRows(
+        canvas,
+        primaryMask,
+        !_primaryNative ? _primaryShader : null,
+        colors.inactive,
+        colors.inactiveLayer,
+        rowMotion,
+      );
       if (drawTranslation) {
-        _paintTranslation(canvas, colors);
+        _paintTranslation(canvas, colors, rowMotion);
       }
       return;
     }
@@ -1293,37 +1320,28 @@ class _KaraokePaintCache extends ChangeNotifier {
       lifts,
       retention: retention,
     );
-    if (drawOriginal) {
-      if (_originalNativeInk case final ink?) {
-        _ink(
-          canvas,
-          ink.shader,
-          fullBounds,
-          0,
-          colors.inactive,
-          colors.inactive,
-          0,
-          1,
-          0,
-        );
-      } else if (!_originalNative && _originalShader != null) {
-        _ink(
-          canvas,
-          _originalShader!,
-          fullBounds,
-          0,
-          colors.inactive,
-          colors.inactive,
-          0,
-          1,
-          0,
-        );
-      } else {
-        _solid(canvas, originalMask, fullBounds, 0, colors.inactiveLayer);
+    if (rowMotion != null && !rowMotion.settled) {
+      for (final token in tokens) {
+        for (var i = 0; i < token.units.length; i++) {
+          lifts[token.firstUnit + i] += rowMotion.offset(
+            token.units[i].fragment.row,
+          );
+        }
       }
     }
+    if (drawOriginal) {
+      _fixedRows(
+        canvas,
+        originalMask,
+        _originalNativeInk?.shader ??
+            (!_originalNative ? _originalShader : null),
+        colors.inactive,
+        colors.inactiveLayer,
+        rowMotion,
+      );
+    }
     if (drawTranslation) {
-      _paintTranslation(canvas, colors);
+      _paintTranslation(canvas, colors, rowMotion);
     }
     for (var r = 0; r < sweepRelays.length; r++) {
       final relay = sweepRelays[r];
@@ -1352,7 +1370,11 @@ class _KaraokePaintCache extends ChangeNotifier {
               ((progress - fragment.startRatio) /
                       (fragment.endRatio - fragment.startRatio))
                   .clamp(0.0, 1.0);
-          fragmentPhases[fragment.index] = fragment.relay?.phase ?? phase;
+          fragmentPhases[fragment.index] = progress <= 0
+              ? 0
+              : progress >= 1
+              ? 1
+              : fragment.relay?.phase ?? phase;
           fragmentFronts[fragment.index] =
               fragment.relay?.front ??
               fragment.sweep.frontAt(
@@ -1366,8 +1388,13 @@ class _KaraokePaintCache extends ChangeNotifier {
         // Before the bounded atlas is ready (or on a shader/raster failure),
         // keep complete shaped word fragments. Never cut glyph ink into boxes.
         // Timed sweeps continue; only micro-lift degrades to a word-level pose.
-        final lift = lifts[token.firstUnit];
         for (final fragment in token.fragments) {
+          final lift =
+              lifts[token.firstUnit] +
+              (rowMotion != null && !rowMotion.settled
+                  ? rowMotion.offset(fragment.row) -
+                        rowMotion.offset(token.units.first.fragment.row)
+                  : 0);
           final feather = fragment.feather;
           final phase = fragmentPhases[fragment.index];
           var front = fragmentFronts[fragment.index];
@@ -1475,33 +1502,48 @@ class _KaraokePaintCache extends ChangeNotifier {
     }
   }
 
-  void _paintTranslation(Canvas canvas, _KaraokePaintStyle colors) {
-    if (_translationNativeInk case final ink?) {
-      _ink(
-        canvas,
-        ink.shader,
-        fullBounds,
-        0,
-        colors.translation,
-        colors.translation,
-        0,
-        1,
-        0,
-      );
-    } else if (!_translationNative && _translationShader != null) {
-      _ink(
-        canvas,
-        _translationShader!,
-        fullBounds,
-        0,
-        colors.translation,
-        colors.translation,
-        0,
-        1,
-        0,
-      );
-    } else {
-      _solid(canvas, translationMask, fullBounds, 0, colors.translationLayer);
+  void _paintTranslation(
+    Canvas canvas,
+    _KaraokePaintStyle colors, [
+    _LyricElasticFrame? motion,
+  ]) {
+    _fixedRows(
+      canvas,
+      translationMask,
+      _translationNativeInk?.shader ??
+          (!_translationNative ? _translationShader : null),
+      colors.translation,
+      colors.translationLayer,
+      motion,
+    );
+  }
+
+  void _fixedRows(
+    Canvas canvas,
+    ui.Picture mask,
+    ui.FragmentShader? shader,
+    Color color,
+    Paint layer,
+    _LyricElasticFrame? motion,
+  ) {
+    if (motion == null || motion.settled) {
+      if (shader == null) {
+        _solid(canvas, mask, fullBounds, 0, layer);
+      } else {
+        _ink(canvas, shader, fullBounds, 0, color, color, 0, 1, 0);
+      }
+      return;
+    }
+    for (var i = 0; i < _rowClips.length; i++) {
+      canvas.save();
+      canvas.translate(0, motion.offset(i));
+      canvas.clipRect(_rowClips[i]);
+      if (shader == null) {
+        _solid(canvas, mask, fullBounds, 0, layer);
+      } else {
+        _ink(canvas, shader, fullBounds, 0, color, color, 0, 1, 0);
+      }
+      canvas.restore();
     }
   }
 }
@@ -1515,12 +1557,14 @@ class _SinglePassKaraokePainter extends CustomPainter {
     required this.isExiting,
     required this.entryAnimation,
     required this.exitStartStrength,
+    this.rowMotion,
   }) : super(
          repaint: Listenable.merge([
            positionListenable,
            exitAnimation,
            entryAnimation,
            cache,
+           rowMotion,
          ]),
        );
   final _KaraokePaintCache cache;
@@ -1530,6 +1574,7 @@ class _SinglePassKaraokePainter extends CustomPainter {
   final bool isExiting;
   final Animation<double> entryAnimation;
   final double exitStartStrength;
+  final _LyricElasticFrame? rowMotion;
   double get highlightStrength => isExiting
       ? exitStartStrength * karaokeExitRetentionFraction(exitAnimation.value)
       : Curves.easeOutCubic.transform(entryAnimation.value);
@@ -1543,6 +1588,7 @@ class _SinglePassKaraokePainter extends CustomPainter {
         : Curves.easeOutCubic.transform(entryAnimation.value),
     colors,
     highlightStrength,
+    rowMotion,
   );
 
   @override
@@ -1553,5 +1599,6 @@ class _SinglePassKaraokePainter extends CustomPainter {
       positionListenable != old.positionListenable ||
       exitAnimation != old.exitAnimation ||
       entryAnimation != old.entryAnimation ||
-      exitStartStrength != old.exitStartStrength;
+      exitStartStrength != old.exitStartStrength ||
+      rowMotion != old.rowMotion;
 }

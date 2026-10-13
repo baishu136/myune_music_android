@@ -23,6 +23,16 @@ class HomeChromeStyle extends ThemeExtension<HomeChromeStyle> {
 
 enum HomeGlassRole { navigation, playback, controls, playlist }
 
+/// Paint the same footer fill beneath system buttons without moving controls
+/// into their touch area. The Mini Player remains outside this surface.
+class HomeNavigationSurface extends StatelessWidget {
+  const HomeNavigationSurface({super.key, required this.child});
+  final Widget child;
+  @override
+  Widget build(BuildContext context) =>
+      HomeGlassSurface(child: SafeArea(top: false, child: child));
+}
+
 /// All home surfaces retain one 70%-opaque fill with no gradient, extra
 /// opacity layer or layout inset. Legacy filters stay dormant; home surfaces
 /// no longer blur their backdrop, independently of custom-image blur.

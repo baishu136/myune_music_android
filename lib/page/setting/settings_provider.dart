@@ -102,6 +102,7 @@ class SettingsProvider with ChangeNotifier {
   static const _lyricScrollEffectKey = 'lyricScrollEffect';
   static const _enableKaraokeLyricsKey = 'enableKaraokeLyrics';
   static const _playbackImmersiveEnabledKey = 'playbackImmersiveEnabled';
+  static const _playbackCoverScaleKey = 'playbackCoverScale';
   static const _karaokeLyricsModeKey = 'karaokeLyricsMode';
   static const _sleepTimerFinishCurrentTrackKey =
       'sleepTimerFinishCurrentTrack';
@@ -185,6 +186,7 @@ class SettingsProvider with ChangeNotifier {
   LyricScrollEffect _lyricScrollEffect = LyricScrollEffect.standard;
   bool _enableKaraokeLyrics = false;
   bool _playbackImmersiveEnabled = false;
+  double _playbackCoverScale = 1;
   KaraokeLyricsMode _karaokeLyricsMode = KaraokeLyricsMode.timedOnly;
   bool _sleepTimerFinishCurrentTrack = false;
   bool _highlightActiveLyric = true;
@@ -311,6 +313,7 @@ class SettingsProvider with ChangeNotifier {
       _lyricScrollEffect == LyricScrollEffect.elastic;
   bool get enableKaraokeLyrics => _enableKaraokeLyrics;
   bool get playbackImmersiveEnabled => _playbackImmersiveEnabled;
+  double get playbackCoverScale => _playbackCoverScale;
   KaraokeLyricsMode get karaokeLyricsMode => _karaokeLyricsMode;
   bool get sleepTimerFinishCurrentTrack => _sleepTimerFinishCurrentTrack;
   bool get enableLoudness => _enableLoudness;
@@ -454,6 +457,15 @@ class SettingsProvider with ChangeNotifier {
     await prefs.remove('playbackInitialView');
     _playbackImmersiveEnabled =
         _readPreference<bool>(prefs, _playbackImmersiveEnabledKey) ?? false;
+    final coverScale = _readDoublePreference(prefs, _playbackCoverScaleKey);
+    _playbackCoverScale = coverScale == .9 || coverScale == .8
+        ? coverScale!
+        : coverScale == .6
+        ? .8
+        : 1;
+    if (coverScale == .6) {
+      await prefs.setDouble(_playbackCoverScaleKey, .8);
+    }
     _primaryLyricSource =
         _readPreference<String>(prefs, _primaryLyricSourceKey) ??
         'netease'; // 加载主要歌词源设置
@@ -870,6 +882,15 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_playbackImmersiveEnabledKey, value);
+  }
+
+  Future<void> setPlaybackCoverScale(double value) async {
+    if (value != 1 && value != .9 && value != .8) return;
+    if (_playbackCoverScale == value) return;
+    _playbackCoverScale = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setDouble(_playbackCoverScaleKey, value);
   }
 
   Future<void> setKaraokeLyricsMode(KaraokeLyricsMode value) async {

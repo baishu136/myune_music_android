@@ -6,7 +6,7 @@ import '../page/playlist/playlist_content_notifier.dart';
 import 'hover_overlay_control.dart';
 
 class VolumeControl extends StatefulWidget {
-  final Player player;
+  final PlayerApi player;
   final Color iconColor;
   final double size;
 

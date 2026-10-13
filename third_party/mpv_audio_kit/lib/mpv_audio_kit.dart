@@ -99,6 +99,7 @@ export 'src/types/settings/cache_settings.dart' show CacheSettings;
 export 'src/types/settings/demuxer_settings.dart' show DemuxerSettings;
 export 'src/types/settings/replay_gain_settings.dart' show ReplayGainSettings;
 export 'src/types/settings/spectrum_settings.dart' show SpectrumSettings;
+export 'src/types/settings/music_dsp_settings.dart' show MusicDspSettings;
 export 'src/types/state/audio_output_state.dart' show AudioOutputState;
 export 'src/types/state/loudness_scan_state.dart' show LoudnessScanState;
 export 'src/types/state/mpv_playback_state.dart' show MpvPlaybackState;

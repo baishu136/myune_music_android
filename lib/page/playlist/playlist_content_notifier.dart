@@ -6,7 +6,8 @@ import 'dart:convert';
 import 'dart:collection';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/foundation.dart' show ValueListenable, kDebugMode;
+import 'package:flutter/foundation.dart'
+    show ValueListenable, kDebugMode, listEquals;
 import 'package:flutter/services.dart' show PlatformException;
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
@@ -15,7 +16,6 @@ import 'package:mpv_audio_kit/mpv_audio_kit.dart' hide Playlist;
 import '../../services/audio/audio_service.dart';
 import '../../services/audio/audio_interruption_policy.dart';
 import 'package:shared_preferences/shared_preferences.dart';
-import 'package:http/http.dart' as http;
 import 'package:colorgram/colorgram.dart';
 
 import 'playlist_models.dart';
@@ -37,6 +37,9 @@ import '../../services/lyric_seek_notifier.dart';
 import '../../services/search_service.dart';
 import '../../services/library_preparation_worker.dart';
 import '../../services/song_group_presentation.dart';
+import '../../services/library_song_visibility.dart';
+import '../../services/playlist_folder_policy.dart';
+import '../../services/network_lyric_client.dart';
 import '../../widgets/artwork_image.dart';
 
 double playbackSleepFadeFactor(
@@ -141,11 +144,41 @@ class SongSortPreference {
 }
 
 bool folderPlaylistTracksImportedRoot(Playlist playlist, String root) {
-  if (!playlist.isFolderBased) return false;
   final normalizedRoot = p.normalize(root).toLowerCase();
   return playlist.folderPaths.any(
     (folder) => p.normalize(folder).toLowerCase() == normalizedRoot,
   );
+}
+
+int songListSortSignature(
+  Iterable<String> paths,
+  Map<String, SongMetadataCacheEntry> metadata,
+) {
+  final normalized = paths.map((path) {
+    final key = p.normalize(path);
+    final entry = metadata[key];
+    return '$key\u0000${entry?.title}\u0000${entry?.artist}\u0000${entry?.album}\u0000${entry?.durationMs}';
+  }).toList()..sort();
+  return Object.hashAll(normalized);
+}
+
+bool automaticSongSortStillApplies({
+  required List<String> sourcePaths,
+  required Iterable<String> currentPaths,
+  required SongSortPreference rule,
+  SongSortPreference? currentRule,
+}) {
+  const defaultRule = SongSortPreference(
+    criterion: SortCriterion.title,
+    descending: false,
+  );
+  final latest = currentRule ?? defaultRule;
+  return rule.criterion == latest.criterion &&
+      rule.descending == latest.descending &&
+      listEquals(
+        sourcePaths.map(p.normalize).toList(),
+        currentPaths.map(p.normalize).toList(),
+      );
 }
 
 List<String> combineNetworkLyricLines(
@@ -395,14 +428,9 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
     }
 
-    final pathsChanged = pathsToHide
-        .where(_hiddenLibrarySongPaths.add)
-        .isNotEmpty;
-    final identitiesChanged = selectedIdentities
-        .where(_hiddenLibrarySongIdentities.add)
-        .isNotEmpty;
-    final changed = pathsChanged || identitiesChanged;
-    if (!changed) return;
+    final changed = _libraryVisibility.hide(pathsToHide, selectedIdentities);
+    if (!changed && !_libraryVisibility.showHidden) return;
+    _libraryVisibility.showHidden = false;
     final currentSong = _currentSong;
     if (currentSong != null &&
         (_hiddenLibrarySongPaths.contains(
@@ -415,7 +443,31 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
     await _saveHiddenLibrarySongs();
     await _updateAllSongsList();
-    _infoStreamController.add('已从音乐库移除 ${selectedSongs.length} 首歌曲');
+    _infoStreamController.add('已隐藏 ${selectedSongs.length} 首歌曲');
+    notifyListeners();
+  }
+
+  Future<void> restoreSongsToLibrary(Iterable<Song> songs) async {
+    final selected = songs.toList();
+    if (selected.isEmpty) return;
+    final identities = selected.map(_libraryDedupKey).toSet();
+    final paths = selected.map((song) => song.normalizedPath).toSet();
+    // Restore all copies of a deduplicated row, retaining unrelated hidden rows.
+    final knownPaths = <String>{
+      ..._playlists.expand((playlist) => playlist.songFilePaths),
+      ..._songMetadataCache.keys,
+    };
+    for (final path in knownPaths) {
+      if (!_hiddenLibrarySongPaths.contains(p.normalize(path).toLowerCase())) {
+        continue;
+      }
+      final candidate = await _parseSongMetadata(path);
+      if (identities.contains(_libraryDedupKey(candidate))) paths.add(path);
+    }
+    if (!_libraryVisibility.restore(paths, identities)) return;
+    await _saveHiddenLibrarySongs();
+    await _updateAllSongsList();
+    _infoStreamController.add('已取消隐藏 ${selected.length} 首歌曲');
     notifyListeners();
   }
 
@@ -655,6 +707,9 @@ class PlaylistContentNotifier extends ChangeNotifier
     };
   }
 
+  SongSortPreference? get librarySortPreference =>
+      _songSortPreferences[_allSongsSortScope];
+
   String get currentSongPinScope {
     switch (_currentDetailViewContext) {
       case DetailViewContext.allSongs:
@@ -806,24 +861,40 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   int _songMembershipSignature(Iterable<String> paths) {
-    final normalized = paths.map(_normalizePath).toList()..sort();
-    return Object.hashAll(normalized);
+    return songListSortSignature(paths, _songMetadataCache);
   }
 
   Future<void> _reapplyChangedPlaylistSorts() async {
     for (final playlist in _playlists) {
       final scope = _playlistSortScope(playlist.id);
-      final preference = _songSortPreferences[scope];
-      if (preference == null) continue;
+      final preference =
+          _songSortPreferences[scope] ??
+          const SongSortPreference(
+            criterion: SortCriterion.title,
+            descending: false,
+          );
       final signature = _songMembershipSignature(playlist.songFilePaths);
       if (_sortMembershipSignatures[scope] == signature) continue;
-
+      final sourcePaths = List<String>.of(playlist.songFilePaths);
       final sortedPaths = await _sortFilePaths(
-        paths: playlist.songFilePaths,
+        paths: sourcePaths,
         criterion: preference.criterion,
         descending: preference.descending,
       );
+      if (!automaticSongSortStillApplies(
+        sourcePaths: sourcePaths,
+        currentPaths: playlist.songFilePaths,
+        rule: preference,
+        currentRule: _songSortPreferences[scope],
+      )) {
+        continue;
+      }
       playlist.songFilePaths = sortedPaths;
+      if (_playingPlaylist?.id == playlist.id && _currentSong != null) {
+        _playingSongIndex = sortedPaths.indexWhere(
+          (path) => _normalizePath(path) == _currentSong!.normalizedPath,
+        );
+      }
       if (playlist.songs != null) {
         final songMap = {
           for (final song in playlist.songs!)
@@ -837,7 +908,7 @@ class PlaylistContentNotifier extends ChangeNotifier
             ? sortedSongs
             : null;
       }
-      _sortMembershipSignatures[scope] = signature;
+      _sortMembershipSignatures[scope] = _songMembershipSignature(sortedPaths);
       if (_selectedIndex == _playlists.indexOf(playlist)) {
         _currentPlaylistSongs = playlist.songs ?? [];
       }
@@ -848,8 +919,21 @@ class PlaylistContentNotifier extends ChangeNotifier
   static const _hiddenLibrarySongIdentitiesKey =
       'hidden_library_song_identities';
   static const _importedAudioFoldersKey = 'imported_audio_folders_v1';
-  final Set<String> _hiddenLibrarySongPaths = {};
-  final Set<String> _hiddenLibrarySongIdentities = {};
+  final _libraryVisibility = LibrarySongVisibility();
+  Set<String> get _hiddenLibrarySongPaths => _libraryVisibility.paths;
+  Set<String> get _hiddenLibrarySongIdentities => _libraryVisibility.identities;
+  bool get hasHiddenLibrarySongs => _libraryVisibility.hasHidden;
+  bool get showHiddenLibrarySongs => _libraryVisibility.showHidden;
+  bool _librarySourceWasSeen = false;
+  Timer? _automaticSortTimer;
+
+  bool isLibrarySongHidden(Song song) =>
+      _libraryVisibility.isHidden(song.normalizedPath, _libraryDedupKey(song));
+
+  Future<void> toggleHiddenLibrarySongs() async {
+    _libraryVisibility.showHidden = !_libraryVisibility.showHidden;
+    await _updateAllSongsList();
+  }
 
   // --- 元数据缓存 ---
   final Map<String, SongMetadataCacheEntry> _songMetadataCache = {};
@@ -934,7 +1018,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // --- 播放器相关 ---
   final AudioService _audioService = AudioService();
-  Player get mediaPlayer => _audioService.player;
+  PlayerApi get mediaPlayer => _audioService.player;
   bool _appExitShutdownStarted = false;
   StreamSubscription<Duration>? _positionSubscription;
   bool _isAppForeground = true;
@@ -1851,7 +1935,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     _loudnessSubscription = null;
 
     if (_settingsProvider.enableReplayGain) {
-      _audioService.player.setVolumeGain(0.0);
+      _audioService.setNormalizationGain(0.0);
       _audioService.player.setReplayGain(
         const ReplayGainSettings(
           mode: ReplayGain.track,
@@ -1877,22 +1961,23 @@ class PlaylistContentNotifier extends ChangeNotifier
         scan,
       ) {
         if (scan == null) {
+          unawaited(_audioService.setNormalizationGain(0, smooth: false));
           return;
         }
 
         if (scan.state == LoudnessScanState.ready && scan.integrated != null) {
           final targetGain = (-16.0 - scan.integrated!).clamp(-24.0, 24.0);
 
-          _audioService.player.setVolumeGain(targetGain);
+          _audioService.setNormalizationGain(targetGain);
 
           // debugPrint("$targetGain dB");
         } else if (scan.state == LoudnessScanState.unavailable) {
-          _audioService.player.setVolumeGain(0.0);
+          _audioService.setNormalizationGain(0.0);
         }
       });
     } else {
       // 只有用户彻底关闭功能时，才重置为 0.0
-      _audioService.player.setVolumeGain(0.0);
+      _audioService.setNormalizationGain(0.0);
     }
   }
 
@@ -1927,6 +2012,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   @override
   // --- 播放器相关 ---
   void dispose() {
+    _automaticSortTimer?.cancel();
     _preparationDisposed = true;
     if (_groupsPreparation?.isCompleted == false) {
       _groupsPreparation!.complete();
@@ -2591,6 +2677,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   ) {
     final targetPath = _normalizePath(filePath);
     bool updated = false;
+    var sortChanged = false;
 
     void updateList(List<Song> songs) {
       for (int i = 0; i < songs.length; i++) {
@@ -2598,6 +2685,13 @@ class PlaylistContentNotifier extends ChangeNotifier
           final newSong = updater(songs[i]);
           // updater 返回同一对象表示无变更，跳过以避免冗余刷新
           if (!identical(newSong, songs[i])) {
+            sortChanged =
+                sortChanged ||
+                newSong.title != songs[i].title ||
+                newSong.artist != songs[i].artist ||
+                newSong.album != songs[i].album ||
+                newSong.duration != songs[i].duration ||
+                newSong.trackNumber != songs[i].trackNumber;
             songs[i] = newSong;
             updated = true;
           }
@@ -2637,6 +2731,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     if (updated) {
       _libraryRevision++;
+      if (sortChanged) _scheduleAutomaticSongSort();
       notifyListeners();
     }
   }
@@ -2723,9 +2818,33 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     if (updated) {
       _libraryRevision++;
+      _scheduleAutomaticSongSort();
       unawaited(prepareLibraryPresentation());
       notifyListeners();
     }
+  }
+
+  void _scheduleAutomaticSongSort() {
+    _automaticSortTimer?.cancel();
+    _automaticSortTimer = Timer(const Duration(milliseconds: 300), () async {
+      final lease = await InteractionPerformanceController.instance
+          .acquireIdleWork(
+            priority: InteractionWorkPriority.maintenance,
+            isStillNeeded: () => !_preparationDisposed,
+          );
+      try {
+        if (!lease.isGranted || _preparationDisposed) return;
+        // Downstream preparation/publication obtains its own idle leases.
+        lease.release();
+        _sortMembershipSignatures.clear();
+        await _savePlaylists();
+        await _updateAllSongsList();
+      } catch (error) {
+        debugPrint('自动重排歌曲失败: $error');
+      } finally {
+        lease.release();
+      }
+    });
   }
 
   // 后台校验更新歌曲的元数据
@@ -3706,15 +3825,19 @@ class PlaylistContentNotifier extends ChangeNotifier
     await _recordImportedAudioFolders([folderPath]);
 
     final currentPlaylist = _playlists[_selectedIndex];
+    final normalizedFolder = p.normalize(folderPath);
+    if (!currentPlaylist.folderPaths.any(
+      (path) =>
+          p.normalize(path).toLowerCase() == normalizedFolder.toLowerCase(),
+    )) {
+      currentPlaylist.folderPaths.add(normalizedFolder);
+    }
+    await _savePlaylists();
     if (currentPlaylist.isFolderBased) {
-      final normalizedFolder = p.normalize(folderPath);
-      if (!currentPlaylist.folderPaths.any(
-        (path) =>
-            p.normalize(path).toLowerCase() == normalizedFolder.toLowerCase(),
-      )) {
-        currentPlaylist.folderPaths.add(normalizedFolder);
-      }
-      await _scanFoldersAndAddSongs(currentPlaylist.folderPaths);
+      await _scanFoldersAndAddSongs(
+        currentPlaylist.folderPaths,
+        restoreHidden: true,
+      );
       return true;
     }
 
@@ -4005,7 +4128,10 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   // 扫描文件夹并添加歌曲
-  Future<void> _scanFoldersAndAddSongs(List<String> folderPaths) async {
+  Future<void> _scanFoldersAndAddSongs(
+    List<String> folderPaths, {
+    bool restoreHidden = false,
+  }) async {
     if (_selectedIndex < 0 || _selectedIndex >= _playlists.length) return;
 
     final playlist = _playlists[_selectedIndex];
@@ -4037,7 +4163,7 @@ class PlaylistContentNotifier extends ChangeNotifier
         }
       }
 
-      await _unhideImportedSongPaths(songPaths);
+      if (restoreHidden) await _unhideImportedSongPaths(songPaths);
 
       // 使用跨平台路径差异计算
       final diff = _computePathDiff(playlist.songFilePaths, songPaths);
@@ -4201,9 +4327,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   bool _pathIsInsideFolder(String filePath, String folderPath) {
-    final file = p.normalize(filePath).toLowerCase();
-    final folder = p.normalize(folderPath).toLowerCase();
-    return file == folder || p.isWithin(folder, file);
+    return songPathInFolder(filePath, folderPath);
   }
 
   Future<List<String>> _loadImportedAudioFolders() async {
@@ -4218,7 +4342,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     // Older builds only persisted paths for folder-based playlists. Preserve
     // those roots during migration, then keep all future folder imports in the
     // dedicated registry above.
-    for (final playlist in _playlists.where((item) => item.isFolderBased)) {
+    for (final playlist in _playlists) {
       for (final path in playlist.folderPaths) {
         final normalized = p.normalize(path);
         folders[normalized.toLowerCase()] = normalized;
@@ -4232,36 +4356,88 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   /// Rescans folders that were imported through "import entire folder".
-  /// A root is skipped once the current library no longer contains any song
-  /// from it, preventing stale history from unexpectedly re-importing music.
-  Future<ImportedFolderRefreshSummary> refreshImportedAudioFolders() async {
-    if (_isLoadingSongs) {
-      return const ImportedFolderRefreshSummary(
-        refreshedFolders: 0,
-        skippedFolders: 0,
-        addedSongs: 0,
-        removedSongs: 0,
-        failedFolders: [],
-      );
-    }
+  /// Only explicitly associated playlist roots can be refreshed; empty and
+  /// all-hidden managed roots remain eligible without revoking hiding.
+  Future<List<String>> importedAudioFolders() => _loadImportedAudioFolders();
 
-    final roots = await _loadImportedAudioFolders();
-    final libraryPaths = _allSongs.map((song) => song.filePath).toList();
-    var refreshedFolders = 0;
-    var skippedFolders = 0;
-    var addedSongs = 0;
-    var removedSongs = 0;
-    final failedFolders = <String>[];
-
+  Future<void> associateImportedAudioFolder(
+    String root,
+    String playlistId,
+  ) async {
+    if (_isLoadingSongs) throw StateError('正在导入或刷新，请稍后重试');
     _isLoadingSongs = true;
     notifyListeners();
     try {
-      for (final root in roots) {
-        if (!libraryPaths.any((path) => _pathIsInsideFolder(path, root))) {
-          skippedFolders++;
-          continue;
-        }
+      final key = p.normalize(root).toLowerCase();
+      final recorded = await _loadImportedAudioFolders();
+      if (!recorded.any((path) => p.normalize(path).toLowerCase() == key)) {
+        throw StateError('文件夹记录已移除，请重新导入');
+      }
+      final index = _playlists.indexWhere(
+        (playlist) => playlist.id == playlistId,
+      );
+      if (index < 0) throw StateError('歌单已不存在');
+      final playlist = _playlists[index];
+      if (!folderPlaylistTracksImportedRoot(playlist, root)) {
+        playlist.folderPaths.add(p.normalize(root));
+        await _savePlaylists();
+      }
+    } finally {
+      _isLoadingSongs = false;
+      notifyListeners();
+    }
+  }
 
+  /// Detach only managed song references. Never delete files on disk.
+  Future<void> removeImportedAudioFolder(String root) async {
+    if (_isLoadingSongs) throw StateError('正在导入或刷新，请稍后重试');
+    _isLoadingSongs = true;
+    notifyListeners();
+    try {
+      final key = p.normalize(root).toLowerCase();
+      for (final playlist in _playlists) {
+        detachPlaylistFolder(playlist, root);
+      }
+      final prefs = await SharedPreferences.getInstance();
+      final roots = prefs.getStringList(_importedAudioFoldersKey) ?? [];
+      roots.removeWhere((path) => p.normalize(path).toLowerCase() == key);
+      await prefs.setStringList(_importedAudioFoldersKey, roots);
+      await _savePlaylists();
+      if (_selectedIndex >= 0 && _selectedIndex < _playlists.length) {
+        _currentPlaylistSongs = _playlists[_selectedIndex].songs ?? [];
+      }
+      await _updateAllSongsList();
+      notifyListeners();
+    } finally {
+      _isLoadingSongs = false;
+      notifyListeners();
+    }
+  }
+
+  Future<ImportedFolderRefreshSummary> refreshImportedAudioFolders({
+    String? folderPath,
+  }) async {
+    if (_isLoadingSongs) {
+      throw StateError('正在导入或刷新，请稍后重试');
+    }
+    _isLoadingSongs = true;
+    notifyListeners();
+    try {
+      final roots = (await _loadImportedAudioFolders())
+          .where(
+            (root) =>
+                folderPath == null ||
+                p.normalize(root).toLowerCase() ==
+                    p.normalize(folderPath).toLowerCase(),
+          )
+          .toList();
+      var refreshedFolders = 0;
+      var skippedFolders = 0;
+      var addedSongs = 0;
+      var removedSongs = 0;
+      final failedFolders = <String>[];
+
+      for (final root in roots) {
         final affectedPlaylists = _playlists
             .where(
               (playlist) => folderPlaylistTracksImportedRoot(playlist, root),
@@ -4272,33 +4448,18 @@ class PlaylistContentNotifier extends ChangeNotifier
           continue;
         }
 
-        final directory = Directory(root);
-        if (!await directory.exists()) {
-          failedFolders.add(root);
-          continue;
-        }
-
-        final discovered = <String>{};
+        Set<String> discovered;
         try {
-          await for (final entity in directory.list(
-            recursive: true,
-            followLinks: false,
-          )) {
-            if (entity is! File) continue;
-            if (!_supportedAudioExtensions.contains(
-              p.extension(entity.path).toLowerCase(),
-            )) {
-              continue;
-            }
-            discovered.add(p.normalize(entity.path));
-          }
+          discovered = await scanPlaylistFolder(
+            root,
+            _supportedAudioExtensions,
+          );
         } catch (error) {
           debugPrint('刷新导入文件夹失败: $root, $error');
           failedFolders.add(root);
           continue;
         }
 
-        await _unhideImportedSongPaths(discovered);
         for (final playlist in affectedPlaylists) {
           final oldPaths = playlist.songFilePaths
               .where((path) => _pathIsInsideFolder(path, root))
@@ -4887,142 +5048,9 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<bool> _applyEffect(String id, bool enabled) async {
-    final player = _audioService.player;
+    if (id == 'arnndn' && enabled && _arnndnModelPath == null) return false;
     try {
-      switch (id) {
-        case 'crossfeed':
-          await player.updateAudioEffects(
-            (e) => e.updateCrossfeed(
-              (m) => m.copyWith(enabled: enabled, strength: 0.4, range: 0.5),
-            ),
-          );
-        case 'earwax':
-          await player.updateAudioEffects(
-            (e) => e.updateCrossfeed(
-              (m) => m.copyWith(enabled: enabled, strength: 0.3),
-            ),
-          );
-        case 'widerStereo':
-          await player.updateAudioEffects(
-            (e) => e
-                .updateExtrastereo((m) => m.copyWith(enabled: enabled, m: 1.2))
-                .updateStereowiden(
-                  (m) => m.copyWith(enabled: enabled, delay: 15, drymix: 0.8),
-                ),
-          );
-        case 'haas':
-          await player.updateAudioEffects(
-            (e) => e.updateHaas(
-              (m) => m.copyWith(
-                enabled: enabled,
-                level_in: 0.8,
-                level_out: 0.8,
-                side_gain: 0.35,
-                middle_source: HaasSource.mid,
-              ),
-            ),
-          );
-        case 'vocalBoost':
-          await player.updateAudioEffects(
-            (e) => e.updateStereotools(
-              (m) => m.copyWith(enabled: enabled, mlev: 1.4, slev: 0.8),
-            ),
-          );
-        case 'vocalRemover':
-          await player.updateAudioEffects(
-            (e) => e.updateStereotools(
-              (m) => m.copyWith(enabled: enabled, mlev: 0.15, slev: 1.1),
-            ),
-          );
-        case 'acompressor':
-          await player.updateAudioEffects(
-            (e) => e.updateAcompressor((m) => m.copyWith(enabled: enabled)),
-          );
-        case 'softClip':
-          await player.updateAudioEffects(
-            (e) => e
-                .updateAlimiter(
-                  (m) => m.copyWith(enabled: enabled, limit: 0.95),
-                )
-                .updateAsoftclip((m) => m.copyWith(enabled: enabled)),
-          );
-        case 'deNoise':
-          await player.updateAudioEffects(
-            (e) => e
-                .updateAgate(
-                  (m) => m.copyWith(enabled: enabled, threshold: 0.04),
-                )
-                .updateAfftdn((m) => m.copyWith(enabled: enabled)),
-          );
-        case 'virtualbass':
-          await player.updateAudioEffects(
-            (e) => e.updateVirtualbass((m) => m.copyWith(enabled: enabled)),
-          );
-        case 'subboost':
-          await player.updateAudioEffects(
-            (e) => e
-                .updateAsubboost(
-                  (m) => m.copyWith(enabled: enabled, dry: 0.7, wet: 0.5),
-                )
-                .updateBass((m) => m.copyWith(enabled: enabled, g: 3)),
-          );
-        case 'crystalizer':
-          await player.updateAudioEffects(
-            (e) => e
-                .updateCrystalizer((m) => m.copyWith(enabled: enabled))
-                .updateTreble((m) => m.copyWith(enabled: enabled, g: 2)),
-          );
-        case 'tilt':
-          await player.updateAudioEffects(
-            (e) => e
-                .updateAtilt((m) => m.copyWith(enabled: enabled))
-                .updateTiltshelf((m) => m.copyWith(enabled: enabled)),
-          );
-        case 'vinyl':
-          await player.updateAudioEffects(
-            (e) => e
-                .updateHighpass(
-                  (m) => m.copyWith(enabled: enabled, frequency: 150),
-                )
-                .updateLowpass(
-                  (m) => m.copyWith(enabled: enabled, frequency: 7500),
-                ),
-          );
-        case 'exciter':
-          await player.updateAudioEffects(
-            (e) => e.updateAexciter((m) => m.copyWith(enabled: enabled)),
-          );
-        case 'echo':
-          await player.updateAudioEffects(
-            (e) => e.updateAecho(
-              (m) => m.copyWith(
-                enabled: enabled,
-                in_gain: 0.8,
-                out_gain: 0.5,
-                delays: '80|160',
-                decays: '0.35|0.15',
-              ),
-            ),
-          );
-        case 'deesser':
-          await player.updateAudioEffects(
-            (e) => e.updateDeesser((m) => m.copyWith(enabled: enabled)),
-          );
-        case 'declip':
-          await player.updateAudioEffects(
-            (e) => e.updateAdeclip((m) => m.copyWith(enabled: enabled)),
-          );
-        case 'arnndn':
-          final model = _arnndnModelPath;
-          if (enabled && model == null) return false;
-          await player.updateAudioEffects(
-            (e) => e.copyWith(
-              arnndn: ArnndnSettings(enabled: enabled, model: model ?? ''),
-            ),
-          );
-        default:
-          return false;
-      }
+      await _audioService.applyEffect(id, enabled, model: _arnndnModelPath);
       return true;
     } catch (error) {
       debugPrint('应用音效 $id 失败: $error');
@@ -6981,371 +7009,32 @@ class PlaylistContentNotifier extends ChangeNotifier
     return const [];
   }
 
-  // 获取网易歌词；状态提交由统一回退调度器处理。
-  Future<List<LyricLine>> _fetchNeteaseLyrics(Song song) async {
-    try {
-      final includeTranslation = _settingsProvider.enableLyricTranslation;
-      // 检查 artist 是否为默认值，如果是则设置为空字符串
-      final rawArtist = song.artist;
-      final artist = (rawArtist == '未知歌手' || rawArtist == '未知歌手 (解析失败)')
-          ? ''
-          : rawArtist;
+  Future<List<LyricLine>> _fetchNeteaseLyrics(Song song) =>
+      _fetchPlatformLyrics('netease', song);
 
-      // 组合搜索关键词（有歌手时：歌名 + 歌手；否则只用歌名）
-      final searchKeyword = artist.isEmpty
-          ? song.title.trim()
-          : '${song.title.trim()} ${artist.trim()}';
+  Future<List<LyricLine>> _fetchKugouLyrics(Song song) =>
+      _fetchPlatformLyrics('kugou', song);
 
-      // 对搜索关键词进行 url 编码
-      final encodedSearchKeyword = Uri.encodeComponent(searchKeyword);
+  Future<List<LyricLine>> _fetchQQLyrics(Song song) =>
+      _fetchPlatformLyrics('qq', song);
 
-      // 第一步：搜索歌曲获取歌曲id
-      final searchUrl =
-          'https://music.163.com/api/search/get/?s=$encodedSearchKeyword&type=1&limit=1';
-      final searchUri = Uri.parse(searchUrl);
-
-      final searchResponse = await http
-          .get(
-            searchUri,
-            headers: {
-              'Referer': 'https://music.163.com',
-              'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
-
-      // 如果状态码不为200，清空并返回
-      if (searchResponse.statusCode != 200) {
-        return const [];
-      }
-
-      // 解析搜索结果
-      final searchResult = json.decode(searchResponse.body);
-
-      // 如果没有找到歌曲，同样清空歌词
-      if (searchResult['result'] == null ||
-          searchResult['result']['songs'] == null ||
-          searchResult['result']['songs'].isEmpty) {
-        return const [];
-      }
-
-      // 取第一首匹配歌曲的id
-      final songId = searchResult['result']['songs'][0]['id'].toString();
-
-      // 第二步：分别获取原文歌词和翻译歌词
-      // 获取原文歌词
-      final lrcUrl =
-          'https://music.163.com/api/song/lyric?os=pc&id=$songId&lv=-1';
-      final lrcUri = Uri.parse(lrcUrl);
-
-      final lrcResponse = await http
-          .get(
-            lrcUri,
-            headers: {
-              'Referer': 'https://music.163.com',
-              'User-Agent':
-                  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
-
-      // 如果状态码不为200，清空并返回
-      if (lrcResponse.statusCode != 200) {
-        return const [];
-      }
-
-      final lrcResult = json.decode(lrcResponse.body);
-
-      // 处理原文歌词数据
-      List<String> lrcLines = [];
-      if (lrcResult['lrc'] != null &&
-          lrcResult['lrc']['lyric'] != null &&
-          lrcResult['lrc']['lyric'].toString().isNotEmpty) {
-        lrcLines = lrcResult['lrc']['lyric'].toString().split('\n');
-      }
-
-      // 处理翻译歌词数据
-      List<String> tlyricLines = [];
-      if (includeTranslation) {
-        final tlyricUri = Uri.parse(
-          'https://music.163.com/api/song/lyric?os=pc&id=$songId&tv=-1',
-        );
-        final tlyricResponse = await http
-            .get(
-              tlyricUri,
-              headers: {
-                'Referer': 'https://music.163.com',
-                'User-Agent':
-                    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-              },
-            )
-            .timeout(const Duration(seconds: 10));
-        if (tlyricResponse.statusCode == 200) {
-          final tlyricResult = json.decode(tlyricResponse.body);
-          if (tlyricResult['tlyric'] != null &&
-              tlyricResult['tlyric']['lyric'] != null &&
-              tlyricResult['tlyric']['lyric'].toString().isNotEmpty) {
-            tlyricLines = tlyricResult['tlyric']['lyric'].toString().split(
-              '\n',
-            );
-          }
-        }
-      }
-
-      return _parseLrcContent(
-        combineNetworkLyricLines(
-          lrcLines,
-          tlyricLines,
-          includeTranslation: includeTranslation,
-        ),
-      );
-    } catch (e) {
-      return const [];
-    }
-  }
-
-  // 获取酷狗歌词；状态提交由统一回退调度器处理。
-  Future<List<LyricLine>> _fetchKugouLyrics(Song song) async {
-    try {
-      // 检查 artist 是否为默认值，如果是则设置为空字符串
-      final rawArtist = song.artist;
-      final artist = (rawArtist == '未知歌手' || rawArtist == '未知歌手 (解析失败)')
-          ? ''
-          : rawArtist;
-
-      // 组合搜索关键词（有歌手时：歌名 + 歌手；否则只用歌名）
-      final searchKeyword = artist.isEmpty
-          ? song.title.trim()
-          : '${song.title.trim()} ${artist.trim()}';
-
-      // 对搜索关键词进行 url 编码
-      final encodedSearchKeyword = Uri.encodeComponent(searchKeyword);
-
-      // 第一步：搜索歌曲获取歌曲hash
-      final searchUrl =
-          'http://mobilecdnbj.kugou.com/api/v3/search/song?keyword=$encodedSearchKeyword&page=1&pagesize=1';
-      final searchUri = Uri.parse(searchUrl);
-
-      final searchResponse = await http
-          .get(searchUri)
-          .timeout(const Duration(seconds: 10));
-
-      // 如果状态码不为200，清空并返回
-      if (searchResponse.statusCode != 200) {
-        return const [];
-      }
-
-      // 解析搜索结果
-      final searchResult = json.decode(searchResponse.body);
-
-      // 如果没有找到歌曲，同样清空歌词
-      if (searchResult['data'] == null ||
-          searchResult['data']['info'] == null ||
-          searchResult['data']['info'].isEmpty) {
-        return const [];
-      }
-
-      // 取第一首匹配歌曲的hash
-      final songHash = searchResult['data']['info'][0]['hash'].toString();
-
-      // 第二步：获取歌词候选列表
-      final candidatesUrl =
-          'https://krcs.kugou.com/search?man=yes&hash=$songHash';
-      final candidatesUri = Uri.parse(candidatesUrl);
-
-      final candidatesResponse = await http
-          .get(candidatesUri)
-          .timeout(const Duration(seconds: 10));
-
-      // 如果状态码不为200，清空并返回
-      if (candidatesResponse.statusCode != 200) {
-        return const [];
-      }
-
-      final candidatesResult = json.decode(candidatesResponse.body);
-
-      // 检查是否有候选歌词
-      if (candidatesResult['candidates'] == null ||
-          candidatesResult['candidates'].isEmpty) {
-        return const [];
-      }
-
-      // 获取第一个候选歌词的id和accesskey
-      final lyricId = candidatesResult['candidates'][0]['id'].toString();
-      final accessKey = candidatesResult['candidates'][0]['accesskey']
-          .toString();
-
-      // 第三步：获取加密的歌词内容
-      final lyricUrl =
-          'https://lyrics.kugou.com/download?ver=1&id=$lyricId&accesskey=$accessKey&fmt=lrc';
-      final lyricUri = Uri.parse(lyricUrl);
-
-      final lyricResponse = await http
-          .get(lyricUri)
-          .timeout(const Duration(seconds: 10));
-
-      // 如果状态码不为200，清空并返回
-      if (lyricResponse.statusCode != 200) {
-        return const [];
-      }
-
-      final lyricResult = json.decode(lyricResponse.body);
-
-      // 检查是否有歌词内容
-      if (lyricResult['content'] == null) {
-        return const [];
-      }
-
-      // 第四步：解码base64歌词
-      final base64Lyric = lyricResult['content'].toString();
-      final decodedLyric = utf8.decode(base64Decode(base64Lyric));
-
-      return _parseLrcContent([decodedLyric]);
-    } catch (e) {
-      return const [];
-    }
-  }
-
-  // 获取QQ音乐歌词；状态提交由统一回退调度器处理。
-  Future<List<LyricLine>> _fetchQQLyrics(Song song) async {
-    final client = http.Client();
-    try {
-      final includeTranslation = _settingsProvider.enableLyricTranslation;
-      // 检查 artist 是否为默认值，如果是则设置为空字符串
-      final rawArtist = song.artist;
-      final artist = (rawArtist == '未知歌手' || rawArtist == '未知歌手 (解析失败)')
-          ? ''
-          : rawArtist;
-
-      // 组合搜索关键词（有歌手时：歌手 - 歌名；否则只用歌名）
-      final searchKeyword = artist.isEmpty
-          ? song.title.trim()
-          : '${artist.trim()} - ${song.title.trim()}';
-
-      // 第一步：搜索歌曲
-      const searchUrl = 'https://u.y.qq.com/cgi-bin/musicu.fcg';
-      final searchBody = jsonEncode({
-        "comm": {"ct": "19", "cv": "1873", "uin": "0"},
-        "music.search.SearchCgiService": {
-          "method": "DoSearchForQQMusicDesktop",
-          "module": "music.search.SearchCgiService",
-          "param": {
-            "grp": 1,
-            "num_per_page": 40,
-            "page_num": 1,
-            "query": searchKeyword,
-            "search_type": 0,
-          },
-        },
-      });
-
-      final searchRequest = http.Request('POST', Uri.parse(searchUrl))
-        ..headers['User-Agent'] =
-            'Mozilla/5.0 (compatible; MSIE 9.0; Windows NT 6.1; WOW64; Trident/5.0)'
-        ..body = searchBody;
-
-      final searchStreamedResponse = await client
-          .send(searchRequest)
-          .timeout(const Duration(seconds: 10));
-      final searchResponse = await http.Response.fromStream(
-        searchStreamedResponse,
-      );
-
-      if (searchResponse.statusCode != 200) {
-        return const [];
-      }
-
-      // 直接使用bodyBytes避免Content-Type解析问题
-      final searchResult = json.decode(utf8.decode(searchResponse.bodyBytes));
-
-      // 检查搜索结果
-      if (searchResult['music.search.SearchCgiService'] == null ||
-          searchResult['music.search.SearchCgiService']['data'] == null ||
-          searchResult['music.search.SearchCgiService']['data']['body'] ==
-              null ||
-          searchResult['music.search.SearchCgiService']['data']['body']['song'] ==
-              null ||
-          searchResult['music.search.SearchCgiService']['data']['body']['song']['list'] ==
-              null ||
-          searchResult['music.search.SearchCgiService']['data']['body']['song']['list']
-              .isEmpty) {
-        return const [];
-      }
-
-      // 获取第一首歌曲的信息
-      final songList =
-          searchResult['music.search.SearchCgiService']['data']['body']['song']['list'];
-      final firstSong = songList[0];
-      final songMid = firstSong['mid'].toString();
-      final musicId = firstSong['id'].toString();
-
-      // 第二步：获取歌词
-      final lyricUrl = Uri.parse(
-        'https://c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg'
-        '?songmid=$songMid'
-        '&musicid=$musicId'
-        '&format=json'
-        '&g_tk=5381',
-      );
-
-      final lyricRequest = http.Request('GET', lyricUrl)
-        ..headers['Referer'] = 'https://y.qq.com/n/ryqq/player'
-        ..headers['User-Agent'] =
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/102.0.5005.63 Safari/537.36';
-
-      final lyricStreamedResponse = await client
-          .send(lyricRequest)
-          .timeout(const Duration(seconds: 10));
-      final lyricResponse = await http.Response.fromStream(
-        lyricStreamedResponse,
-      );
-
-      if (lyricResponse.statusCode != 200) {
-        return const [];
-      }
-
-      // 手动处理响应体，避免因Content-Type导致的解析问题
-      final lyricResult = json.decode(utf8.decode(lyricResponse.bodyBytes));
-
-      // 处理歌词内容
-      List<String> lrcLines = [];
-      if (lyricResult['lyric'] != null) {
-        try {
-          final lyricBase64 = lyricResult['lyric'];
-          final lyricData = utf8.decode(base64Decode(lyricBase64));
-          lrcLines = lyricData.split('\n');
-        } catch (e) {
-          //
-        }
-      }
-
-      // 处理翻译歌词内容
-      List<String> tlyricLines = [];
-      if (includeTranslation &&
-          lyricResult['trans'] != null &&
-          lyricResult['trans'].isNotEmpty) {
-        try {
-          final transBase64 = lyricResult['trans'];
-          final transData = utf8.decode(base64Decode(transBase64));
-          tlyricLines = transData.split('\n');
-        } catch (e) {
-          //
-        }
-      }
-
-      return _parseLrcContent(
-        combineNetworkLyricLines(
-          lrcLines,
-          tlyricLines,
-          includeTranslation: includeTranslation,
-        ),
-      );
-    } catch (e) {
-      return const [];
-    } finally {
-      client.close();
-    }
+  Future<List<LyricLine>> _fetchPlatformLyrics(String source, Song song) async {
+    final translated = _settingsProvider.enableLyricTranslation;
+    final content = await NetworkLyricClient().fetch(
+      source: source,
+      title: song.title,
+      artist: song.artist,
+      duration: song.duration,
+      translation: translated,
+    );
+    if (content.timed.isNotEmpty) return _processInterludes(content.timed);
+    return _parseLrcContent(
+      combineNetworkLyricLines(
+        content.lrc,
+        content.translation,
+        includeTranslation: translated,
+      ),
+    );
   }
 
   // 解析歌词
@@ -8966,6 +8655,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     final seenTrustedIdentities = <String>{};
     for (final path in paths) {
       final normalizedPath = _normalizePath(path);
+      if (!_libraryVisibility.includes(path)) continue;
       if (!seenPaths.add(normalizedPath)) continue;
       final cached = _songMetadataCache[normalizedPath];
       final known = knownSongs[normalizedPath];
@@ -8995,7 +8685,7 @@ class PlaylistContentNotifier extends ChangeNotifier
                 );
       if (hasTrustedMetadata) {
         final identity = _libraryDedupKey(song);
-        if (_hiddenLibrarySongIdentities.contains(identity) ||
+        if (!_libraryVisibility.includes(path, identity) ||
             !seenTrustedIdentities.add(identity)) {
           continue;
         }
@@ -9020,6 +8710,12 @@ class PlaylistContentNotifier extends ChangeNotifier
         .toList(growable: false);
     _allSongsVirtualPlaylist.songFilePaths = paths;
     _allSongsVirtualPlaylist.songs = List<Song>.from(_allSongs);
+    if (identical(_playingPlaylist, _allSongsVirtualPlaylist) &&
+        _currentSong != null) {
+      _playingSongIndex = _allSongs.indexWhere(
+        (song) => song.normalizedPath == _currentSong!.normalizedPath,
+      );
+    }
     _allSongsIndexByPath
       ..clear()
       ..addEntries(
@@ -9039,12 +8735,18 @@ class PlaylistContentNotifier extends ChangeNotifier
     try {
       // 从所有歌单中获取当前所有可用的、不重复的歌曲路径集合
       final allAvailablePaths = <String>{};
+      final sourcePaths = _playlists
+          .expand((playlist) => playlist.songFilePaths)
+          .toSet();
+      final mayRecoverSavedOrder = shouldRecoverSavedLibraryOrder(
+        hasSourcePaths: sourcePaths.isNotEmpty,
+        sourceWasSeen: _librarySourceWasSeen,
+      );
+      if (sourcePaths.isNotEmpty) _librarySourceWasSeen = true;
       for (final playlist in _playlists) {
         allAvailablePaths.addAll(
           playlist.songFilePaths.where(
-            (path) => !_hiddenLibrarySongPaths.contains(
-              p.normalize(path).toLowerCase(),
-            ),
+            (path) => _libraryVisibility.includes(path),
           ),
         );
       }
@@ -9055,9 +8757,14 @@ class PlaylistContentNotifier extends ChangeNotifier
       final List<String> savedOrder = await _playlistManager
           .loadAllSongsOrder();
       if (updateGeneration != _allSongsUpdateGeneration) return;
-      if (allAvailablePaths.isEmpty && savedOrder.isNotEmpty) {
+      if (mayRecoverSavedOrder &&
+          allAvailablePaths.isEmpty &&
+          savedOrder.isNotEmpty) {
         for (final path in savedOrder) {
-          if (await _localSongPathExists(path)) allAvailablePaths.add(path);
+          if (_libraryVisibility.includes(path) &&
+              await _localSongPathExists(path)) {
+            allAvailablePaths.add(path);
+          }
           if (updateGeneration != _allSongsUpdateGeneration) return;
         }
       }
@@ -9065,7 +8772,7 @@ class PlaylistContentNotifier extends ChangeNotifier
         savedOrder,
         allAvailablePaths,
       );
-      _pruneMetadataCache(allAvailablePaths);
+      _pruneMetadataCache({...sourcePaths, ...allAvailablePaths});
 
       savedOrder.removeWhere((path) => !allAvailablePaths.contains(path));
       final existingPathsInOrder = savedOrder.toSet();
@@ -9078,11 +8785,18 @@ class PlaylistContentNotifier extends ChangeNotifier
       _publishAllSongsSnapshot(dedupedSongs);
 
       var refreshedSongs = dedupedSongs;
-      final sortPreference = _songSortPreferences[_allSongsSortScope];
+      final sortPreference =
+          _songSortPreferences[_allSongsSortScope] ??
+          const SongSortPreference(
+            criterion: SortCriterion.title,
+            descending: false,
+          );
       final membershipSignature = _songMembershipSignature(
         dedupedSongs.map((song) => song.filePath),
       );
-      if (sortPreference != null && membershipChanged) {
+      if (membershipChanged ||
+          _sortMembershipSignatures[_allSongsSortScope] !=
+              membershipSignature) {
         final lease = await InteractionPerformanceController.instance
             .acquireIdleWork(
               priority: InteractionWorkPriority.maintenance,
@@ -9094,12 +8808,21 @@ class PlaylistContentNotifier extends ChangeNotifier
               updateGeneration != _allSongsUpdateGeneration) {
             return;
           }
+          final sortPaths = dedupedSongs.map((song) => song.filePath).toList();
           final sortedPaths = await _sortFilePaths(
-            paths: dedupedSongs.map((song) => song.filePath).toList(),
+            paths: sortPaths,
             criterion: sortPreference.criterion,
             descending: sortPreference.descending,
           );
           if (updateGeneration != _allSongsUpdateGeneration) return;
+          if (!automaticSongSortStillApplies(
+            sourcePaths: sortPaths,
+            currentPaths: _allSongs.map((song) => song.filePath),
+            rule: sortPreference,
+            currentRule: _songSortPreferences[_allSongsSortScope],
+          )) {
+            return;
+          }
           final songMap = {
             for (final song in dedupedSongs)
               _normalizePath(song.filePath): song,
@@ -9112,7 +8835,9 @@ class PlaylistContentNotifier extends ChangeNotifier
           lease.release();
         }
       }
-      _sortMembershipSignatures[_allSongsSortScope] = membershipSignature;
+      _sortMembershipSignatures[_allSongsSortScope] = _songMembershipSignature(
+        refreshedSongs.map((song) => song.filePath),
+      );
       if (updateGeneration != _allSongsUpdateGeneration) return;
       if (!identical(refreshedSongs, dedupedSongs)) {
         _publishAllSongsSnapshot(refreshedSongs);

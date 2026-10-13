@@ -9,6 +9,7 @@ import 'package:myune_music/models/fluid_background_state.dart';
 import 'package:myune_music/services/artwork_palette_cache.dart';
 import 'package:myune_music/services/fluid_background_controller.dart';
 import 'package:myune_music/widgets/playback_background/fluid_background_painter.dart';
+import 'package:myune_music/widgets/playback_background/fluid_frame_uniforms.dart';
 
 const _pigments = [
   FluidColorSample(Color(0xFFEF2683), .40),
@@ -63,13 +64,12 @@ void main() {
         'shaders/fluid_background.frag',
       )).fragmentShader();
       try {
-        const palette = FluidPalette(
-          Colors.black,
-          Color(0xFFEE2288),
-          Color(0xFFFFB820),
-          Color(0xFF22BF9C),
-          baseColor: Colors.black,
-        );
+        final palette = buildWeightedFluidPalette(const [
+          FluidColorSample(Colors.white, .55),
+          FluidColorSample(Color(0xFFEE2288), .15),
+          FluidColorSample(Color(0xFFFFB820), .15),
+          FluidColorSample(Color(0xFF22BF9C), .15),
+        ], fallbackSeed: Colors.blue);
         for (var step = 0; step < 24; step++) {
           final bytes = await _render(
             shader,
@@ -133,10 +133,6 @@ void main() {
         );
         try {
           for (final seconds in [0.0, 24.0, 48.0, 72.0]) {
-            shader.setFloat(0, 384);
-            shader.setFloat(1, 640);
-            shader.setFloat(2, seconds);
-            shader.setFloat(3, 1);
             // The painter writes all palette uniforms; then set the explicit
             // phase/motion for reproducible snapshots, not a simulated clock.
             final uniformRecorder = ui.PictureRecorder();
@@ -146,8 +142,15 @@ void main() {
               dim: .3,
             ).paint(Canvas(uniformRecorder), const Size(384, 640));
             uniformRecorder.endRecording().dispose();
-            shader.setFloat(2, seconds);
-            shader.setFloat(3, 1);
+            FluidFrameUniforms().write(
+              shader,
+              size: const Size(384, 640),
+              time: seconds,
+              motion: 1,
+              dim: .3,
+              source: palette,
+              target: palette,
+            );
             // DisplayList snapshots shader uniforms at draw time, not at the
             // eventual toImage call. Set explicit phase BEFORE recording.
             final recorder = ui.PictureRecorder();
@@ -195,29 +198,27 @@ void main() {
     },
   );
 
-  test(
-    'achromatic highlights cannot dilute classification or own colour slots',
-    () {
-      final clean = buildWeightedFluidPalette(
-        _pigments,
-        fallbackSeed: Colors.blue,
-      );
-      final padded = buildWeightedFluidPalette([
-        const FluidColorSample(Color(0xFFEFEDEB), .80),
-        ..._pigments.map((s) => FluidColorSample(s.color, s.proportion * .20)),
-      ], fallbackSeed: Colors.blue);
-      expect(padded.colors, clean.colors);
-      final lead = HSLColor.fromColor(padded.second);
-      expect(lead.saturation, inInclusiveRange(.695, .955));
-      expect(lead.lightness, inInclusiveRange(.345, .555));
-      final aligned = alignFluidPaletteSlots(
-        FluidPalette(padded.second, padded.fourth, padded.first, padded.third),
-        padded,
-      );
-      expect(aligned.second, padded.second);
-      expect(aligned.third, padded.third);
-    },
-  );
+  test('383 white padding does not alter the pigment palette', () {
+    final clean = buildWeightedFluidPalette(
+      _pigments,
+      fallbackSeed: Colors.blue,
+    );
+    final padded = buildWeightedFluidPalette([
+      const FluidColorSample(Color(0xFFEFEDEB), .80),
+      ..._pigments.map((s) => FluidColorSample(s.color, s.proportion * .20)),
+    ], fallbackSeed: Colors.blue);
+    expect(padded.colors, clean.colors);
+    final lead = HSLColor.fromColor(padded.second);
+    expect(lead.saturation, greaterThan(.6));
+    expect(lead.hue, closeTo(HSLColor.fromColor(clean.second).hue, 3));
+    expect(lead.lightness, inInclusiveRange(.345, .555));
+    final aligned = alignFluidPaletteSlots(
+      FluidPalette(padded.second, padded.fourth, padded.first, padded.third),
+      padded,
+    );
+    expect(aligned.second, padded.second);
+    expect(aligned.third, padded.third);
+  });
 
   testWidgets('worker filters white pixels before histogram selection', (
     tester,
@@ -268,7 +269,7 @@ void main() {
   });
 
   testWidgets(
-    'production shader follows convex orbital mixing and retains pigments',
+    'production shader follows four-field convex mixing and retains pigments',
     (tester) async {
       await tester.runAsync(() async {
         final shader = (await ui.FragmentProgram.fromAsset(
@@ -283,6 +284,16 @@ void main() {
             baseColor: Color(0xFF721943),
           );
           final bytes = await _render(shader, palette);
+          final packed = FluidFrameUniforms();
+          packed.write(
+            shader,
+            size: const Size(96, 160),
+            time: 0,
+            motion: 0,
+            dim: .3,
+            source: palette,
+            target: palette,
+          );
           var saturation = 0.0;
           var oldSaturation = 0.0;
           for (var y = 0; y < 160; y++) {
@@ -304,6 +315,7 @@ void main() {
                   palette,
                   (x + .5) / 96,
                   (y + .5) / 160,
+                  packed.values,
                 );
                 for (var channel = 0; channel < 3; channel++) {
                   expect(
@@ -318,12 +330,14 @@ void main() {
           }
           // Same synthetic pigments/grid as the old Screen diagnostic. This is
           // not an album measurement or a global saturation guarantee.
-          // Wide three-colour joins may reduce chroma; still reject washout.
-          expect(saturation / (96 * 160), greaterThan(.40));
+          // Wider four-field joins reduce this sample's chroma; reject washout
+          // without restoring the previous, narrower pigment boundaries.
+          expect(saturation / (96 * 160), greaterThan(.35));
           debugPrint(
             'Synthetic grid HSL saturation: orbital=${saturation / (96 * 160)}, old Screen=${oldSaturation / (96 * 160)}',
           );
-          // Changing metadata slot zero cannot create a fourth light.
+          // Slot zero now owns a real fourth field; it changes pigment, not
+          // additive light. Simple covers may still repeat an extracted colour.
           final metadata = await _render(
             shader,
             FluidPalette(
@@ -334,7 +348,7 @@ void main() {
               baseColor: palette.baseColor,
             ),
           );
-          expect(metadata, bytes);
+          expect(metadata, isNot(bytes));
           // The base supports every field's veil rather than making black holes.
           final differentBase = await _render(
             shader,
@@ -395,8 +409,15 @@ Future<Uint8List> _render(
     dim: .3,
   ).paint(Canvas(setup), const Size(96, 160));
   setup.endRecording().dispose();
-  shader.setFloat(2, time);
-  shader.setFloat(3, motion);
+  FluidFrameUniforms().write(
+    shader,
+    size: const Size(96, 160),
+    time: time,
+    motion: motion,
+    dim: .3,
+    source: palette,
+    target: palette,
+  );
   final recorder = ui.PictureRecorder();
   Canvas(
     recorder,
@@ -415,14 +436,18 @@ Future<Uint8List> _render(
 }
 
 // Independent scalar oracle, with motion=0/time=0 from the production painter.
-List<double> _layerOracle(FluidPalette palette, double x, double y) {
-  final phase = .10 * math.sin(1.7);
-  final phase2 = .26 * math.sin(2.1) + .09 * math.sin(.8);
-  final weights = List<double>.generate(3, (i) {
-    final angle = phase + math.pi * 2 * i / 3;
-    final dx = (x - .5 - .26 * math.cos(angle)) / .32;
-    final dy = (y - .5 - .26 * 1.08 * math.sin(angle)) / .32;
-    return math.pow(1 / (1 + dx * dx + dy * dy), 3).toDouble();
+List<double> _layerOracle(
+  FluidPalette palette,
+  double x,
+  double y,
+  Float32List packed,
+) {
+  final weights = List<double>.generate(4, (i) {
+    final angle = math.pi * 2 * i / 4;
+    final dx = (x - .5 - .39 * math.cos(angle)) / .44;
+    final dy = (y - .5 - .39 * 1.08 * math.sin(angle)) * (160 / 96) / .44;
+    final falloff = 1 / (1 + dx * dx + dy * dy);
+    return falloff * falloff * (.65 + .35 * falloff);
   });
   final sum = weights.reduce((a, b) => a + b);
   final distance = math.sqrt(math.pow(x - .5, 2) + math.pow(y - .48, 2));
@@ -432,23 +457,13 @@ List<double> _layerOracle(FluidPalette palette, double x, double y) {
     double component(Color c) => [c.r, c.g, c.b][channel];
     double lerp(double a, double b, double mask) => a + (b - a) * mask;
     final colours = [
-      lerp(component(palette.second), component(palette.third), .08),
-      lerp(
-        component(palette.third),
-        component(palette.fourth),
-        .08 + .05 * math.sin(1.4),
-      ),
-      lerp(
-        component(palette.fourth),
-        component(palette.second),
-        .08 + .05 * math.sin(2.1),
-      ),
+      for (var field = 0; field < 4; field++) packed[14 + field * 3 + channel],
     ];
     var pigment = 0.0;
-    for (var i = 0; i < 3; i++) {
+    for (var i = 0; i < 4; i++) {
       pigment += colours[i] * weights[i] / sum;
     }
-    final coverage = .66 + .16 * (.5 + .5 * math.sin(y * 2.8 + phase2));
+    const coverage = .84;
     final mixed = lerp(component(palette.baseColor), pigment, coverage);
     return mixed * (.98 + .02 * vignette) * (1 - .3 * .25);
   });

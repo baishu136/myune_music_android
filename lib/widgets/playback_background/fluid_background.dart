@@ -85,6 +85,7 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
   AppLifecycleState _lifecycle = AppLifecycleState.resumed;
   bool _reduceMotion = false;
   bool _routeIsCurrent = true;
+  bool _surfaceVisible = true;
   bool _foregroundMotionReady = true;
   int _foregroundResumeGeneration = 0;
   int _preparationGeneration = 0;
@@ -122,11 +123,15 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
+    final wasVisible = _surfaceVisible;
+    _surfaceVisible = TickerMode.valuesOf(context).enabled;
+    if (wasVisible && !_surfaceVisible) _preparationGeneration++;
     _reduceMotion = MediaQuery.disableAnimationsOf(context);
     // ModalRoute is an inherited dependency. Re-evaluate when a dialog or
     // bottom sheet covers the playback route so the shader does no hidden work.
     _routeIsCurrent = ModalRoute.of(context)?.isCurrent ?? true;
     _syncController();
+    if (!wasVisible && _surfaceVisible) unawaited(_prepareIfNeeded());
   }
 
   @override
@@ -294,7 +299,12 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
   }
 
   Future<void> _prepareIfNeeded() async {
-    if (!mounted || _routeTransitionActive || _shaderUnavailable) return;
+    if (!mounted ||
+        !_surfaceVisible ||
+        _routeTransitionActive ||
+        _shaderUnavailable) {
+      return;
+    }
     final generation = ++_preparationGeneration;
     final bytes = widget.artworkBytes;
     final identity = widget.artworkIdentity;
@@ -305,12 +315,14 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
           priority: InteractionWorkPriority.background,
           isStillNeeded: () =>
               mounted &&
+              _surfaceVisible &&
               generation == _preparationGeneration &&
               !_routeTransitionActive,
         );
     try {
       if (!lease.isGranted ||
           !mounted ||
+          !_surfaceVisible ||
           generation != _preparationGeneration ||
           _routeTransitionActive) {
         return;

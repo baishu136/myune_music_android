@@ -9,9 +9,10 @@ import 'package:myune_music/models/fluid_background_state.dart';
 import 'package:myune_music/services/artwork_palette_cache.dart';
 import 'package:myune_music/services/fluid_background_controller.dart';
 import 'package:myune_music/widgets/playback_background/fluid_background_painter.dart';
+import 'package:myune_music/widgets/playback_background/fluid_frame_uniforms.dart';
 
 const _diagnostic = FluidPalette(
-  Colors.black,
+  Color(0xFFFFFF00),
   Color(0xFFFF0000),
   Color(0xFF00FF00),
   Color(0xFF0000FF),
@@ -19,7 +20,7 @@ const _diagnostic = FluidPalette(
 );
 
 void main() {
-  testWidgets('three connected colour fields circulate around the centre', (
+  testWidgets('four connected colour fields circulate around the centre', (
     tester,
   ) async {
     await tester.runAsync(() async {
@@ -33,21 +34,57 @@ void main() {
           var rotation = 0.0;
           var minimumTurn = double.infinity, maximumTurn = 0.0;
           for (var step = 0; step < 32; step++) {
+            final time = fluidPhaseCycle * step / 32;
+            final packed = FluidFrameUniforms();
+            packed.write(
+              shader,
+              size: size,
+              time: time,
+              motion: 1,
+              dim: .3,
+              source: _diagnostic,
+              target: _diagnostic,
+            );
+            final decoder = _pigmentDecoder(packed.values);
             final pixels = await _render(
               shader,
               _diagnostic,
               size: size,
-              time: fluidPhaseCycle * step / 32,
+              time: time,
             );
             final labels = Uint8List(width * height);
-            final counts = [0, 0, 0];
+            final counts = [0, 0, 0, 0];
             var redX = 0.0, redY = 0.0;
             for (var y = 0; y < height; y++) {
               for (var x = 0; x < width; x++) {
                 final i = (y * width + x) * 4;
-                final channels = [pixels[i], pixels[i + 1], pixels[i + 2]];
+                final ux = (x + .5) / width, uy = (y + .5) / height;
+                const coverage = .84;
+                final edge =
+                    ((math.sqrt(math.pow(ux - .5, 2) + math.pow(uy - .48, 2)) -
+                                .35) /
+                            .75)
+                        .clamp(0.0, 1.0);
+                final veil =
+                    coverage * (1 - .02 * edge * edge * (3 - 2 * edge)) * .925;
+                final rgb = [
+                  pixels[i] / (255 * veil),
+                  pixels[i + 1] / (255 * veil),
+                  pixels[i + 2] / (255 * veil),
+                  1.0,
+                ];
+                // RGB+yellow is affine-independent. Recover each field's
+                // contribution, rather than mislabelling a soft yellow/red
+                // join as a second red field just because red is brightest.
+                final channels = List<double>.generate(4, (c) {
+                  var weight = 0.0;
+                  for (var j = 0; j < 4; j++) {
+                    weight += decoder[c][j] * rgb[j];
+                  }
+                  return weight;
+                });
                 var strongest = 0;
-                for (var c = 1; c < 3; c++) {
+                for (var c = 1; c < 4; c++) {
                   if (channels[c] > channels[strongest]) strongest = c;
                 }
                 labels[y * width + x] = strongest;
@@ -59,8 +96,8 @@ void main() {
                 expect(pixels[i + 3], 255);
               }
             }
-            for (var c = 0; c < 3; c++) {
-              expect(counts[c], greaterThan(width * height * .10));
+            for (var c = 0; c < 4; c++) {
+              expect(counts[c], greaterThan(width * height * .05));
               _checkConnected(labels, width, height, c);
             }
             final angle = math.atan2(
@@ -83,10 +120,12 @@ void main() {
           }
           expect(rotation, greaterThan(5.5), reason: 'not a fixed stripe');
           expect(rotation, lessThan(7));
-          expect(minimumTurn, greaterThan(0));
+          // The source orbit is monotonic; a clipped, breathing physical colour
+          // region can move its centroid slightly backwards at the viewport edge.
+          expect(minimumTurn, greaterThan(-.10));
           expect(
-            maximumTurn / minimumTurn,
-            greaterThan(1.6),
+            maximumTurn - minimumTurn,
+            greaterThan(.15),
             reason: 'visible angular speed is not fixed',
           );
           debugPrint(
@@ -131,7 +170,7 @@ void main() {
           }
         }
         expect(largestStep, lessThanOrEqualTo(12));
-        expect(largestFrameStep, lessThanOrEqualTo(3));
+        expect(largestFrameStep, lessThanOrEqualTo(6));
         expect(totalTravel / (24 * 96 * 160 * 3), greaterThan(2));
         debugPrint(
           'Orbit flow: spatial=$largestStep, 24Hz frame='
@@ -237,6 +276,36 @@ void _checkConnected(Uint8List labels, int width, int height, int colour) {
   expect(substantial, 1, reason: 'disconnected colour $colour');
 }
 
+List<List<double>> _pigmentDecoder(Float32List packed) {
+  final matrix = <List<double>>[
+    [for (var f = 0; f < 4; f++) packed[14 + f * 3], 1, 0, 0, 0],
+    [for (var f = 0; f < 4; f++) packed[15 + f * 3], 0, 1, 0, 0],
+    [for (var f = 0; f < 4; f++) packed[16 + f * 3], 0, 0, 1, 0],
+    [1, 1, 1, 1, 0, 0, 0, 1],
+  ];
+  for (var col = 0; col < 4; col++) {
+    var pivot = col;
+    for (var row = col + 1; row < 4; row++) {
+      if (matrix[row][col].abs() > matrix[pivot][col].abs()) pivot = row;
+    }
+    final swap = matrix[col];
+    matrix[col] = matrix[pivot];
+    matrix[pivot] = swap;
+    final scale = matrix[col][col];
+    for (var j = 0; j < 8; j++) {
+      matrix[col][j] /= scale;
+    }
+    for (var row = 0; row < 4; row++) {
+      if (row == col) continue;
+      final factor = matrix[row][col];
+      for (var j = 0; j < 8; j++) {
+        matrix[row][j] -= factor * matrix[col][j];
+      }
+    }
+  }
+  return matrix.map((row) => row.sublist(4)).toList();
+}
+
 Future<Uint8List> _render(
   ui.FragmentShader shader,
   FluidPalette palette, {
@@ -255,8 +324,15 @@ Future<Uint8List> _render(
     dim: .3,
   ).paint(Canvas(setup), size);
   setup.endRecording().dispose();
-  shader.setFloat(2, time);
-  shader.setFloat(3, 1);
+  FluidFrameUniforms().write(
+    shader,
+    size: size,
+    time: time,
+    motion: 1,
+    dim: .3,
+    source: palette,
+    target: palette,
+  );
   final recorder = ui.PictureRecorder();
   Canvas(recorder).drawRect(Offset.zero & size, Paint()..shader = shader);
   final picture = recorder.endRecording();

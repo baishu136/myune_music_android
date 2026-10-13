@@ -20,12 +20,18 @@ class FluidBackgroundController extends ChangeNotifier {
   }
 
   static const paletteTransition = Duration(milliseconds: 650);
+  Duration _paletteTransitionDuration = paletteTransition;
+  Duration get paletteTransitionDuration => _paletteTransitionDuration;
 
   late final Ticker _ticker;
   FluidPalette _sourcePalette;
   FluidPalette _targetPalette;
   FluidBackgroundQuality _quality;
   Duration _lastElapsed = Duration.zero;
+  double _vsyncPeriodMicros = 1000000 / 60;
+  double _candidatePeriodMicros = 0;
+  int _stablePeriodSamples = 0;
+  int _paintVsyncs = 0;
   Duration _lastPaintElapsed = Duration.zero;
   double _paletteProgress = 1;
   double _motionScale = 0;
@@ -67,6 +73,10 @@ class FluidBackgroundController extends ChangeNotifier {
     if (_disposed || palette == _targetPalette) return;
     _sourcePalette = currentPalette;
     _targetPalette = alignFluidPaletteSlots(_sourcePalette, palette);
+    _paletteTransitionDuration = fluidPaletteTransitionDuration(
+      _sourcePalette,
+      _targetPalette,
+    );
     _paletteProgress = 0;
     _ensureScheduling();
     notifyListeners();
@@ -83,6 +93,8 @@ class FluidBackgroundController extends ChangeNotifier {
   }) {
     if (_disposed) return;
     final wasRunnable = _canSchedule;
+    final previousQuality = _quality;
+    final previousRefreshRate = _displayRefreshRate;
     _enabled = enabled;
     _visible = visible;
     _foreground = foreground;
@@ -92,6 +104,10 @@ class FluidBackgroundController extends ChangeNotifier {
     _displayRefreshRate = displayRefreshRate.isFinite && displayRefreshRate > 0
         ? displayRefreshRate.clamp(24.0, 120.0)
         : 60;
+    if (previousQuality != quality ||
+        previousRefreshRate != _displayRefreshRate) {
+      _resetCadence();
+    }
     if (!_canSchedule) {
       _ticker.stop();
       _lastElapsed = Duration.zero;
@@ -111,8 +127,32 @@ class FluidBackgroundController extends ChangeNotifier {
   void _ensureScheduling() {
     if (!_canSchedule || _ticker.isActive) return;
     _lastElapsed = Duration.zero;
-    _lastPaintElapsed = Duration.zero;
+    _resetCadence();
     _ticker.start();
+  }
+
+  void _resetCadence() {
+    _vsyncPeriodMicros = 1000000 / _displayRefreshRate;
+    _candidatePeriodMicros = 0;
+    _stablePeriodSamples = 0;
+    _paintVsyncs = 0;
+    _lastPaintElapsed = Duration.zero;
+  }
+
+  void _observeVsync(int micros) {
+    // Learn actual callback pacing, including a 60Hz surface on a 120Hz panel.
+    // One delayed frame cannot change the divisor: require eight stable samples.
+    if (micros < 7500 || micros > 45000) return;
+    if (_candidatePeriodMicros == 0 ||
+        (micros - _candidatePeriodMicros).abs() >
+            _candidatePeriodMicros * .08) {
+      _candidatePeriodMicros = micros.toDouble();
+      _stablePeriodSamples = 1;
+    } else {
+      _candidatePeriodMicros += (micros - _candidatePeriodMicros) * .2;
+      _stablePeriodSamples++;
+    }
+    if (_stablePeriodSamples >= 8) _vsyncPeriodMicros = _candidatePeriodMicros;
   }
 
   void _onTick(Duration elapsed) {
@@ -123,6 +163,7 @@ class FluidBackgroundController extends ChangeNotifier {
     final previous = _lastElapsed;
     _lastElapsed = elapsed;
     if (previous == Duration.zero) return;
+    _observeVsync((elapsed - previous).inMicroseconds);
     final frameSeconds = ((elapsed - previous).inMicroseconds / 1000000).clamp(
       0.0,
       .05,
@@ -143,16 +184,25 @@ class FluidBackgroundController extends ChangeNotifier {
     if (_paletteProgress < 1) {
       _paletteProgress =
           (_paletteProgress +
-                  frameSeconds / (paletteTransition.inMilliseconds / 1000))
+                  frameSeconds /
+                      (_paletteTransitionDuration.inMilliseconds / 1000))
               .clamp(0.0, 1.0);
     }
 
-    final fps = math.min(config.framesPerSecond, _displayRefreshRate);
-    // 5% tolerance avoids quantisation dropping every other 60/120Hz frame.
-    final paintIntervalMicros = 1000000 / fps * .95;
-    if ((elapsed - _lastPaintElapsed).inMicroseconds < paintIntervalMicros) {
+    // Choose uniform whole-vsync intervals within the quality budget. The
+    // tolerance accepts 59.94/119.88Hz without alternating frame intervals.
+    final divisor =
+        (1000000 / _vsyncPeriodMicros / config.framesPerSecond - .05)
+            .ceil()
+            .clamp(1, 6);
+    if (++_paintVsyncs < divisor) return;
+    // A surface can change pacing before the stable-sample estimator catches
+    // up. Keep the quality budget during that short relearning interval too.
+    if ((elapsed - _lastPaintElapsed).inMicroseconds <
+        1000000 / config.framesPerSecond * .95) {
       return;
     }
+    _paintVsyncs = 0;
     _lastPaintElapsed = elapsed;
     notifyListeners();
   }

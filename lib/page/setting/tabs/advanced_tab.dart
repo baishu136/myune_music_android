@@ -7,6 +7,7 @@ import '../settings_provider.dart';
 import '../../playlist/playlist_content_notifier.dart';
 import '../playlist_cleaner.dart';
 import '../folder_playlist_refresher.dart';
+import '../playlist_folder_manager.dart';
 import '../artist_separator.dart';
 import 'info_icon.dart';
 
@@ -36,6 +37,10 @@ class AdvancedTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('advanced'),
       children: [
+        Consumer<PlaylistContentNotifier>(
+          builder: (context, notifier, _) =>
+              PlaylistFolderManager(notifier: notifier),
+        ),
         // 清理无效歌曲
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),

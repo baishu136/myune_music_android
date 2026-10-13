@@ -62,7 +62,7 @@ void main() {
       final far = duration();
       expect(near, lessThan(far));
       expect(near.inMilliseconds, inInclusiveRange(280, 400));
-      expect(far.inMilliseconds, inInclusiveRange(700, 1000));
+      expect(far.inMilliseconds, inInclusiveRange(1200, 1400));
       debugPrint(
         'Adaptive cover fade: near=${near.inMilliseconds}ms, '
         'far=${far.inMilliseconds}ms',
@@ -75,7 +75,7 @@ void main() {
       await tester.pumpWidget(host(cover(0, 0, 255, alpha: 128)));
       await ready();
       final translucent = duration();
-      expect(translucent.inMilliseconds, inInclusiveRange(600, 700));
+      expect(translucent.inMilliseconds, inInclusiveRange(900, 1000));
       debugPrint(
         'Adaptive translucent cover fade: '
         '${translucent.inMilliseconds}ms',
@@ -137,7 +137,7 @@ void main() {
     await tester.pumpWidget(host(gold));
     await ready();
     expect(find.byType(ImageFiltered), findsNWidgets(2));
-    await tester.pump(const Duration(milliseconds: 900));
+    await tester.pump(const Duration(milliseconds: 1400));
     await ready();
     await tester.pumpAndSettle();
     expect(find.byType(ImageFiltered), findsOneWidget);

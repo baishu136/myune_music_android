@@ -61,7 +61,7 @@ class _PlaybarState extends State<Playbar> {
     // 顶级 Consumer，确保 Playbar 整体能响应 PlaylistContentNotifier 的变化
     return Consumer<PlaylistContentNotifier>(
       builder: (context, playlistNotifier, child) {
-        final Player player = playlistNotifier.mediaPlayer;
+        final PlayerApi player = playlistNotifier.mediaPlayer;
 
         return Column(
           mainAxisSize: MainAxisSize.min,
@@ -317,7 +317,7 @@ class _PortraitPlaybarState extends State<PortraitPlaybar> {
     // 顶级 Consumer，确保 Playbar 整体能响应 PlaylistContentNotifier 的变化
     return Consumer<PlaylistContentNotifier>(
       builder: (context, playlistNotifier, child) {
-        final Player player = playlistNotifier.mediaPlayer;
+        final PlayerApi player = playlistNotifier.mediaPlayer;
 
         return Padding(
           padding: EdgeInsets.fromLTRB(24 * scale, 0, 24 * scale, 12 * scale),

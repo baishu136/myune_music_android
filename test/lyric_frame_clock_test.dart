@@ -50,8 +50,7 @@ void main() {
       clock.addListener(listener);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 16));
-      expect(clock.elapsed, lessThan(frozen));
-      expect(clock.elapsed, const Duration(milliseconds: 16));
+      expect(clock.elapsed, frozen + const Duration(milliseconds: 16));
       await tester.pumpWidget(const SizedBox());
       expect(tester.binding.transientCallbackCount, 0);
     },

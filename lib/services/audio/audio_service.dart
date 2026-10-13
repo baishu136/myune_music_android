@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:mpv_audio_kit/mpv_audio_kit.dart';
+import 'music_effect_policy.dart';
 
 class _PlaybackConfiguration {
   const _PlaybackConfiguration({
@@ -79,7 +80,14 @@ class _PlaybackConfiguration {
 // }
 
 class AudioService {
-  final Player _player;
+  final PlayerApi _player;
+  StreamSubscription<AudioParams>? _sampleRateSubscription;
+  Future<void>? _equalizerDrain, _normalizationDrain;
+  List<double>? _desiredGains;
+  List<int>? _desiredFrequencies;
+  bool _smoothEqualizer = false;
+  bool _smoothNormalization = true;
+  double _desiredNormalization = 0;
   late final Future<void> _initialization;
   bool _disposed = false;
   int _trackLoadRevision = 0;
@@ -87,14 +95,16 @@ class AudioService {
   _PlaybackConfiguration? _appliedConfiguration;
   Future<void>? _configurationDrain;
 
-  Player get player => _player;
+  PlayerApi get player => _player;
 
-  AudioService()
-    : _player = Player(
-        // configuration: const PlayerConfiguration(autoPlay: false),
-        // Wait, default autoPlay is false anyway.
-        configuration: const PlayerConfiguration(),
-      ) {
+  AudioService({PlayerApi? player})
+    : _player =
+          player ??
+          Player(
+            // configuration: const PlayerConfiguration(autoPlay: false),
+            // Wait, default autoPlay is false anyway.
+            configuration: const PlayerConfiguration(),
+          ) {
     _initialization = _initialize();
   }
 
@@ -114,6 +124,24 @@ class AudioService {
       );
     }
     await _bestEffort(() => _player.setRawProperty('sub-auto', 'no'));
+    await _bestEffort(() => _player.setVolumeGain(0));
+    _sampleRateSubscription = _player.stream.audioParams.listen((params) {
+      final rate = params.sampleRate;
+      if (_disposed ||
+          rate == null ||
+          rate < 8000 ||
+          rate > 384000 ||
+          rate == _player.musicDsp.rate) {
+        return;
+      }
+      unawaited(
+        _player
+            .updateMusicDsp((dsp) => dsp.copyWith(sampleRate: rate))
+            .catchError((Object error) {
+              debugPrint('更新音效采样率失败: $error');
+            }),
+      );
+    });
   }
 
   Future<void> _bestEffort(Future<void> Function() operation) async {
@@ -135,6 +163,7 @@ class AudioService {
     if (_disposed) return;
     _disposed = true;
     await _initialization;
+    await _sampleRateSubscription?.cancel();
     try {
       await _player.stop();
     } finally {
@@ -338,40 +367,130 @@ class AudioService {
     _appliedConfiguration = null;
   }
 
-  bool _isEqualizerFlat(List<double> gains) {
-    return gains.every((gain) => gain.abs() < 0.05);
-  }
+  bool _isEqualizerFlat(List<double> gains) =>
+      gains.every((g) => g.abs() < .05);
 
   Future<void> applyEqualizer({
     required List<double> gains,
     required List<int> frequencies,
   }) async {
     await _ensureReady();
-    await _applyEqualizerToPlayer(gains: gains, frequencies: frequencies);
+    await _queueEqualizer(gains, frequencies, smooth: true);
     _appliedConfiguration = null;
   }
 
   Future<void> _applyEqualizerToPlayer({
     required List<double> gains,
     required List<int> frequencies,
+  }) => _queueEqualizer(gains, frequencies, smooth: false);
+
+  Future<void> _queueEqualizer(
+    List<double> gains,
+    List<int> frequencies, {
+    required bool smooth,
   }) async {
-    if (_isEqualizerFlat(gains)) {
-      // 只清除均衡器自定义滤镜，保留用户启用的其它音效。
-      await _player.updateAudioEffects(
-        (effects) => effects.copyWith(custom: []),
-      );
+    if (gains.length != frequencies.length ||
+        gains.isEmpty ||
+        gains.length > 32) {
+      throw ArgumentError('EQ band counts must match and be between 1 and 32');
+    }
+    _desiredGains = List<double>.unmodifiable(
+      gains.map((g) => g.isFinite ? g.clamp(-12.0, 12.0) : 0.0),
+    );
+    _desiredFrequencies = List<int>.unmodifiable(frequencies);
+    _smoothEqualizer = smooth;
+    final existing = _equalizerDrain;
+    if (existing != null) {
+      await existing;
       return;
     }
-
-    final filters = <String>[];
-    for (var i = 0; i < frequencies.length; i++) {
-      filters.add(
-        'equalizer=f=${frequencies[i]}:t=q:w=1:g=${gains[i].toStringAsFixed(1)}',
-      );
+    final drain = _drainEqualizer();
+    _equalizerDrain = drain;
+    try {
+      await drain;
+    } finally {
+      if (identical(_equalizerDrain, drain)) _equalizerDrain = null;
     }
+  }
 
+  Future<void> _drainEqualizer() async {
+    while (!_disposed) {
+      final target = _desiredGains!, frequencies = _desiredFrequencies!;
+      final previous = _player.musicDsp;
+      final animate =
+          _smoothEqualizer &&
+          _player.state.playing &&
+          previous.gains.length == target.length &&
+          listEquals(previous.frequencies, frequencies);
+      final next = animate
+          ? [
+              for (var i = 0; i < target.length; i++)
+                previous.gain(i) +
+                    (target[i] - previous.gain(i)).clamp(-1.0, 1.0),
+            ]
+          : target;
+      await _player.updateMusicDsp(
+        (dsp) => dsp.copyWith(
+          enabled: true,
+          gains: List<double>.unmodifiable(next),
+          frequencies: frequencies,
+          keepAlive:
+              animate &&
+              (dsp.keepAlive ||
+                  !_isEqualizerFlat(next) ||
+                  !_isEqualizerFlat(dsp.gains)),
+        ),
+      );
+      if (identical(target, _desiredGains) && listEquals(next, target)) return;
+      if (_disposed) return;
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
+  }
+
+  Future<void> applyEffect(String id, bool enabled, {String? model}) async {
+    await _ensureReady();
+    if (!_player.musicDsp.enabled) {
+      await _player.updateMusicDsp((dsp) => dsp.copyWith(enabled: true));
+    }
+    // Typed state is retained; the backend places it in the managed float graph.
     await _player.updateAudioEffects(
-      (e) => e.copyWith(custom: ['lavfi=[${filters.join(',')}]']),
+      (e) => musicEffectPolicy(e, id, enabled, model: model),
     );
+  }
+
+  Future<void> setNormalizationGain(double gainDb, {bool smooth = true}) async {
+    await _ensureReady();
+    _desiredNormalization = gainDb.isFinite ? gainDb.clamp(-24.0, 24.0) : 0;
+    _smoothNormalization = smooth;
+    final existing = _normalizationDrain;
+    if (existing != null) {
+      await existing;
+      return;
+    }
+    final drain = _drainNormalization();
+    _normalizationDrain = drain;
+    try {
+      await drain;
+    } finally {
+      if (identical(_normalizationDrain, drain)) _normalizationDrain = null;
+    }
+  }
+
+  Future<void> _drainNormalization() async {
+    while (!_disposed) {
+      final target = _desiredNormalization;
+      final previous = _player.musicDsp.outputDb;
+      final next = _smoothNormalization && _player.state.playing
+          ? previous + (target - previous).clamp(-1.0, 1.0)
+          : target;
+      await _player.updateMusicDsp(
+        (dsp) => dsp.copyWith(enabled: true, normalizationGainDb: next),
+      );
+      if (target == _desiredNormalization && (next - target).abs() < .00001) {
+        return;
+      }
+      if (_disposed) return;
+      await Future<void>.delayed(const Duration(milliseconds: 16));
+    }
   }
 }

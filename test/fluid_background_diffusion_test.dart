@@ -8,6 +8,7 @@ import 'package:myune_music/models/fluid_background_state.dart';
 import 'package:myune_music/services/artwork_palette_cache.dart';
 import 'package:myune_music/services/fluid_background_controller.dart';
 import 'package:myune_music/widgets/playback_background/fluid_background_painter.dart';
+import 'package:myune_music/widgets/playback_background/fluid_frame_uniforms.dart';
 
 const _colourful = FluidPalette(
   Color(0xFFEE628B),
@@ -146,7 +147,11 @@ void main() {
       controller.setPalette(warm);
       expect(controller.currentPalette, intermediate);
       expect(controller.targetPalette.third, warm.third);
-      for (var i = 0; i < 43; i++) {
+      for (
+        var i = 0;
+        i < controller.paletteTransitionDuration.inMilliseconds ~/ 16 + 4;
+        i++
+      ) {
         await tester.pump(const Duration(milliseconds: 16));
       }
       expect(controller.currentPalette.third, warm.third);
@@ -175,7 +180,7 @@ void main() {
       final hsl = HSLColor.fromColor(color);
       // Role pigments retain the cover's dark accents rather than forcing
       // every vivid-family colour up to .38 (362 fidelity change).
-      expect(hsl.lightness, inInclusiveRange(.215, .685));
+      expect(hsl.lightness, inInclusiveRange(.20, .59));
       expect(hsl.saturation, lessThanOrEqualTo(.96));
     }
   });
@@ -337,9 +342,9 @@ void main() {
             if (broad[i] > peak) peak = broad[i];
             if (broad[i] < distant) distant = broad[i];
           }
-          // All three fields move now; keep pigment contrast without assuming
+          // All four fields move now; keep pigment contrast without assuming
           // a fixed left-edge core or demanding a full-opacity plateau.
-          expect(peak, greaterThan(135));
+          expect(peak, greaterThan(120));
           expect(distant, lessThan(peak * .40));
           final dim0 = await _render(shader, _colourful, dim: 0);
           final dim6 = await _render(shader, _colourful, dim: .6);
@@ -378,7 +383,16 @@ void main() {
             phase: fluidPhaseCycle - .016,
           );
           final postWrap = await _render(shader, _colourful, phase: .016);
-          expect(_meanDifference(preWrap, postWrap), lessThan(.2));
+          // Physical-size fields have steeper local slopes. Bound the 32ms
+          // movement separately from an almost-zero-time seam discontinuity.
+          expect(_meanDifference(preWrap, postWrap), lessThan(.5));
+          final justBefore = await _render(
+            shader,
+            _colourful,
+            phase: fluidPhaseCycle - .00001,
+          );
+          final justAfter = await _render(shader, _colourful, phase: .00001);
+          expect(_meanDifference(justBefore, justAfter), lessThan(.01));
 
           // Stable-motion frames sampled at real display intervals are gradual;
           // over twenty seconds colours still move rather than appearing stuck.
@@ -424,28 +438,15 @@ Future<Uint8List> _render(
     ).paint(canvas, const Size(96, 160));
     controller.dispose();
   } else {
-    shader.setFloat(0, 96);
-    shader.setFloat(1, 160);
-    shader.setFloat(2, phase);
-    shader.setFloat(3, motion);
-    shader.setFloat(4, dim);
-    shader.setFloat(5, 1);
-    for (var i = 0; i < 4; i++) {
-      for (final start in [6, 22]) {
-        shader.setFloat(start + i * 4, palette[i].r);
-        shader.setFloat(start + i * 4 + 1, palette[i].g);
-        shader.setFloat(start + i * 4 + 2, palette[i].b);
-        shader.setFloat(start + i * 4 + 3, 1);
-      }
-    }
-    for (final start in [38, 42]) {
-      shader.setFloat(start, palette.baseColor.r);
-      shader.setFloat(start + 1, palette.baseColor.g);
-      shader.setFloat(start + 2, palette.baseColor.b);
-      shader.setFloat(start + 3, 1);
-    }
-    shader.setFloat(46, palette.glowStrength);
-    shader.setFloat(47, palette.glowStrength);
+    FluidFrameUniforms().write(
+      shader,
+      size: const Size(96, 160),
+      time: phase,
+      motion: motion,
+      dim: dim,
+      source: palette,
+      target: palette,
+    );
     canvas.drawRect(
       const Rect.fromLTWH(0, 0, 96, 160),
       Paint()..shader = shader,

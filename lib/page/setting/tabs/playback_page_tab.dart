@@ -32,7 +32,43 @@ class PlaybackPageTab extends StatelessWidget {
 }
 
 List<Widget> playbackPageSettingTiles(BuildContext context) {
-  return [if (Platform.isAndroid) const DesktopLyricsSettingsEntry()];
+  return [
+    const PlaybackCoverSizeSetting(),
+    if (Platform.isAndroid) const DesktopLyricsSettingsEntry(),
+  ];
+}
+
+class PlaybackCoverSizeSetting extends StatelessWidget {
+  const PlaybackCoverSizeSetting({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final scale = context.select<SettingsProvider, double>(
+      (s) => s.playbackCoverScale,
+    );
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('播放页封面大小', style: Theme.of(context).textTheme.titleMedium),
+          const SizedBox(height: 8),
+          SegmentedButton<double>(
+            key: const ValueKey('playback-cover-size'),
+            segments: const [
+              ButtonSegment(value: 1, label: Text('100%')),
+              ButtonSegment(value: .9, label: Text('90%')),
+              ButtonSegment(value: .8, label: Text('80%')),
+            ],
+            selected: {scale},
+            onSelectionChanged: (values) => context
+                .read<SettingsProvider>()
+                .setPlaybackCoverScale(values.first),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class DesktopLyricsSettingsEntry extends StatelessWidget {

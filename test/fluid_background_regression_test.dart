@@ -8,6 +8,7 @@ import 'package:myune_music/models/fluid_background_state.dart';
 import 'package:myune_music/services/artwork_palette_cache.dart';
 import 'package:myune_music/services/fluid_background_controller.dart';
 import 'package:myune_music/widgets/playback_background/fluid_background_painter.dart';
+import 'package:myune_music/widgets/playback_background/fluid_frame_uniforms.dart';
 
 void main() {
   const pinkGreen = FluidPalette(
@@ -118,38 +119,43 @@ void main() {
     );
   });
 
-  testWidgets('650ms blend and rapid retarget preserve the displayed colour', (
-    tester,
-  ) async {
-    final controller = FluidBackgroundController(
-      vsync: const TestVSync(),
-      initialPalette: FluidPalette.fallback(Colors.blue),
-    );
-    addTearDown(controller.dispose);
-    activate(controller);
-    controller.setPalette(pinkGreen);
-    for (var i = 0; i < 16; i++) {
-      await tester.pump(const Duration(milliseconds: 16));
-    }
-    expect(controller.paletteProgress, inExclusiveRange(.2, .5));
-    final displayed = controller.currentPalette;
-    final expected = FluidPalette.lerp(
-      controller.sourcePalette,
-      controller.targetPalette,
-      fluidPaletteBlend(controller.paletteProgress),
-    );
-    expect(displayed, expected);
-    controller.setPalette(FluidPalette.fallback(Colors.orange));
-    expect(controller.sourcePalette, displayed);
-    expect(controller.currentPalette, displayed);
-    for (var i = 0; i < 43; i++) {
-      await tester.pump(const Duration(milliseconds: 16));
-    }
-    expect(controller.paletteProgress, 1);
-    expect(controller.currentPalette, controller.targetPalette);
-    activate(controller, visible: false);
-    await tester.pump();
-  });
+  testWidgets(
+    'adaptive blend and rapid retarget preserve the displayed colour',
+    (tester) async {
+      final controller = FluidBackgroundController(
+        vsync: const TestVSync(),
+        initialPalette: FluidPalette.fallback(Colors.blue),
+      );
+      addTearDown(controller.dispose);
+      activate(controller);
+      controller.setPalette(pinkGreen);
+      for (var i = 0; i < 16; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(controller.paletteProgress, inExclusiveRange(.2, .5));
+      final displayed = controller.currentPalette;
+      final expected = FluidPalette.lerp(
+        controller.sourcePalette,
+        controller.targetPalette,
+        fluidPaletteBlend(controller.paletteProgress),
+      );
+      expect(displayed, expected);
+      controller.setPalette(FluidPalette.fallback(Colors.orange));
+      expect(controller.sourcePalette, displayed);
+      expect(controller.currentPalette, displayed);
+      for (
+        var i = 0;
+        i < controller.paletteTransitionDuration.inMilliseconds ~/ 16 + 4;
+        i++
+      ) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(controller.paletteProgress, 1);
+      expect(controller.currentPalette, controller.targetPalette);
+      activate(controller, visible: false);
+      await tester.pump();
+    },
+  );
 
   for (final hz in [60, 90, 120]) {
     testWidgets(
@@ -240,28 +246,15 @@ void main() {
           initialEffectiveTime: phase,
         );
         // Enable a stable non-zero warp envelope, without relying on wall time.
-        shader.setFloat(0, 96);
-        shader.setFloat(1, 160);
-        shader.setFloat(2, phase);
-        shader.setFloat(3, 1);
-        shader.setFloat(4, .3);
-        shader.setFloat(5, 1);
-        for (var i = 0; i < 4; i++) {
-          for (final start in [6, 22]) {
-            shader.setFloat(start + i * 4, palette[i].r);
-            shader.setFloat(start + i * 4 + 1, palette[i].g);
-            shader.setFloat(start + i * 4 + 2, palette[i].b);
-            shader.setFloat(start + i * 4 + 3, 1);
-          }
-        }
-        for (final start in [38, 42]) {
-          shader.setFloat(start, palette.baseColor.r);
-          shader.setFloat(start + 1, palette.baseColor.g);
-          shader.setFloat(start + 2, palette.baseColor.b);
-          shader.setFloat(start + 3, 1);
-        }
-        shader.setFloat(46, palette.glowStrength);
-        shader.setFloat(47, palette.glowStrength);
+        FluidFrameUniforms().write(
+          shader,
+          size: const Size(96, 160),
+          time: phase,
+          motion: 1,
+          dim: .3,
+          source: palette,
+          target: palette,
+        );
         final canvas = Canvas(recorder);
         canvas.drawRect(
           const Rect.fromLTWH(0, 0, 96, 160),

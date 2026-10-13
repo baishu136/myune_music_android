@@ -1,12 +1,17 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/scheduler.dart';
+import 'package:flutter/widgets.dart';
 
 /// One vsync source for list motion and active karaoke clocks. It sleeps when
 /// neither scrolling nor subscribed playback needs frames; no frame snapshots
 /// or timer pulses are allocated here. Exits keep their wall-time controller.
-class LyricFrameClock extends ChangeNotifier {
+class LyricFrameClock extends ChangeNotifier with WidgetsBindingObserver {
   LyricFrameClock(TickerProvider vsync, this.onMotionFrame) {
     _ticker = vsync.createTicker(_tick);
+    _foreground =
+        WidgetsBinding.instance.lifecycleState == null ||
+        WidgetsBinding.instance.lifecycleState == AppLifecycleState.resumed;
+    available.value = _foreground;
+    WidgetsBinding.instance.addObserver(this);
   }
 
   final void Function(Duration) onMotionFrame;
@@ -16,14 +21,31 @@ class LyricFrameClock extends ChangeNotifier {
   final visualMoving = ValueNotifier(false);
   int _elasticRows = 0;
   Duration elapsed = Duration.zero;
+  Duration _epochOrigin = Duration.zero;
+  bool _visible = true;
+  bool _foreground = true;
+  final available = ValueNotifier(true);
   bool _disposed = false;
 
   void _tick(Duration stamp) {
-    elapsed = stamp;
-    if (moving.value) onMotionFrame(stamp);
+    elapsed = _epochOrigin + stamp;
+    if (moving.value) onMotionFrame(elapsed);
     notifyListeners();
     // Removal during notifyListeners is compacted only after it returns.
     // Re-check here so the last completed row spring really lets vsync sleep.
+    _sync();
+  }
+
+  void setEnabled(bool enabled) {
+    _visible = enabled;
+    available.value = _visible && _foreground;
+    _sync();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    _foreground = state == AppLifecycleState.resumed;
+    available.value = _visible && _foreground;
     _sync();
   }
 
@@ -62,9 +84,11 @@ class LyricFrameClock extends ChangeNotifier {
 
   void _sync() {
     if (_disposed) return;
-    if (moving.value || hasListeners) {
+    if (available.value && (moving.value || hasListeners)) {
       if (!_ticker.isActive) {
-        elapsed = Duration.zero;
+        // A resumed ticker has a new raw epoch. Consumers keep one monotonic
+        // elapsed timeline, excluding hidden/background wall time.
+        _epochOrigin = elapsed;
         _ticker.start();
       }
     } else if (_ticker.isActive) {
@@ -75,9 +99,11 @@ class LyricFrameClock extends ChangeNotifier {
   @override
   void dispose() {
     _disposed = true;
+    WidgetsBinding.instance.removeObserver(this);
     _ticker.dispose();
     moving.dispose();
     visualMoving.dispose();
+    available.dispose();
     super.dispose();
   }
 }

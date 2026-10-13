@@ -83,10 +83,11 @@ mixin _DispatchModule on _PlayerBase {
           // the same hazard but no dedicated event; the next file-load
           // or bundle write heals it.)
           if (_afStringStale) {
-            _afStringStale = false;
-            // Fire-and-forget: the rewrite is best-effort resync; the rc
-            // has no consumer here and the event handler must not suspend.
-            unawaited(_propRc('af', _state.audioEffects.toAfChain()));
+            // A rejected or superseded reply must leave recovery armed.
+            unawaited(_syncAfChain(_effectiveAfChain(_state.audioEffects))
+                .catchError((Object _) {
+              _afStringStale = true;
+            }));
           }
           _applyPolledPosition(timePos);
           // mpv exposes -1 / -2 etc. as "no chapter active"; surface as
@@ -259,8 +260,7 @@ mixin _DispatchModule on _PlayerBase {
     // onChange fires, so a hook that reads + mutates `_state` (the
     // idle-active / eof-reached hooks settling the transport) builds on the
     // reduced state and isn't clobbered by a late assignment here.
-    final next =
-        _registry.dispatch(name, raw, _state, commit: _commitState);
+    final next = _registry.dispatch(name, raw, _state, commit: _commitState);
     if (next != null) {
       return;
     }
