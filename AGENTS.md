@@ -2,7 +2,9 @@
 
 ## GitHub发布补充（2026-10-13）
 
-用户最新明确授权“发布至GitHub（含release）”：本次可以提交、正常推送main并创建Android387标签与正式Release，覆盖下方修改轮次的旧“不提交/推送/Release”限制。使用已经核验的387 APK和758项构建源码快照，不改软件、不增版本、不重建APK、不换签名、不做真机测试。仓库另有发布交接文档`docs/github_release_android_387.md`；远端发布结果及附件校验见该文档与`F:/AGENT/1/test-artifacts/github-release-387-20261013/`。以下387信息为构建时历史快照，旧HEAD与未推送状态不代表发布完成后的远端状态。
+用户明确授权“发布至GitHub（含release）”，本次已提交并正常推送main，创建Android387注释标签和正式Release，覆盖下方修改轮次的旧“不提交/推送/Release”限制。发布源码提交为`9c4bdf73ebcb4433523c23b9a0a049f1bd072beb`，包含此前375–377提交与378–387最终成果；main另包含发布交接记录。Release：`https://github.com/baishu136/myune_music_android/releases/tag/v1.0.0-android.387`，id411547350，已公开并设为Latest；APK、完整源码ZIP和SHA256SUMS三个附件的GitHub服务器SHA256均与本地一致。
+
+使用已经核验的387 APK和758项构建源码快照，没有改软件、增版本、重建APK、换签名或真机测试。仓库另有发布交接文档`docs/github_release_android_387.md`；远端结果及附件校验见该文档与`F:/AGENT/1/test-artifacts/github-release-387-20261013/`。以下387信息为构建时历史快照，旧HEAD和未推送状态不代表当前状态。每晚定时源码同步继续默认不创建Release；本次是用户单独授权的发布，不扩展为后续自动发布权限。
 
 更新日期：2026-10-13（Asia/Shanghai）。当前387：音乐音效浮点/增益余量/末端峰值保护/实时EQ与异步恢复，封面100%/90%/80%，10%柔和小范围白外光等完全入场后720ms亮起。386背景及弹性歌词、385网络逐字和384标题退场保持；375–377本地提交3665d5a未推送，378–387未提交，保留全部成果。
 

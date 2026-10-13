@@ -21,4 +21,11 @@
 
 677项Flutter测试通过、1项既有跳过，静态分析无问题、工具测试6项，610项验证文件的内容保持。APK版本/签名/压缩原生库/16KiB对齐/字体/CRC已核验。网络逐字并非每首歌都具备词时间；本轮未做真机测试，离线音频和组件软件验证不能代替真机听感或GPU数据。
 
-发布记录与远端附件校验保存在`F:/AGENT/1/test-artifacts/github-release-387-20261013/`。Release先在草稿中上传并核对附件，再正式公开；最终链接与提交由完成记录补充。
+## 发布完成
+
+- [正式Release](https://github.com/baishu136/myune_music_android/releases/tag/v1.0.0-android.387)已公开并设为Latest，id411547350，非预发布。
+- [源码提交9c4bdf7](https://github.com/baishu136/myune_music_android/commit/9c4bdf73ebcb4433523c23b9a0a049f1bd072beb)已正常推送main；父提交3665d5a及此前历史保持。标签为注释标签，对象6d06b7002924382b06e705531eda899e4d11a219，指向该源码提交。main另外记录本次发布完成的交接文档。
+- Release先以草稿上传，再核对三个附件的名称、大小、uploaded状态及GitHub服务器SHA256，全部匹配后公开，并重新验证公开附件。
+- APK附件id636661226，32,248,924 bytes；源码附件id636661223，44,096,589 bytes；SHA256SUMS附件id636661224，226 bytes。
+- 发布记录与远端核验保存在`F:/AGENT/1/test-artifacts/github-release-387-20261013/`；本次只使用当前已登录GitHub CLI凭据通道，没有输出令牌，remote保持原SSH地址，临时HTTPS通道正常非强制推送。
+- 原始APK/源码ZIP及387构建留档保持不变；源码包里的AGENTS是构建时快照，仓库的发布交接是后续文档。定时源码同步仍默认不创建Release。
