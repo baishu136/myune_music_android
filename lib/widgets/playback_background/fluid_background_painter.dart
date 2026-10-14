@@ -33,6 +33,7 @@ class FluidBackgroundPainter extends CustomPainter {
       source: controller.sourcePalette,
       target: controller.targetPalette,
       paletteProgress: controller.paletteProgress,
+      stagedFields: controller.stagedFields,
     );
     if (_paintSize != size) {
       _paintSize = size;

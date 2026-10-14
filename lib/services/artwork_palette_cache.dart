@@ -95,7 +95,11 @@ class ArtworkPaletteCache {
         _sampleArtwork,
         rgba.buffer.asUint8List(rgba.offsetInBytes, rgba.lengthInBytes),
       );
-      return buildWeightedFluidPalette(samples, fallbackSeed: fallbackSeed);
+      return buildWeightedFluidPalette(
+        samples.colors,
+        fallbackSeed: fallbackSeed,
+        artworkLightness: samples.lightness,
+      );
     } catch (_) {
       return FluidPalette.fallback(fallbackSeed);
     } finally {
@@ -113,13 +117,19 @@ class ArtworkPaletteCache {
 
 // A small 4-bit/channel histogram on a worker isolate. Alpha padding does not
 // become fake black; proportions refer to all visible pixels, not just top bins.
-List<FluidColorSample> _sampleArtwork(Uint8List rgba) {
+({List<FluidColorSample> colors, double lightness}) _sampleArtwork(
+  Uint8List rgba,
+) {
   final bins = Int32List(4096 * 4);
   var pixels = 0;
+  var lightnessSum = 0.0;
   for (var i = 0; i + 3 < rgba.length; i += 4) {
     if (rgba[i + 3] < 128) continue;
     final r = rgba[i], g = rgba[i + 1], b = rgba[i + 2];
     pixels++;
+    final maximum = r > g ? (r > b ? r : b) : (g > b ? g : b);
+    final minimum = r < g ? (r < b ? r : b) : (g < b ? g : b);
+    lightnessSum += (maximum + minimum) / 510;
     // Reject paper/achromatic highlights BEFORE quantization. Their area still
     // counts in occupancy, so a tiny warm speck does not become a major accent.
     if (_isAchromaticHighlight(r / 255, g / 255, b / 255)) continue;
@@ -129,14 +139,19 @@ List<FluidColorSample> _sampleArtwork(Uint8List rgba) {
     bins[slot + 2] += b;
     bins[slot + 3]++;
   }
-  if (pixels == 0) return const [];
+  if (pixels == 0) return (colors: const <FluidColorSample>[], lightness: 0);
   final occupied = <int>[];
   for (var slot = 0; slot < bins.length; slot += 4) {
     if (bins[slot + 3] > 0) occupied.add(slot);
   }
   // An entirely white image is real achromatic artwork, not missing artwork.
   // Keep a neutral fallback rather than importing the app's coloured seed.
-  if (occupied.isEmpty) return const [FluidColorSample(Color(0xFF616161), 1)];
+  if (occupied.isEmpty) {
+    return (
+      colors: const [FluidColorSample(Color(0xFF616161), 1)],
+      lightness: lightnessSum / pixels,
+    );
+  }
   occupied.sort((a, b) => bins[b + 3].compareTo(bins[a + 3]));
   // A warm region can be spread across many small histogram bins. Pool only
   // real 20–55° pixels on the worker so its total area survives top-32 pruning;
@@ -219,7 +234,7 @@ List<FluidColorSample> _sampleArtwork(Uint8List rgba) {
     }
     samples.sort((a, b) => b.proportion.compareTo(a.proportion));
   }
-  return samples;
+  return (colors: samples, lightness: lightnessSum / pixels);
 }
 
 const _significantWarmShare = .03;
@@ -267,8 +282,21 @@ FluidPalette buildFluidPalette(
 FluidPalette buildWeightedFluidPalette(
   List<FluidColorSample> extracted, {
   required Color fallbackSeed,
+  double? artworkLightness,
 }) {
   if (extracted.isEmpty) return FluidPalette.fallback(fallbackSeed);
+  final totalShare = extracted.fold<double>(0, (sum, s) => sum + s.proportion);
+  final visibleLightness =
+      artworkLightness ??
+      (totalShare > 0
+          ? extracted.fold<double>(
+                  0,
+                  (sum, s) =>
+                      sum +
+                      HSLColor.fromColor(s.color).lightness * s.proportion,
+                ) /
+                totalShare
+          : 0);
   final hasPigment = extracted.any((sample) {
     final hsl = HSLColor.fromColor(sample.color);
     return sample.proportion >= .03 &&
@@ -281,16 +309,30 @@ FluidPalette buildWeightedFluidPalette(
         (s) =>
             !hasPigment ||
             HSLColor.fromColor(s.color).saturation >= .12 ||
-            HSLColor.fromColor(s.color).lightness <= .55,
+            HSLColor.fromColor(s.color).lightness <= .55 ||
+            (visibleLightness >= .55 &&
+                HSLColor.fromColor(s.color).lightness <= .80),
       )
       .toList(growable: false);
   if (pigments.isEmpty) {
-    return buildWeightedFluidPalette(const [
-      FluidColorSample(Color(0xFF616161), 1),
-    ], fallbackSeed: fallbackSeed);
+    return buildWeightedFluidPalette(
+      const [FluidColorSample(Color(0xFF616161), 1)],
+      fallbackSeed: fallbackSeed,
+      artworkLightness: visibleLightness,
+    );
   }
   extracted = pigments;
-  final profile = _classifyArtwork(extracted);
+  final profile = _classifyArtwork(extracted, bright: visibleLightness >= .55);
+  if (profile.bright && !profile.monochrome) {
+    final chromatic = extracted
+        .where(
+          (s) =>
+              HSLColor.fromColor(s.color).saturation >= .12 ||
+              HSLColor.fromColor(s.color).lightness >= .22,
+        )
+        .toList();
+    if (chromatic.isNotEmpty) extracted = chromatic;
+  }
   final selected = _selectDominantFluidColors(
     extracted.map((sample) => sample.color).toList(growable: false),
     fallbackSeed: fallbackSeed,
@@ -368,12 +410,30 @@ FluidPalette buildWeightedFluidPalette(
     }
   }
   final baseHsl = HSLColor.fromColor(darkest);
-  final canvasHsl = profile.dark ? baseHsl : HSLColor.fromColor(retained[1]);
+  final canvasHsl = profile.bright && !profile.vivid
+      ? HSLColor.fromColor(
+          _normalizeFluidColor(
+            extracted
+                .reduce((a, b) => a.proportion >= b.proportion ? a : b)
+                .color,
+            profile,
+          ),
+        )
+      : profile.dark
+      ? baseHsl
+      : HSLColor.fromColor(retained[1]);
   final base = profile.monochrome
-      ? HSLColor.fromAHSL(1, 0, 0, profile.dark ? 0 : .045).toColor()
+      ? HSLColor.fromAHSL(
+          1,
+          0,
+          0,
+          profile.bright ? .32 : (profile.dark ? 0 : .045),
+        ).toColor()
       : canvasHsl
             .withLightness(
-              profile.dark
+              profile.bright
+                  ? (canvasHsl.lightness * .60).clamp(.28, .36)
+                  : profile.dark
                   ? (canvasHsl.lightness * .08).clamp(0.0, .012)
                   : (baseHsl.lightness * .32).clamp(.01, .14),
             )
@@ -387,10 +447,106 @@ FluidPalette buildWeightedFluidPalette(
     warmAccentLocked: warm != null,
     vividAccentLocked: vividAccentLocked,
     layeredRolesLocked: true,
+    motionColors: _buildMotionColors(
+      retained,
+      extracted,
+      profile,
+      fallbackSeed,
+    ),
     glowStrength: profile.dark
         ? (profile.monochrome ? .28 : (profile.vivid ? .70 : .55))
         // Legacy snapshot/uniform metadata, not additive light energy.
         : (profile.monochrome ? .30 : .50),
+  );
+}
+
+List<Color> _buildMotionColors(
+  List<Color> retained,
+  List<FluidColorSample> samples,
+  _FluidArtworkProfile profile,
+  Color fallbackSeed,
+) {
+  final pool = <Color>[retained[1], retained[2], retained[3], retained[0]];
+  if (profile.monochrome) {
+    final lightness = HSLColor.fromColor(retained[1]).lightness;
+    final minimum = profile.bright ? .42 : 0.0;
+    final maximum = profile.bright ? .52 : .38;
+    final low = (lightness - .035).clamp(minimum, maximum - .07);
+    for (var i = 0; i < fluidMotionColourCount; i++) {
+      final c = HSLColor.fromAHSL(
+        1,
+        0,
+        0,
+        lightness == 0 ? 0 : low + i * .01,
+      ).toColor();
+      if (i < 4) {
+        pool[i] = c;
+      } else {
+        pool.add(c);
+      }
+    }
+  }
+  final extras = _selectDominantFluidColors(
+    samples.where((s) => s.proportion >= .015).map((s) => s.color).toList(),
+    fallbackSeed: fallbackSeed,
+    profile: profile,
+    maximumColors: fluidMotionColourCount,
+  );
+  for (final c in extras) {
+    if (pool.length == fluidMotionColourCount) break;
+    if (pool.every((other) => _colorDistance(c, other) > .045)) pool.add(c);
+  }
+  var step = 0;
+  while (pool.length < fluidMotionColourCount) {
+    final hsl = HSLColor.fromColor(pool[step % 4]);
+    final delta = step.isEven ? .035 : -.035;
+    pool.add(
+      hsl
+          .withLightness(
+            (hsl.lightness + delta).clamp(
+              profile.bright ? (hsl.saturation < .12 ? .40 : .28) : 0.0,
+              profile.dark ? .38 : .60,
+            ),
+          )
+          .toColor(),
+    );
+    step++;
+  }
+  if (!profile.monochrome && pool.toSet().length < 6) {
+    final pigment = retained.reduce(
+      (a, b) =>
+          HSLColor.fromColor(a).saturation >= HSLColor.fromColor(b).saturation
+          ? a
+          : b,
+    );
+    final hsl = HSLColor.fromColor(pigment);
+    var attempt = 0;
+    for (var i = 1; i < pool.length && pool.toSet().length < 6; i++) {
+      if (!pool.take(i).contains(pool[i])) continue;
+      Color candidate;
+      do {
+        attempt++;
+        candidate = hsl
+            .withLightness(
+              (hsl.lightness + attempt * .0125).clamp(
+                profile.bright ? .28 : 0.0,
+                profile.dark ? .38 : .60,
+              ),
+            )
+            .toColor();
+      } while (pool.contains(candidate) && attempt < 48);
+      if (!pool.contains(candidate)) pool[i] = candidate;
+    }
+  }
+  // Each field starts from its assigned pigment and visits the same cover pool
+  // in a different order. No spatial rainbow or per-frame colour extraction.
+  const path = [0, 4, 1, 5, 2, 6, 3, 7];
+  return List<Color>.unmodifiable(
+    List.generate(4 * fluidMotionColourCount, (i) {
+      final field = i ~/ fluidMotionColourCount,
+          variant = i % fluidMotionColourCount;
+      return pool[path[(variant + field * 2) % fluidMotionColourCount]];
+    }),
   );
 }
 
@@ -520,14 +676,19 @@ class _FluidArtworkProfile {
     required this.vivid,
     required this.dark,
     required this.monochrome,
+    this.bright = false,
   });
 
   final bool vivid;
   final bool dark;
   final bool monochrome;
+  final bool bright;
 }
 
-_FluidArtworkProfile _classifyArtwork(List<FluidColorSample> samples) {
+_FluidArtworkProfile _classifyArtwork(
+  List<FluidColorSample> samples, {
+  bool bright = false,
+}) {
   var total = 0.0;
   var saturation = 0.0;
   var lightness = 0.0;
@@ -555,8 +716,9 @@ _FluidArtworkProfile _classifyArtwork(List<FluidColorSample> samples) {
   }
   return _FluidArtworkProfile(
     vivid: saturation / total >= .34 || colourfulShare / total >= .42,
-    dark: lightness / total < .28,
+    dark: !bright && lightness / total < .28,
     monochrome: !chromatic,
+    bright: bright,
   );
 }
 
@@ -564,16 +726,28 @@ Color _normalizeFluidColor(Color color, _FluidArtworkProfile profile) {
   final hsl = HSLColor.fromColor(color);
   // A genuinely black cover region is meaningful visual information. Keep it
   // black instead of coercing every artwork into a coloured grey background.
-  if (hsl.lightness < .018 && hsl.saturation < .08) return Colors.black;
+  if (!profile.bright && hsl.lightness < .018 && hsl.saturation < .08) {
+    return Colors.black;
+  }
   if (profile.monochrome) {
     return hsl
         .withSaturation(0)
-        .withLightness(hsl.lightness.clamp(0.0, .38))
+        .withLightness(
+          hsl.lightness.clamp(
+            profile.bright ? .42 : 0.0,
+            profile.bright ? .52 : .38,
+          ),
+        )
         .toColor();
   }
   // Never brighten a shadow to the vivid-cover .38 floor. It removes actual
   // dark regions and makes pale auxiliary bins look like white light sources.
-  final normalizedLightness = profile.dark
+  final normalizedLightness = profile.bright
+      ? (hsl.lightness * .94).clamp(
+          hsl.saturation < .12 ? .42 : .28,
+          profile.vivid ? .58 : .52,
+        )
+      : profile.dark
       ? hsl.lightness.clamp(0.0, .38)
       : (hsl.lightness < .28 ? hsl.lightness : hsl.lightness * .90).clamp(
           0.0,
@@ -582,7 +756,7 @@ Color _normalizeFluidColor(Color color, _FluidArtworkProfile profile) {
   final normalizedSaturation = hsl.saturation < .20
       ? hsl.saturation
       : profile.vivid
-      ? (hsl.saturation * 1.08).clamp(0.0, .94)
+      ? (hsl.saturation * 1.10).clamp(0.0, .94)
       : (hsl.saturation * 1.06).clamp(0.0, .65);
   return hsl
       .withSaturation(normalizedSaturation)
@@ -683,7 +857,10 @@ List<Color> _selectDominantFluidColors(
     selected.add(
       source
           .withLightness(
-            (source.lightness * (1 - .12 * selected.length)).clamp(0.0, 1.0),
+            (source.lightness * (1 - .12 * selected.length)).clamp(
+              profile.bright ? (source.saturation < .12 ? .42 : .28) : 0.0,
+              1.0,
+            ),
           )
           .toColor(),
     );

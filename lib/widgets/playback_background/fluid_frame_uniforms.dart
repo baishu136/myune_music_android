@@ -26,8 +26,9 @@ class FluidFrameUniforms {
   final _source = Float64List(15);
   final _target = Float64List(15);
   final _mixed = Float64List(15);
-  final _sourceVariants = Float64List(48);
-  final _targetVariants = Float64List(48);
+  final _sourceVariants = Float64List(4 * fluidMotionColourCount * 3);
+  final _targetVariants = Float64List(4 * fluidMotionColourCount * 3);
+  final _stagedFields = List<bool>.filled(4, false);
   FluidPalette? _sourcePalette, _targetPalette;
   ui.FragmentShader? _lastShader;
 
@@ -49,11 +50,19 @@ class FluidFrameUniforms {
     required FluidPalette source,
     required FluidPalette target,
     double paletteProgress = 1,
+    List<bool>? stagedFields,
   }) {
+    final paletteChanged = _sourcePalette != source || _targetPalette != target;
     if (_sourcePalette != source) {
       _sourcePalette = source;
       _cachePalette(_source, source);
       cacheFluidColourVariants(_sourceVariants, source);
+    }
+    if (paletteChanged || stagedFields != null) {
+      for (var field = 0; field < 4; field++) {
+        _stagedFields[field] =
+            stagedFields?[field] ?? source.stagesFieldTo(target, field);
+      }
     }
     if (_targetPalette != target) {
       _targetPalette = target;
@@ -65,13 +74,16 @@ class FluidFrameUniforms {
       _mixed[i] = _source[i] + (_target[i] - _source[i]) * blend;
     }
     final orbit = time * fluidShaderTimeScale;
+    final shapePhase = orbit * 1.6;
     final phase =
         orbit + .28 * math.sin(orbit) + .06 * math.sin(2 * orbit + 1.7);
     final phase2 =
         orbit + .26 * math.sin(orbit + 2.1) + .04 * math.sin(2 * orbit + .8);
     final amplitude = motion.clamp(0.0, 1.0);
-    final hubX = .5 + amplitude * .085 * math.sin(2 * orbit + .9);
-    final hubY = .5 + amplitude * .075 * math.cos(3 * orbit - .4);
+    final hubX = .5 + amplitude * .11 * math.sin(2 * orbit + .9);
+    final hubY = .5 + amplitude * .10 * math.cos(3 * orbit - .4);
+    final shortSide = math.min(size.width, size.height);
+    final radiusBase = math.min(.52, size.longestSide / shortSide / (3 * 1.16));
     values[0] = size.width;
     values[1] = size.height;
     values[2] = amplitude;
@@ -82,41 +94,47 @@ class FluidFrameUniforms {
       final offset = field * math.pi / 2;
       final angle = fluidOrbitAngle(orbit, field, amplitude);
       final radius =
-          .39 +
+          .46 +
           amplitude *
-              (.16 * math.sin(orbit + offset + .7) +
-                  .09 * math.sin(2 * orbit - offset));
+              (.20 * math.sin(orbit + offset + .7) +
+                  .12 * math.sin(2 * orbit - offset));
       values[6 + field * 2] = hubX + radius * math.cos(angle);
       values[7 + field * 2] = hubY + radius * math.sin(angle) * 1.08;
       final radiusX =
-          .44 * (1 + .12 * amplitude * math.sin(orbit + offset + .8));
+          radiusBase *
+          (1 + .16 * amplitude * math.sin(shapePhase + offset + .8));
       final radiusY =
-          .44 * (1 + .12 * amplitude * math.sin(2 * orbit - offset + 1.2));
-      final rotation = .35 * amplitude * math.sin(orbit - offset + .4);
+          radiusBase *
+          (1 + .16 * amplitude * math.sin(2 * shapePhase - offset + 1.2));
+      final rotation = .35 * amplitude * math.sin(shapePhase - offset + .4);
       final cosine = math.cos(rotation), sine = math.sin(rotation);
       final shape = 29 + field * 4;
       values[shape] = cosine / radiusX;
       values[shape + 1] = sine / radiusX;
       values[shape + 2] = -sine / radiusY;
       values[shape + 3] = cosine / radiusY;
-      final colourPosition =
-          (fluidColourPhase(orbit, field) * 2 / math.pi + field) % 4;
+      final colourPosition = fluidColourPosition(time, field);
       final variant = colourPosition.floor();
-      final nextVariant = (variant + 1) % 4;
+      final nextVariant = (variant + 1) % fluidMotionColourCount;
       // Quintic smoothstep gives zero endpoint velocity with continuously varying
-      // phase speed; the four rates share a constant budget of four.
+      // phase speed; the four doubled rates share a constant budget of eight.
       final part = colourPosition - variant;
       final colourBlend = fluidPaletteBlend(part);
+      final fieldBlend = fluidColourTransitionBlend(
+        paletteProgress,
+        _stagedFields[field],
+      );
       for (var channel = 0; channel < 3; channel++) {
-        final start = (field * 4 + variant) * 3 + channel;
-        final end = (field * 4 + nextVariant) * 3 + channel;
+        final start = (field * fluidMotionColourCount + variant) * 3 + channel;
+        final end =
+            (field * fluidMotionColourCount + nextVariant) * 3 + channel;
         final from =
             _sourceVariants[start] +
             (_sourceVariants[end] - _sourceVariants[start]) * colourBlend;
         final to =
             _targetVariants[start] +
             (_targetVariants[end] - _targetVariants[start]) * colourBlend;
-        values[14 + field * 3 + channel] = from + (to - from) * blend;
+        values[14 + field * 3 + channel] = from + (to - from) * fieldBlend;
       }
     }
     for (var channel = 0; channel < 3; channel++) {

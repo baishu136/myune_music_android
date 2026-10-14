@@ -8,6 +8,7 @@ extension _KaraokeInkBounds on _KaraokePaintCache {
         .runIdleResource<ByteData?>(
           () => atlas.toByteData(format: ui.ImageByteFormat.rawRgba),
           priority: InteractionWorkPriority.currentVisual,
+          allowDuringVisualAnimation: true,
           isStillNeeded: _rasterNeeded,
         );
     if (_disposed || ink == null) return;
@@ -15,6 +16,7 @@ extension _KaraokeInkBounds on _KaraokePaintCache {
         .runIdleResource<ByteData?>(
           () => coverage.toByteData(format: ui.ImageByteFormat.rawRgba),
           priority: InteractionWorkPriority.currentVisual,
+          allowDuringVisualAnimation: true,
           isStillNeeded: _rasterNeeded,
         );
     if (_disposed || alpha == null) return;
@@ -30,6 +32,7 @@ extension _KaraokeInkBounds on _KaraokePaintCache {
       final lease = await InteractionPerformanceController.instance
           .acquireIdleWork(
             priority: InteractionWorkPriority.currentVisual,
+            allowDuringVisualAnimation: true,
             isStillNeeded: _rasterNeeded,
           );
       try {

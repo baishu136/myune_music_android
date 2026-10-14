@@ -234,7 +234,7 @@ void main() {
       );
       BoxDecoration decoration() =>
           tester.widget<DecoratedBox>(decorator).decoration as BoxDecoration;
-      expect(decoration().boxShadow!.single.color.a, closeTo(.10, .001));
+      expect(decoration().boxShadow!.single.color.a, closeTo(.20, .001));
       expect(decoration().boxShadow!.single.blurStyle, BlurStyle.outer);
       expect(find.byType(BackdropFilter), findsNothing);
       rebuild(() => enabled = false);

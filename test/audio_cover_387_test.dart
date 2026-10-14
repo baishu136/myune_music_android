@@ -27,7 +27,7 @@ void main() {
     },
   );
   testWidgets(
-    'cover halo is narrow white at ten percent and retains child identity',
+    'cover halo is narrow white at twenty percent and retains child identity',
     (tester) async {
       const child = SizedBox(
         key: ValueKey('retained-cover'),
@@ -53,7 +53,7 @@ void main() {
       expect(shadow.color.r, 1);
       expect(shadow.color.g, 1);
       expect(shadow.color.b, 1);
-      expect(shadow.color.a, closeTo(.1, .002));
+      expect(shadow.color.a, closeTo(.2, .002));
       expect(shadow.blurRadius, lessThanOrEqualTo(12));
       expect(shadow.spreadRadius, lessThanOrEqualTo(.5));
       expect(shadow.blurStyle, BlurStyle.outer);

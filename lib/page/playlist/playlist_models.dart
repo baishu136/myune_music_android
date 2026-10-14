@@ -159,6 +159,7 @@ class LyricLine {
   final List<List<LyricToken>>? tokens;
   final bool isInterlude;
   final Duration? interludeDuration;
+  final bool allowSyntheticKaraoke;
 
   LyricLine({
     required this.timestamp,
@@ -166,9 +167,34 @@ class LyricLine {
     this.tokens,
     this.isInterlude = false,
     this.interludeDuration,
+    this.allowSyntheticKaraoke = true,
   });
 
-  bool get isKaraoke => tokens != null && tokens!.isNotEmpty;
+  bool get hasTimedWords {
+    if (isInterlude || tokens == null || tokens!.isEmpty) return false;
+    var visibleTiming = false;
+    for (final token in tokens!.first) {
+      if (token.start < Duration.zero || token.end < token.start) {
+        return false;
+      }
+      if (token.end > token.start &&
+          token.text.replaceAll('\u200B', '').trim().isNotEmpty) {
+        visibleTiming = true;
+      }
+    }
+    return visibleTiming;
+  }
+
+  bool get isKaraoke => hasTimedWords;
+
+  LyricLine withSyntheticKaraoke(bool allow) => LyricLine(
+    timestamp: timestamp,
+    texts: texts,
+    tokens: tokens,
+    isInterlude: isInterlude,
+    interludeDuration: interludeDuration,
+    allowSyntheticKaraoke: allow,
+  );
 }
 
 class LyricToken {

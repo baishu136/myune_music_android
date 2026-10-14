@@ -24,6 +24,49 @@ class ProjectChangelogEntry {
 /// 0.99 集中记录 0.9.8-android.129 之后的全部有效改动。
 const projectChangelogEntries = <ProjectChangelogEntry>[
   ProjectChangelogEntry(
+    version: '1.0.0-android.392',
+    date: '2026-10-14',
+    optimizations: [
+      '动态背景四个色团轮流使用6～8种封面相关颜色，扩大游走范围，变色速度翻倍、形变速度提升60%，限制色团最大直径。',
+      '亮色封面减少深灰与黑色色团，保留低饱和封面的大面积中性色，略微增强鲜艳颜色对比。',
+      '大跨度明暗切歌先柔和过渡到中间色，再转换至目标色；连续切歌保留当前画面衔接。',
+      '封面外发光等待播放页完整入场后渐亮，切歌与等待新封面时保留光晕。',
+    ],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.391',
+    date: '2026-10-14',
+    optimizations: [
+      '切换封面与歌词时采用滤镜采样缩放，减少复杂歌词图层的重复绘制。',
+      '密集歌词自动滚动时按节拍补齐逐字与光晕缓存，保留手势和路由过渡期间的保护。',
+    ],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.390',
+    date: '2026-10-14',
+    optimizations: ['切歌与恢复播放以短暂高频柔化替代整体音量淡入，480ms内平滑恢复原音色，保留用户音量与均衡器参数。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.389',
+    date: '2026-10-14',
+    fixes: ['默认歌词自动滚动保持单次滚动活动，减少逐帧跳转产生的通知和惯性检查开销。'],
+    optimizations: ['保留原弹簧轨迹和连续切行速度，触摸浏览与歌词跳转仍可立即接管。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.388',
+    date: '2026-10-14',
+    features: [
+      '播放页歌曲选择列表支持加入播放队列与下一首播放，不再显示尾部时长。',
+      '手动调整均衡器后可命名保存预设，在高级设置的均衡器参数页移除。',
+    ],
+    fixes: ['普通网络歌词不再误入逐字模式；相同歌词重复返回时保留渲染与高亮状态。'],
+    optimizations: [
+      '切歌与恢复播放采用480ms缓和音量淡入，不改用户音量和音效参数。',
+      '普通歌词非正播行按距离降低不透明度，从40%逐渐降至15%。',
+      '播放页封面外光不透明度改为20%，保留完全入场后缓缓亮起。',
+    ],
+  ),
+  ProjectChangelogEntry(
     version: '1.0.0-android.387',
     date: '2026-10-13',
     fixes: [

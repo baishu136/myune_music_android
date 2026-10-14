@@ -35,12 +35,14 @@ class _InteractionWorkRequest {
     this.sequence,
     this.isStillNeeded,
     this.priorityForWork,
+    this.allowDuringVisualAnimation,
   );
 
   final InteractionWorkPriority priority;
   final int sequence;
   final bool Function()? isStillNeeded;
   final InteractionWorkPriority Function()? priorityForWork;
+  final bool allowDuringVisualAnimation;
   InteractionWorkPriority get effectivePriority =>
       priorityForWork?.call() ?? priority;
   final Completer<InteractionWorkLease> completer =
@@ -65,6 +67,7 @@ class InteractionPerformanceController {
   bool _workLeaseActive = false;
   final Set<Object> _transitions = {};
   final Set<Object> _visualAnimations = {};
+  final Set<Object> _resourceVisualAnimations = {};
 
   InteractionPhase get phase => _transitions.isEmpty
       ? (_phase == InteractionPhase.idle && _visualAnimations.isNotEmpty
@@ -81,17 +84,31 @@ class InteractionPerformanceController {
     return _beginProtection(_transitions);
   }
 
-  InteractionWorkLease beginVisualAnimation() =>
-      _beginProtection(_visualAnimations);
+  InteractionWorkLease beginVisualAnimation({
+    bool allowResourcePreparation = false,
+  }) => _beginProtection(
+    _visualAnimations,
+    allowResourcePreparation: allowResourcePreparation,
+  );
 
-  InteractionWorkLease _beginProtection(Set<Object> owners) {
+  InteractionWorkLease _beginProtection(
+    Set<Object> owners, {
+    bool allowResourcePreparation = false,
+  }) {
     final owner = Object();
     owners.add(owner);
+    if (allowResourcePreparation) _resourceVisualAnimations.add(owner);
     _workDrainTimer?.cancel();
     _workDrainTimer = null;
+    _scheduleWorkDrain(const Duration(milliseconds: 16));
     return InteractionWorkLease._(() {
       owners.remove(owner);
-      if (!isCritical) _setIdle();
+      _resourceVisualAnimations.remove(owner);
+      if (!isCritical) {
+        _setIdle();
+      } else {
+        _scheduleWorkDrain(const Duration(milliseconds: 16));
+      }
     });
   }
 
@@ -101,10 +118,12 @@ class InteractionPerformanceController {
     Future<T> Function() start, {
     InteractionWorkPriority priority = InteractionWorkPriority.background,
     bool Function()? isStillNeeded,
+    bool allowDuringVisualAnimation = false,
   }) async {
     final lease = await acquireIdleWork(
       priority: priority,
       isStillNeeded: isStillNeeded,
+      allowDuringVisualAnimation: allowDuringVisualAnimation,
     );
     if (!lease.isGranted) return null;
     late Future<T> pending;
@@ -173,12 +192,14 @@ class InteractionPerformanceController {
     InteractionWorkPriority priority = InteractionWorkPriority.background,
     bool Function()? isStillNeeded,
     InteractionWorkPriority Function()? priorityForWork,
+    bool allowDuringVisualAnimation = false,
   }) {
     final request = _InteractionWorkRequest(
       priority,
       _workSequence++,
       isStillNeeded,
       priorityForWork,
+      allowDuringVisualAnimation,
     );
     _workQueue.add(request);
     _scheduleWorkDrain(Duration.zero);
@@ -202,15 +223,24 @@ class InteractionPerformanceController {
   }
 
   void _scheduleWorkDrain(Duration delay) {
-    if (_workLeaseActive || _workQueue.isEmpty || isCritical) return;
+    if (_workLeaseActive || !_workQueue.any(_canGrant)) return;
     _workDrainTimer ??= Timer(delay, () {
       _workDrainTimer = null;
       _drainWorkQueue();
     });
   }
 
+  bool _canGrant(_InteractionWorkRequest request) =>
+      !isCritical ||
+      (phase == InteractionPhase.visualAnimation &&
+          _visualAnimations.isNotEmpty &&
+          _visualAnimations.every(_resourceVisualAnimations.contains) &&
+          request.allowDuringVisualAnimation &&
+          request.effectivePriority.index <=
+              InteractionWorkPriority.userVisible.index);
+
   void _drainWorkQueue() {
-    if (_workLeaseActive || _workQueue.isEmpty || isCritical) return;
+    if (_workLeaseActive || _workQueue.isEmpty) return;
     _workQueue.sort((first, second) {
       final priority = first.effectivePriority.index.compareTo(
         second.effectivePriority.index,
@@ -219,12 +249,16 @@ class InteractionPerformanceController {
           ? priority
           : first.sequence.compareTo(second.sequence);
     });
-    var request = _workQueue.removeAt(0);
+    var index = _workQueue.indexWhere(_canGrant);
+    if (index < 0) return;
+    var request = _workQueue.removeAt(index);
     while (request.isStillNeeded?.call() == false) {
       final cancelledLease = InteractionWorkLease._(() {})..release();
       request.completer.complete(cancelledLease);
       if (_workQueue.isEmpty) return;
-      request = _workQueue.removeAt(0);
+      index = _workQueue.indexWhere(_canGrant);
+      if (index < 0) return;
+      request = _workQueue.removeAt(index);
     }
     _workLeaseActive = true;
     request.completer.complete(
@@ -249,7 +283,10 @@ class InteractionPerformanceController {
     _settleAfterMicros = 0;
     _settlePoll?.cancel();
     _settlePoll = null;
-    if (isCritical) return;
+    if (isCritical) {
+      _scheduleWorkDrain(const Duration(milliseconds: 16));
+      return;
+    }
     final waiters = _idleWaiters.toList(growable: false);
     _idleWaiters.clear();
     for (final waiter in waiters) {

@@ -2165,7 +2165,10 @@ void main() {
           ),
         )
         .style;
-    expect(browseStyle.color, browseColor);
+    expect(browseStyle.color!.r, browseColor.r);
+    expect(browseStyle.color!.g, browseColor.g);
+    expect(browseStyle.color!.b, browseColor.b);
+    expect(browseStyle.color!.a, inInclusiveRange(.15, .40));
     expect(
       find.descendant(
         of: find.byKey(ValueKey('mobile_lyric_$targetIndex')),
@@ -3032,7 +3035,7 @@ void main() {
           ),
         )
         .style;
-    expect(inactiveStyle.color, const Color(0xFF757575).withValues(alpha: .68));
+    expect(inactiveStyle.color, const Color(0xFF757575).withValues(alpha: .40));
     final fartherInactiveStyle = tester
         .widget<AnimatedDefaultTextStyle>(
           find.descendant(
@@ -3043,7 +3046,10 @@ void main() {
           ),
         )
         .style;
-    expect(fartherInactiveStyle.color, inactiveStyle.color);
+    expect(
+      fartherInactiveStyle.color,
+      const Color(0xFF757575).withValues(alpha: .32),
+    );
     for (final entry in [(1, 1.0), (2, 1.0)]) {
       final opacity = tester.widget<AnimatedOpacity>(
         find.descendant(
@@ -3133,7 +3139,7 @@ void main() {
           ),
         )
         .style;
-    expect(style.color, Colors.white.withValues(alpha: .36));
+    expect(style.color, Colors.white.withValues(alpha: .40));
     expect(style.shadows, isNull);
     final glow =
         tester

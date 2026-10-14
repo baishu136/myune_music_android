@@ -5,6 +5,7 @@ import 'package:flutter/scheduler.dart';
 
 import '../models/fluid_background_state.dart';
 import 'interaction_performance_controller.dart';
+import '../widgets/playback_background/fluid_colour_motion.dart';
 
 class FluidBackgroundController extends ChangeNotifier {
   FluidBackgroundController({
@@ -34,6 +35,8 @@ class FluidBackgroundController extends ChangeNotifier {
   int _paintVsyncs = 0;
   Duration _lastPaintElapsed = Duration.zero;
   double _paletteProgress = 1;
+  List<bool> _stagedFields = const [false, false, false, false];
+  List<bool> get stagedFields => _stagedFields;
   double _motionScale = 0;
   double _rhythmMotionTarget = 1;
   double _rhythmSampleAge = double.infinity;
@@ -53,6 +56,8 @@ class FluidBackgroundController extends ChangeNotifier {
     _sourcePalette,
     _targetPalette,
     fluidPaletteBlend(_paletteProgress),
+    transitionProgress: _paletteProgress,
+    stagedFields: _stagedFields,
   );
   double get motionScale => _motionScale;
   double get rhythmMotionTarget => _rhythmMotionTarget;
@@ -73,11 +78,26 @@ class FluidBackgroundController extends ChangeNotifier {
     if (_disposed || palette == _targetPalette) return;
     _sourcePalette = currentPalette;
     _targetPalette = alignFluidPaletteSlots(_sourcePalette, palette);
+    _stagedFields = List<bool>.unmodifiable(
+      List.generate(
+        4,
+        (field) =>
+            _targetPalette.motionColors.isNotEmpty &&
+            fluidNeedsIntermediateColour(
+              fluidFieldColourAtTime(_sourcePalette, _effectiveTime, field),
+              fluidFieldColourAtTime(_targetPalette, _effectiveTime, field),
+            ),
+      ),
+    );
     _paletteTransitionDuration = fluidPaletteTransitionDuration(
       _sourcePalette,
       _targetPalette,
     );
     _paletteProgress = 0;
+    if (_stagedFields.contains(true) &&
+        _paletteTransitionDuration.inMilliseconds < 1200) {
+      _paletteTransitionDuration = const Duration(milliseconds: 1200);
+    }
     _ensureScheduling();
     notifyListeners();
   }

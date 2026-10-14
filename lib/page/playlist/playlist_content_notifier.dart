@@ -40,6 +40,10 @@ import '../../services/song_group_presentation.dart';
 import '../../services/library_song_visibility.dart';
 import '../../services/playlist_folder_policy.dart';
 import '../../services/network_lyric_client.dart';
+import '../../services/lyric_content.dart';
+import '../../services/equalizer_preset_store.dart';
+import '../../models/equalizer_preset.dart';
+export '../../models/equalizer_preset.dart' show EqualizerPreset;
 import '../../widgets/artwork_image.dart';
 
 double playbackSleepFadeFactor(
@@ -273,13 +277,6 @@ class _ReplayGainScanResult {
     required this.integratedLufs,
     required this.peak,
   });
-}
-
-class EqualizerPreset {
-  final String name;
-  final List<double> gains;
-
-  const EqualizerPreset(this.name, this.gains);
 }
 
 class ImportedFolderRefreshSummary {
@@ -1328,6 +1325,57 @@ class PlaylistContentNotifier extends ChangeNotifier
     0.0,
   );
   String _equalizerPresetName = '默认';
+  bool _equalizerEdited = false;
+  EqualizerPresetStore? _savedPresetStore;
+  Future<EqualizerPresetStore>? _presetStoreFuture;
+
+  Future<EqualizerPresetStore> _ensurePresetStore() =>
+      _presetStoreFuture ??= () async {
+        final store = EqualizerPresetStore(
+          await SharedPreferences.getInstance(),
+          reservedNames: equalizerPresets.map((p) => p.name).toSet(),
+        );
+        _savedPresetStore = store;
+        if (_preparationDisposed) {
+          store.dispose();
+        } else {
+          store.addListener(notifyListeners);
+        }
+        return store;
+      }();
+
+  List<EqualizerPreset> get availableEqualizerPresets =>
+      List.unmodifiable([...equalizerPresets, ...savedEqualizerPresets]);
+  List<EqualizerPreset> get savedEqualizerPresets =>
+      _savedPresetStore?.presets ?? const [];
+  bool get canSaveEqualizerPreset => _equalizerEdited;
+
+  Future<void> saveEqualizerPreset(String name) async {
+    if (!_equalizerEdited) return;
+    final gains = List<double>.unmodifiable(_equalizerGains);
+    final store = await _ensurePresetStore();
+    final preset = await store.save(name, gains);
+    if (_preparationDisposed) return;
+    if (_equalizerEdited && listEquals(gains, _equalizerGains)) {
+      _equalizerPresetName = preset.name;
+      _equalizerEdited = false;
+      await _saveAudioControlSettings();
+    }
+    if (!_preparationDisposed) notifyListeners();
+  }
+
+  Future<void> removeEqualizerPreset(String id) async {
+    final store = await _ensurePresetStore();
+    final target = store.presets.where((p) => p.id == id).firstOrNull;
+    if (target == null || !await store.remove(id)) return;
+    if (_preparationDisposed) return;
+    if (_equalizerPresetName == target.name) {
+      _equalizerPresetName = '自定义';
+      _equalizerEdited = true;
+      await _saveAudioControlSettings();
+      if (!_preparationDisposed) notifyListeners();
+    }
+  }
 
   static const _pitchKey = 'player_pitch';
   static const _playbackRateKey = 'player_playback_rate';
@@ -1410,6 +1458,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
 
     _cacheLyrics(_lyricCacheKey(song), lyrics);
+    if (sameLyricContent(_currentLyrics, lyrics)) return;
     _currentLyrics = lyrics;
     // Replacing lyrics while the playback page is already visible must not
     // publish a transient -1 index. The lyric list clamps -1 to its first
@@ -1850,6 +1899,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   Future<void> _loadAudioControlSettings() async {
     final prefs = await SharedPreferences.getInstance();
+    await _ensurePresetStore();
     _currentPitch = _sanitizePitch(prefs.getDouble(_pitchKey));
     _currentPlaybackRate = _sanitizePlaybackRate(
       prefs.getDouble(_playbackRateKey),
@@ -1874,13 +1924,14 @@ class PlaylistContentNotifier extends ChangeNotifier
         _equalizerPresetName = '默认';
       }
     } else {
-      final preset = equalizerPresets.firstWhere(
+      final preset = availableEqualizerPresets.firstWhere(
         (preset) => preset.name == _equalizerPresetName,
         orElse: () => equalizerPresets[1],
       );
       _equalizerGains = List<double>.from(preset.gains);
     }
 
+    _equalizerEdited = _equalizerPresetName == '自定义';
     await _audioService.player.setPitch(_currentPitch);
     await _audioService.player.setRate(_currentPlaybackRate);
     await _applyEqualizer();
@@ -2014,6 +2065,8 @@ class PlaylistContentNotifier extends ChangeNotifier
   void dispose() {
     _automaticSortTimer?.cancel();
     _preparationDisposed = true;
+    _savedPresetStore?.removeListener(notifyListeners);
+    _savedPresetStore?.dispose();
     if (_groupsPreparation?.isCompleted == false) {
       _groupsPreparation!.complete();
     }
@@ -4941,8 +4994,11 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   Future<void> setEqualizerBand(int index, double gain) async {
     if (index < 0 || index >= _equalizerGains.length) return;
+    if (_equalizerGains[index] != _sanitizeEqualizerGain(gain)) {
+      _equalizerEdited = true;
+    }
     _equalizerGains[index] = _sanitizeEqualizerGain(gain);
-    _equalizerPresetName = '自定义';
+    if (_equalizerEdited) _equalizerPresetName = '自定义';
     _scheduleEqualizerPreview();
     _scheduleAudioControlSave();
     notifyListeners();
@@ -4951,8 +5007,11 @@ class PlaylistContentNotifier extends ChangeNotifier
   /// 为移动端滑块提供轻量实时预览，不触发整页 Provider 重建或磁盘保存。
   void previewEqualizerBand(int index, double gain) {
     if (index < 0 || index >= _equalizerGains.length) return;
+    if (_equalizerGains[index] != _sanitizeEqualizerGain(gain)) {
+      _equalizerEdited = true;
+    }
     _equalizerGains[index] = _sanitizeEqualizerGain(gain);
-    _equalizerPresetName = '自定义';
+    if (_equalizerEdited) _equalizerPresetName = '自定义';
     _scheduleEqualizerPreview();
   }
 
@@ -4965,8 +5024,11 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   Future<void> commitEqualizerBand(int index, double gain) async {
     if (index < 0 || index >= _equalizerGains.length) return;
+    if (_equalizerGains[index] != _sanitizeEqualizerGain(gain)) {
+      _equalizerEdited = true;
+    }
     _equalizerGains[index] = _sanitizeEqualizerGain(gain);
-    _equalizerPresetName = '自定义';
+    if (_equalizerEdited) _equalizerPresetName = '自定义';
     _equalizerApplyTimer?.cancel();
     await _applyEqualizer();
     await _saveAudioControlSettings();
@@ -4975,6 +5037,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   Future<void> applyEqualizerPreset(EqualizerPreset preset) async {
     if (preset.gains.length != equalizerFrequencies.length) return;
+    _equalizerEdited = false;
     _equalizerPresetName = preset.name;
     _equalizerGains = preset.gains
         .map((gain) => _sanitizeEqualizerGain(gain))
@@ -4985,6 +5048,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<void> resetAudioControls() async {
+    _equalizerEdited = false;
     _currentPitch = 1.0;
     _currentPlaybackRate = 1.0;
     _equalizerPresetName = '默认';
@@ -5204,6 +5268,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     final previousVisualPath = _currentSong?.filePath;
     _isGaplessTransitioning = true;
     _isAutoPlaying = true;
+    unawaited(_audioService.fadeInCurrentTrack());
 
     try {
       final nextIndex = _peekNextIndex();
@@ -5769,7 +5834,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
     }
 
-    if (existingIndex != -1) {
+    if (existingIndex != -1 && existingIndex != _currentQueueIndex) {
       _currentPlayingQueue!.removeAt(existingIndex);
       _currentPlayingQueueFilePaths!.removeAt(existingIndex);
 
@@ -5781,7 +5846,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
 
     // 计算下一首播放的位置
-    int nextIndex = _currentQueueIndex + 1;
+    int nextIndex = (_currentQueueIndex + 1).clamp(
+      0,
+      _currentPlayingQueue!.length,
+    );
     if (nextIndex < 0) nextIndex = 0; // 如果当前索引无效，则添加到开头
 
     // 随机模式的处理
@@ -6789,20 +6857,20 @@ class PlaylistContentNotifier extends ChangeNotifier
     if (song == null) return;
 
     final cacheKey = _lyricCacheKey(song);
+    final hadVisibleLyrics = _currentLyrics.isNotEmpty;
     final cached = _takeCachedLyrics(cacheKey);
     if (cached != null) {
-      _currentLyrics = cached;
-      _setCurrentLyricLineIndex(-1);
+      if (!sameLyricContent(_currentLyrics, cached)) _currentLyrics = cached;
+      if (hadVisibleLyrics) {
+        updateLyricLine(_currentPosition);
+      } else {
+        _setCurrentLyricLineIndex(-1);
+      }
       notifyListeners();
       _scheduleNeighborLyricPrefetch(prefetchGeneration);
       return;
     }
 
-    final hadVisibleLyrics =
-        _currentLyrics.isNotEmpty || _currentLyricLineIndex != -1;
-    _currentLyrics = []; // 清空之前的歌词
-    _setCurrentLyricLineIndex(-1); // 重置歌词行索引
-    if (hadVisibleLyrics) notifyListeners();
     final startLease = await InteractionPerformanceController.instance
         .acquireIdleWork(
           priority: InteractionWorkPriority.background,
@@ -6820,8 +6888,12 @@ class PlaylistContentNotifier extends ChangeNotifier
         _currentSong?.normalizedPath != song.normalizedPath) {
       return;
     }
-    _currentLyrics = lyrics;
-    _setCurrentLyricLineIndex(-1);
+    if (!sameLyricContent(_currentLyrics, lyrics)) _currentLyrics = lyrics;
+    if (hadVisibleLyrics) {
+      updateLyricLine(_currentPosition);
+    } else {
+      _setCurrentLyricLineIndex(-1);
+    }
     notifyListeners();
     _scheduleNeighborLyricPrefetch(prefetchGeneration);
   }
@@ -7027,14 +7099,18 @@ class PlaylistContentNotifier extends ChangeNotifier
       duration: song.duration,
       translation: translated,
     );
-    if (content.timed.isNotEmpty) return _processInterludes(content.timed);
+    if (content.timed.isNotEmpty) {
+      return _processInterludes(
+        content.timed,
+      ).map((line) => line.withSyntheticKaraoke(false)).toList(growable: false);
+    }
     return _parseLrcContent(
       combineNetworkLyricLines(
         content.lrc,
         content.translation,
         includeTranslation: translated,
       ),
-    );
+    ).map((line) => line.withSyntheticKaraoke(false)).toList(growable: false);
   }
 
   // 解析歌词

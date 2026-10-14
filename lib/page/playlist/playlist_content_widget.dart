@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../../widgets/song_queue_actions.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:silky_scroll/silky_scroll.dart';
@@ -1537,6 +1538,8 @@ class SongTileWidget extends StatefulWidget {
   final Playlist contextPlaylist;
   // 控制右键菜单是否显示
   final bool enableContextMenu;
+  final bool queueActions;
+  final VoidCallback? onQueueChanged;
 
   const SongTileWidget({
     super.key,
@@ -1545,6 +1548,8 @@ class SongTileWidget extends StatefulWidget {
     this.onTap,
     required this.contextPlaylist,
     this.enableContextMenu = true,
+    this.queueActions = false,
+    this.onQueueChanged,
   });
 
   @override
@@ -2046,7 +2051,7 @@ class _SongTileWidgetState extends State<SongTileWidget> {
 
     // 监听多选模式和选中歌曲的变化
     final isMultiSelectMode = context.select<PlaylistContentNotifier, bool>(
-      (n) => n.isMultiSelectMode,
+      (n) => !widget.queueActions && n.isMultiSelectMode,
     );
     final isSelected = context.select<PlaylistContentNotifier, bool>(
       (n) => n.selectedSongPaths.contains(widget.song.filePath),
@@ -2155,7 +2160,18 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                         ),
                       ),
                     ] else ...[
-                      if (widget.song.duration != null)
+                      if (widget.queueActions)
+                        SongQueueActions(
+                          onAdd: () async {
+                            await notifier.addToPlayingQueue(widget.song);
+                            widget.onQueueChanged?.call();
+                          },
+                          onNext: () async {
+                            await notifier.addToPlayingQueueNext(widget.song);
+                            widget.onQueueChanged?.call();
+                          },
+                        )
+                      else if (widget.song.duration != null)
                         Text(
                           '${widget.song.duration!.inMinutes}:${(widget.song.duration!.inSeconds % 60).toString().padLeft(2, '0')}',
                         ),

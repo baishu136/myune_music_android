@@ -6,10 +6,7 @@ import '../page/playlist/playlist_models.dart';
 
 bool karaokeRowCanHighlight(int rowIndex) => rowIndex == 0;
 
-bool hasUsableKaraokeTiming(LyricLine line) =>
-    line.tokens != null &&
-    line.tokens!.isNotEmpty &&
-    line.tokens!.first.any((token) => token.end > token.start);
+bool hasUsableKaraokeTiming(LyricLine line) => line.hasTimedWords;
 
 // Unicode mode preserves supplementary ideographs and emoji. Kana and Hangul
 // also use character cadence; western words retain their trailing whitespace.

@@ -8,6 +8,8 @@ class _Stream extends Fake implements PlayerStream {
   final params = StreamController<AudioParams>.broadcast();
   @override
   Stream<AudioParams> get audioParams => params.stream;
+  @override
+  Stream<bool> get playing => const Stream.empty();
 }
 
 class _Player extends Fake implements PlayerApi {

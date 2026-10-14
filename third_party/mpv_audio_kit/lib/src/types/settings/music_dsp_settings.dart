@@ -11,12 +11,16 @@ class MusicDspSettings {
     this.sampleRate = 48000,
     this.normalizationGainDb = 0,
     this.keepAlive = false,
+    this.entrySofteningEnabled = false,
+    this.entrySofteningDb = 0,
   });
   final bool enabled, keepAlive;
   final List<double> gains;
   final List<int> frequencies;
   final int sampleRate;
   final double normalizationGainDb;
+  final bool entrySofteningEnabled;
+  final double entrySofteningDb;
   static const label = 'myune_music';
 
   MusicDspSettings copyWith(
@@ -25,7 +29,9 @@ class MusicDspSettings {
           List<int>? frequencies,
           int? sampleRate,
           double? normalizationGainDb,
-          bool? keepAlive}) =>
+          bool? keepAlive,
+          bool? entrySofteningEnabled,
+          double? entrySofteningDb}) =>
       MusicDspSettings(
         enabled: enabled ?? this.enabled,
         gains: gains ?? this.gains,
@@ -33,6 +39,9 @@ class MusicDspSettings {
         sampleRate: sampleRate ?? this.sampleRate,
         normalizationGainDb: normalizationGainDb ?? this.normalizationGainDb,
         keepAlive: keepAlive ?? this.keepAlive,
+        entrySofteningEnabled:
+            entrySofteningEnabled ?? this.entrySofteningEnabled,
+        entrySofteningDb: entrySofteningDb ?? this.entrySofteningDb,
       );
 
   int get rate =>
@@ -44,7 +53,12 @@ class MusicDspSettings {
       frequencies[band].toDouble().clamp(1, rate * .45);
   double get outputDb =>
       normalizationGainDb.isFinite ? normalizationGainDb.clamp(-24.0, 24.0) : 0;
+  double get entryDb =>
+      entrySofteningDb.isFinite ? entrySofteningDb.clamp(-6.0, 0.0) : 0;
+  double get entryFrequency => math.min(3500.0, rate * .4);
   bool active(String effects) =>
+      enabled && (entrySofteningEnabled || processingActive(effects));
+  bool processingActive(String effects) =>
       enabled &&
       (keepAlive ||
           effects.isNotEmpty ||
@@ -109,6 +123,11 @@ class MusicDspSettings {
   }
 
   String filterGraph(String effects) {
+    final entry =
+        'treble@myune_entry=g=${wire(entryDb)}:f=${wire(entryFrequency)}:t=q:w=0.5:r=f32';
+    if (entrySofteningEnabled && !processingActive(effects)) {
+      return 'aformat=sample_fmts=fltp,$entry,alimiter@myune_guard=limit=1:level=false:attack=5:release=100:latency=true';
+    }
     final tone = <String>[],
         soft = <String>[],
         dynamics = <String>[],
@@ -159,6 +178,7 @@ class MusicDspSettings {
       ...soft,
       ...dynamics,
       ...limit,
+      if (entrySofteningEnabled) entry,
       'biquad@myune_output=b0=${wire(math.pow(10, outputDb / 20).toDouble())}:b1=0:b2=0:a0=1:a1=0:a2=0:r=f32',
       'alimiter@myune_guard=limit=0.891250938:level=false:attack=5:release=100:latency=true',
     ].join(',');
@@ -197,10 +217,38 @@ class MusicDspSettings {
       MusicDspSettings previous, String effects) {
     if (enabled != previous.enabled ||
         bandCount != previous.bandCount ||
-        active(effects) != previous.active(effects)) {
+        active(effects) != previous.active(effects) ||
+        entrySofteningEnabled != previous.entrySofteningEnabled ||
+        processingActive(effects) != previous.processingActive(effects)) {
       return null;
     }
     if (!active(effects)) return const [];
+    final entryCommands =
+        <({String label, String option, String value, String filterName})>[
+      if (entrySofteningEnabled && entryFrequency != previous.entryFrequency)
+        (
+          label: label,
+          option: 'frequency',
+          value: wire(entryFrequency),
+          filterName: 'treble@myune_entry'
+        ),
+      if (entrySofteningEnabled && entryDb != previous.entryDb)
+        (
+          label: label,
+          option: 'gain',
+          value: wire(entryDb),
+          filterName: 'treble@myune_entry'
+        ),
+    ];
+    // Tone recovery never recomputes the EQ response grid or rewrites the AF.
+    if ((identical(gains, previous.gains) &&
+            identical(frequencies, previous.frequencies) &&
+            sampleRate == previous.sampleRate &&
+            outputDb == previous.outputDb &&
+            keepAlive == previous.keepAlive) ||
+        !processingActive(effects)) {
+      return entryCommands;
+    }
     final before = previous.preampDb, after = preampDb;
     final pre = (
       label: label,
@@ -239,6 +287,6 @@ class MusicDspSettings {
         filterName: 'biquad@myune_output'
       ));
     }
-    return out;
+    return [...out, ...entryCommands];
   }
 }

@@ -88,7 +88,8 @@ void main() {
       );
       await tester.pump(const Duration(seconds: 10));
       expect(controller.effectiveTime, before);
-      expect(fluidPhaseCycle, inInclusiveRange(41, 42));
+      expect(fluidOrbitPeriod, inInclusiveRange(41, 42));
+      expect(fluidPhaseCycle, closeTo(fluidOrbitPeriod * 5, .00001));
     },
   );
 }

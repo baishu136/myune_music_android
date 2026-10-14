@@ -157,11 +157,12 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
       _visualSnapshotKey = nextSnapshotKey;
       final snapshot = _visualSnapshots.remove(nextSnapshotKey);
       if (snapshot != null) _visualSnapshots[nextSnapshotKey] = snapshot;
-      _entryPalette =
-          snapshot?.palette ??
-          fluidArtworkPaletteCache.peek(nextSnapshotKey) ??
-          FluidPalette.fallback(widget.fallbackSeed);
-      _controller.setPalette(_entryPalette);
+      final preparedPalette =
+          snapshot?.palette ?? fluidArtworkPaletteCache.peek(nextSnapshotKey);
+      // Retain the displayed colours until the new artwork has actually been
+      // sampled. An uncached cover must not insert the app seed between songs.
+      _entryPalette = preparedPalette ?? _controller.currentPalette;
+      if (preparedPalette != null) _controller.setPalette(preparedPalette);
     }
     _syncController();
     if (oldWidget.artworkIdentity != widget.artworkIdentity ||

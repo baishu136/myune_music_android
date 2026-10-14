@@ -846,6 +846,7 @@ class _KaraokePaintCache extends ChangeNotifier {
       InteractionPerformanceController.instance.runIdleResource<ui.Image>(
         () => picture.toImage(w, h),
         priority: InteractionWorkPriority.currentVisual,
+        allowDuringVisualAnimation: true,
         isStillNeeded: _rasterNeeded,
       );
   bool get imageReady => _ready;
@@ -958,6 +959,7 @@ class _KaraokePaintCache extends ChangeNotifier {
           .runIdleResource<ui.FragmentProgram>(
             _loadKaraokeInkProgram,
             priority: InteractionWorkPriority.currentVisual,
+            allowDuringVisualAnimation: true,
             isStillNeeded: _rasterNeeded,
           );
       if (_disposed || program == null) {
@@ -1033,6 +1035,7 @@ class _KaraokePaintCache extends ChangeNotifier {
     final controller = InteractionPerformanceController.instance;
     var lease = await controller.acquireIdleWork(
       priority: InteractionWorkPriority.currentVisual,
+      allowDuringVisualAnimation: true,
       isStillNeeded: _rasterNeeded,
     );
     final budget = Stopwatch()..start();
@@ -1053,6 +1056,7 @@ class _KaraokePaintCache extends ChangeNotifier {
             lease.release();
             lease = await controller.acquireIdleWork(
               priority: InteractionWorkPriority.currentVisual,
+              allowDuringVisualAnimation: true,
               isStillNeeded: _rasterNeeded,
             );
             if (!lease.isGranted || _disposed) return false;

@@ -287,8 +287,8 @@ void main() {
               alpha: distance == 0
                   ? 1
                   : distance == 1
-                  ? .68
-                  : .52,
+                  ? .40
+                  : .32,
             ),
             Colors.white,
             strength,
@@ -349,8 +349,8 @@ void main() {
         alpha: distance == 0
             ? 1
             : distance == 1
-            ? .68
-            : .52,
+            ? .40
+            : .32,
       );
       expect(color, Color.lerp(base, Colors.white, distance == 0 ? 1 : 0));
       final fade = tester.widget<AnimatedOpacity>(

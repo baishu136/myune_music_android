@@ -10,11 +10,13 @@ class NowPlayingCoverGlow extends StatefulWidget {
     required this.child,
     this.entranceComplete = true,
     this.coverTransition,
+    this.pageEntrance,
     this.waitForImage = false,
   });
 
   final bool enabled, entranceComplete, waitForImage;
   final Animation<double>? coverTransition;
+  final Animation<double>? pageEntrance;
   final Widget child;
 
   static void reportImageReady(BuildContext context, bool ready) {
@@ -39,6 +41,8 @@ class _NowPlayingCoverGlowState extends State<NowPlayingCoverGlow>
     super.initState();
     widget.coverTransition?.addListener(_sync);
     widget.coverTransition?.addStatusListener(_status);
+    widget.pageEntrance?.addListener(_sync);
+    widget.pageEntrance?.addStatusListener(_status);
   }
 
   void _status(AnimationStatus status) => _sync();
@@ -61,6 +65,12 @@ class _NowPlayingCoverGlowState extends State<NowPlayingCoverGlow>
     if (oldWidget.waitForImage != widget.waitForImage) {
       _imageReady = !widget.waitForImage;
     }
+    if (oldWidget.pageEntrance != widget.pageEntrance) {
+      oldWidget.pageEntrance?.removeListener(_sync);
+      oldWidget.pageEntrance?.removeStatusListener(_status);
+      widget.pageEntrance?.addListener(_sync);
+      widget.pageEntrance?.addStatusListener(_status);
+    }
     _sync();
   }
 
@@ -75,14 +85,16 @@ class _NowPlayingCoverGlowState extends State<NowPlayingCoverGlow>
     final ready =
         widget.enabled &&
         widget.entranceComplete &&
-        _imageReady &&
+        (widget.pageEntrance == null ||
+            (!widget.pageEntrance!.isAnimating &&
+                widget.pageEntrance!.value == 1)) &&
         (transition == null ||
             (!transition.isAnimating && transition.value == 0));
     if (!ready) {
       _ready = false;
       _controller.stop();
       _controller.value = 0;
-    } else if (!_ready) {
+    } else if (!_ready && _imageReady) {
       _ready = true;
       if (MediaQuery.disableAnimationsOf(context)) {
         _controller.value = 1;
@@ -96,6 +108,8 @@ class _NowPlayingCoverGlowState extends State<NowPlayingCoverGlow>
   void dispose() {
     widget.coverTransition?.removeListener(_sync);
     widget.coverTransition?.removeStatusListener(_status);
+    widget.pageEntrance?.removeListener(_sync);
+    widget.pageEntrance?.removeStatusListener(_status);
     _controller.dispose();
     super.dispose();
   }
@@ -112,7 +126,7 @@ class _NowPlayingCoverGlowState extends State<NowPlayingCoverGlow>
                 BoxShadow(
                   color: Colors.white.withValues(
                     alpha:
-                        .10 *
+                        .20 *
                         Curves.easeInOutCubic.transform(_controller.value),
                   ),
                   blurRadius: 10,

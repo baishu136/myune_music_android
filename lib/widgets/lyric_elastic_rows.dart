@@ -227,6 +227,7 @@ class _PhysicalLyricPictures extends ChangeNotifier {
                 ((height + 64) * scale).floor().clamp(1, 4096),
               ),
               priority: InteractionWorkPriority.userVisible,
+              allowDuringVisualAnimation: true,
               isStillNeeded: _needed,
             );
         if (_disposed) {

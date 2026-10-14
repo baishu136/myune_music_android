@@ -8,6 +8,7 @@ import '../../playlist/playlist_content_notifier.dart';
 import '../playlist_cleaner.dart';
 import '../folder_playlist_refresher.dart';
 import '../playlist_folder_manager.dart';
+import '../equalizer_preset_widgets.dart';
 import '../artist_separator.dart';
 import 'info_icon.dart';
 
@@ -37,6 +38,16 @@ class AdvancedTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('advanced'),
       children: [
+        ListTile(
+          leading: const Icon(Icons.equalizer),
+          title: const Text('均衡器参数'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(
+              builder: (_) => const EqualizerPresetManager(),
+            ),
+          ),
+        ),
         Consumer<PlaylistContentNotifier>(
           builder: (context, notifier, _) =>
               PlaylistFolderManager(notifier: notifier),

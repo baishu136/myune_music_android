@@ -136,8 +136,7 @@ class BalanceRateControl extends StatelessWidget {
                                 Wrap(
                                   spacing: 8,
                                   runSpacing: 8,
-                                  children: PlaylistContentNotifier
-                                      .equalizerPresets
+                                  children: notifier.availableEqualizerPresets
                                       .skip(1)
                                       .map(
                                         (preset) => ChoiceChip(

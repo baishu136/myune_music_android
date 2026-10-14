@@ -10,6 +10,7 @@ import 'package:myune_music/services/artwork_palette_cache.dart';
 import 'package:myune_music/services/fluid_background_controller.dart';
 import 'package:myune_music/widgets/playback_background/fluid_background_painter.dart';
 import 'package:myune_music/widgets/playback_background/fluid_frame_uniforms.dart';
+import 'support/fluid_field_reference.dart';
 
 const _pigments = [
   FluidColorSample(Color(0xFFEF2683), .40),
@@ -198,27 +199,34 @@ void main() {
     },
   );
 
-  test('383 white padding does not alter the pigment palette', () {
-    final clean = buildWeightedFluidPalette(
-      _pigments,
-      fallbackSeed: Colors.blue,
-    );
-    final padded = buildWeightedFluidPalette([
-      const FluidColorSample(Color(0xFFEFEDEB), .80),
-      ..._pigments.map((s) => FluidColorSample(s.color, s.proportion * .20)),
-    ], fallbackSeed: Colors.blue);
-    expect(padded.colors, clean.colors);
-    final lead = HSLColor.fromColor(padded.second);
-    expect(lead.saturation, greaterThan(.6));
-    expect(lead.hue, closeTo(HSLColor.fromColor(clean.second).hue, 3));
-    expect(lead.lightness, inInclusiveRange(.345, .555));
-    final aligned = alignFluidPaletteSlots(
-      FluidPalette(padded.second, padded.fourth, padded.first, padded.third),
-      padded,
-    );
-    expect(aligned.second, padded.second);
-    expect(aligned.third, padded.third);
-  });
+  test(
+    'bright white artwork preserves pigment hues while lifting the canvas',
+    () {
+      final clean = buildWeightedFluidPalette(
+        _pigments,
+        fallbackSeed: Colors.blue,
+      );
+      final padded = buildWeightedFluidPalette([
+        const FluidColorSample(Color(0xFFEFEDEB), .80),
+        ..._pigments.map((s) => FluidColorSample(s.color, s.proportion * .20)),
+      ], fallbackSeed: Colors.blue);
+      expect(padded.colors, isNot(contains(Colors.black)));
+      expect(
+        HSLColor.fromColor(padded.baseColor).lightness,
+        greaterThan(HSLColor.fromColor(clean.baseColor).lightness),
+      );
+      final lead = HSLColor.fromColor(padded.second);
+      expect(lead.saturation, greaterThan(.6));
+      expect(lead.hue, closeTo(HSLColor.fromColor(clean.second).hue, 3));
+      expect(lead.lightness, inInclusiveRange(.345, .555));
+      final aligned = alignFluidPaletteSlots(
+        FluidPalette(padded.second, padded.fourth, padded.first, padded.third),
+        padded,
+      );
+      expect(aligned.second, padded.second);
+      expect(aligned.third, padded.third);
+    },
+  );
 
   testWidgets('worker filters white pixels before histogram selection', (
     tester,
@@ -442,13 +450,7 @@ List<double> _layerOracle(
   double y,
   Float32List packed,
 ) {
-  final weights = List<double>.generate(4, (i) {
-    final angle = math.pi * 2 * i / 4;
-    final dx = (x - .5 - .39 * math.cos(angle)) / .44;
-    final dy = (y - .5 - .39 * 1.08 * math.sin(angle)) * (160 / 96) / .44;
-    final falloff = 1 / (1 + dx * dx + dy * dy);
-    return falloff * falloff * (.65 + .35 * falloff);
-  });
+  final weights = fluidReferenceWeights(packed, x, y);
   final sum = weights.reduce((a, b) => a + b);
   final distance = math.sqrt(math.pow(x - .5, 2) + math.pow(y - .48, 2));
   final edge = ((distance - .35) / (1.10 - .35)).clamp(0.0, 1.0);
@@ -461,9 +463,9 @@ List<double> _layerOracle(
     ];
     var pigment = 0.0;
     for (var i = 0; i < 4; i++) {
-      pigment += colours[i] * weights[i] / sum;
+      pigment += colours[i] * weights[i] / math.max(sum, .00001);
     }
-    const coverage = .84;
+    final coverage = fluidReferenceCoverage(weights);
     final mixed = lerp(component(palette.baseColor), pigment, coverage);
     return mixed * (.98 + .02 * vignette) * (1 - .3 * .25);
   });

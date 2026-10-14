@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:mpv_audio_kit/mpv_audio_kit.dart';
 import 'music_effect_policy.dart';
+import 'playback_entry_softening.dart';
 
 class _PlaybackConfiguration {
   const _PlaybackConfiguration({
@@ -82,6 +83,34 @@ class _PlaybackConfiguration {
 class AudioService {
   final PlayerApi _player;
   StreamSubscription<AudioParams>? _sampleRateSubscription;
+  StreamSubscription<bool>? _playingSubscription;
+  late final PlaybackEntrySoftening _entryFade = PlaybackEntrySoftening(
+    _writeEntrySoftening,
+  );
+  bool _entryFilterAvailable = true;
+
+  Future<void> _writeEntrySoftening(double db) async {
+    if (_disposed || !_entryFilterAvailable) return;
+    try {
+      await _player.updateMusicDsp(
+        (dsp) => dsp.copyWith(
+          enabled: true,
+          entrySofteningEnabled: true,
+          entrySofteningDb: db,
+        ),
+      );
+    } catch (_) {
+      if (db == 0) {
+        _entryFilterAvailable = false;
+        await _player.updateMusicDsp(
+          (dsp) =>
+              dsp.copyWith(entrySofteningEnabled: false, entrySofteningDb: 0),
+        );
+      }
+      rethrow;
+    }
+  }
+
   Future<void>? _equalizerDrain, _normalizationDrain;
   List<double>? _desiredGains;
   List<int>? _desiredFrequencies;
@@ -125,6 +154,7 @@ class AudioService {
     }
     await _bestEffort(() => _player.setRawProperty('sub-auto', 'no'));
     await _bestEffort(() => _player.setVolumeGain(0));
+    _playingSubscription = _player.stream.playing.listen(_entryFade.setPlaying);
     _sampleRateSubscription = _player.stream.audioParams.listen((params) {
       final rate = params.sampleRate;
       if (_disposed ||
@@ -162,8 +192,10 @@ class AudioService {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _entryFade.dispose();
     await _initialization;
     await _sampleRateSubscription?.cancel();
+    await _playingSubscription?.cancel();
     try {
       await _player.stop();
     } finally {
@@ -192,7 +224,23 @@ class AudioService {
       ),
     );
     if (revision != _trackLoadRevision) return;
-    await _player.open(Media(filePath), play: play);
+    if (play) await _entryFade.prepare();
+    if (revision != _trackLoadRevision) return;
+    try {
+      await _player.open(Media(filePath), play: false);
+      if (revision != _trackLoadRevision) return;
+      if (play) {
+        await _player.play();
+        if (revision == _trackLoadRevision) {
+          _entryFade.begin(playing: _player.state.playing);
+        }
+      } else {
+        await _entryFade.cancel();
+      }
+    } catch (_) {
+      if (revision == _trackLoadRevision) await _entryFade.cancel();
+      rethrow;
+    }
   }
 
   // 启用无缝播放模式：设置 Gapless.yes + 开启 prefetch
@@ -245,7 +293,23 @@ class AudioService {
     if (nextPath != null) {
       tracks.add(Media(nextPath));
     }
-    await _player.openAll(tracks, play: play);
+    if (play) await _entryFade.prepare();
+    if (revision != _trackLoadRevision) return;
+    try {
+      await _player.openAll(tracks, play: false);
+      if (revision != _trackLoadRevision) return;
+      if (play) {
+        await _player.play();
+        if (revision == _trackLoadRevision) {
+          _entryFade.begin(playing: _player.state.playing);
+        }
+      } else {
+        await _entryFade.cancel();
+      }
+    } catch (_) {
+      if (revision == _trackLoadRevision) await _entryFade.cancel();
+      rethrow;
+    }
   }
 
   Future<void> _ensurePlaybackConfiguration(
@@ -331,18 +395,46 @@ class AudioService {
   }
 
   Future<void> stop() async {
+    final revision = ++_trackLoadRevision;
     await _ensureReady();
+    if (revision != _trackLoadRevision) return;
     await _player.stop();
+    if (revision == _trackLoadRevision) await _entryFade.cancel();
   }
 
   Future<void> pause() async {
+    final revision = ++_trackLoadRevision;
     await _ensureReady();
+    if (revision != _trackLoadRevision) return;
     await _player.pause();
+    if (revision == _trackLoadRevision) await _entryFade.cancel();
   }
 
   Future<void> play() async {
+    final revision = ++_trackLoadRevision;
     await _ensureReady();
-    await _player.play();
+    if (revision != _trackLoadRevision) return;
+    await _entryFade.prepare();
+    if (revision != _trackLoadRevision) return;
+    try {
+      await _player.play();
+      if (revision == _trackLoadRevision) {
+        _entryFade.begin(playing: _player.state.playing);
+      }
+    } catch (_) {
+      if (revision == _trackLoadRevision) await _entryFade.cancel();
+      rethrow;
+    }
+  }
+
+  Future<void> fadeInCurrentTrack() async {
+    final revision = _trackLoadRevision;
+    await _ensureReady();
+    if (revision != _trackLoadRevision) return;
+    await _entryFade.prepare();
+    if (revision == _trackLoadRevision) {
+      _entryFade.begin(playing: _player.state.playing);
+    }
   }
 
   Future<void> seek(Duration position) async {

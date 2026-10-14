@@ -26,6 +26,94 @@ void main() {
   });
 
   test(
+    'visible textures finish during continuous automatic motion only',
+    () async {
+      final animation = controller.beginVisualAnimation(
+        allowResourcePreparation: true,
+      );
+      final route = controller.beginTransition();
+      addTearDown(animation.release);
+      addTearDown(route.release);
+      var granted = false;
+      bool backgroundNeeded() => true;
+      final background = controller.acquireIdleWork(
+        isStillNeeded: backgroundNeeded,
+      );
+      final texture = controller
+          .acquireIdleWork(
+            priority: InteractionWorkPriority.currentVisual,
+            allowDuringVisualAnimation: true,
+          )
+          .then((lease) {
+            granted = true;
+            return lease;
+          });
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+      expect(granted, isFalse);
+      route.release();
+      final lease = await texture.timeout(const Duration(milliseconds: 150));
+      expect(controller.phase, InteractionPhase.visualAnimation);
+      expect(granted, isTrue);
+      lease.release();
+      controller.cancelIdleWork(backgroundNeeded);
+      expect((await background).isGranted, isFalse);
+    },
+  );
+
+  test('page fades still protect a running automatic follow', () async {
+    final follow = controller.beginVisualAnimation(
+      allowResourcePreparation: true,
+    );
+    final page = controller.beginVisualAnimation();
+    addTearDown(follow.release);
+    addTearDown(page.release);
+    var granted = false;
+    final pending = controller
+        .acquireIdleWork(
+          priority: InteractionWorkPriority.currentVisual,
+          allowDuringVisualAnimation: true,
+        )
+        .then((lease) {
+          granted = true;
+          return lease;
+        });
+    await Future<void>.delayed(const Duration(milliseconds: 25));
+    expect(granted, isFalse);
+    page.release();
+    final lease = await pending.timeout(const Duration(milliseconds: 150));
+    expect(granted, isTrue);
+    expect(controller.isCritical, isTrue);
+    lease.release();
+  });
+
+  test('a gesture blocks opted-in visual resources until it settles', () async {
+    final animation = controller.beginVisualAnimation(
+      allowResourcePreparation: true,
+    );
+    addTearDown(animation.release);
+    controller.pulse(
+      InteractionPhase.interacting,
+      settleAfter: const Duration(milliseconds: 120),
+    );
+    var started = false;
+    final pending = controller.runIdleResource<int>(
+      () async {
+        started = true;
+        return 7;
+      },
+      priority: InteractionWorkPriority.currentVisual,
+      allowDuringVisualAnimation: true,
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 40));
+    expect(started, isFalse);
+    controller.endPhase(InteractionPhase.interacting);
+    // Releasing one protection must allow only the opted-in visual resource.
+    final result = await pending.timeout(const Duration(milliseconds: 200));
+    expect(result, 7);
+    expect(controller.isCritical, isTrue);
+  });
+
+  test(
     'owned entrance defers work without leaving a fixed settle tail',
     () async {
       final entrance = controller.beginVisualAnimation();

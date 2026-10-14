@@ -85,11 +85,11 @@ void main() {
       final builds = parentBuilds;
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 180));
-      expect(alpha(tester), inExclusiveRange(0, .05));
+      expect(alpha(tester), inExclusiveRange(0, .10));
       await tester.pump(const Duration(milliseconds: 180));
-      expect(alpha(tester), closeTo(.05, .003));
+      expect(alpha(tester), closeTo(.10, .006));
       await tester.pump(const Duration(milliseconds: 361));
-      expect(alpha(tester), closeTo(.1, .003));
+      expect(alpha(tester), closeTo(.2, .003));
       expect(parentBuilds, builds);
       expect(
         tester.element(find.byKey(const ValueKey('now-playing-cover-image'))),
@@ -120,7 +120,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      expect(alpha(tester), closeTo(.1, .003));
+      expect(alpha(tester), closeTo(.2, .003));
       transition.value = 1;
       await tester.pump();
       expect(alpha(tester), 0);
@@ -132,16 +132,16 @@ void main() {
       expect(alpha(tester), 0);
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 180));
-      expect(alpha(tester), inExclusiveRange(0, .05));
+      expect(alpha(tester), inExclusiveRange(0, .10));
       await tester.pumpAndSettle();
-      expect(alpha(tester), closeTo(.1, .003));
+      expect(alpha(tester), closeTo(.2, .003));
       await tester.pumpWidget(const SizedBox());
       transition.dispose();
       expect(tester.binding.transientCallbackCount, 0);
     },
   );
   testWidgets(
-    'queued replacements never light before the latest cover finishes',
+    'queued replacements retain an already lit halo throughout decoding',
     (tester) async {
       final a = _DeferredImage(), b = _DeferredImage(), c = _DeferredImage();
       final changes = ValueNotifier<ImageProvider<Object>>(a);
@@ -173,21 +173,21 @@ void main() {
       await resolve(a, Colors.red);
       await tester.pumpAndSettle();
       await resolve(b, Colors.blue);
-      expect(alpha(tester), 0);
+      expect(alpha(tester), closeTo(.2, .003));
       await tester.pump(const Duration(milliseconds: 100));
       await resolve(c, Colors.green);
-      expect(alpha(tester), 0);
+      expect(alpha(tester), closeTo(.2, .003));
       await tester.pump(const Duration(milliseconds: 221));
-      expect(alpha(tester), 0);
+      expect(alpha(tester), closeTo(.2, .003));
       await tester.pump(const Duration(milliseconds: 319));
-      expect(alpha(tester), 0);
+      expect(alpha(tester), closeTo(.2, .003));
       await tester.pump(const Duration(milliseconds: 2));
-      expect(alpha(tester), 0);
+      expect(alpha(tester), closeTo(.2, .003));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 180));
-      expect(alpha(tester), inExclusiveRange(0, .05));
+      expect(alpha(tester), closeTo(.2, .003));
       await tester.pumpAndSettle();
-      expect(alpha(tester), closeTo(.1, .003));
+      expect(alpha(tester), closeTo(.2, .003));
       await tester.pumpWidget(const SizedBox());
       changes.dispose();
       PaintingBinding.instance.imageCache.clear();

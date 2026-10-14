@@ -13,7 +13,7 @@ import 'package:myune_music/widgets/playback_background/fluid_colour_motion.dart
 import 'package:myune_music/widgets/playback_background/fluid_frame_uniforms.dart';
 
 void main() {
-  testWidgets('encoded artwork retains the restored 383 black pigment', (
+  testWidgets('bright encoded artwork suppresses black printing as a pigment', (
     tester,
   ) async {
     await tester.runAsync(() async {
@@ -37,8 +37,8 @@ void main() {
         bytes: data!.buffer.asUint8List(),
         fallbackSeed: Colors.purple,
       );
-      expect(palette.colors.contains(Colors.black), isTrue);
-      expect(HSLColor.fromColor(palette.baseColor).lightness, lessThan(.02));
+      expect(palette.colors.contains(Colors.black), isFalse);
+      expect(HSLColor.fromColor(palette.baseColor).lightness, greaterThan(.20));
       image.dispose();
       picture.dispose();
       cache.clear();
@@ -125,18 +125,18 @@ void main() {
       for (var i = 0; i <= 1200; i++) {
         final orbit = i / 1200 * math.pi * 2;
         final rates = [for (var f = 0; f < 4; f++) fluidColourRate(orbit, f)];
-        expect(rates.reduce((a, b) => a + b), closeTo(4, 1e-10));
+        expect(rates.reduce((a, b) => a + b), closeTo(8, 1e-10));
         for (var f = 0; f < 4; f++) {
           low = math.min(low, rates[f]);
           high = math.max(high, rates[f]);
           final numeric =
-              (fluidColourPhase(orbit + .0001, f) -
-                  fluidColourPhase(orbit - .0001, f)) /
-              .0002;
+              (fluidColourPhase(orbit + .00001, f) -
+                  fluidColourPhase(orbit - .00001, f)) /
+              .00002;
           expect(numeric, closeTo(rates[f], 1e-7));
-          if (rates[f] > 2) {
+          if (rates[f] > 4) {
             expect(
-              rates.where((r) => r != rates[f]).every((r) => r < 1.02),
+              rates.where((r) => r != rates[f]).every((r) => r < 2.04),
               isTrue,
             );
           }
@@ -152,9 +152,9 @@ void main() {
   );
 
   test(
-    'sixteen cached cover colours stay in gamut and preserve neutral artwork',
+    'eight shared cover colours stay in gamut and preserve neutral artwork',
     () {
-      final variants = Float64List(48);
+      final variants = Float64List(96);
       final palette = buildFluidPalette(const [
         Colors.red,
         Colors.blue,
@@ -163,17 +163,17 @@ void main() {
       ], fallbackSeed: Colors.pink);
       cacheFluidColourVariants(variants, palette);
       final colours = <String>{};
-      for (var i = 0; i < 16; i++) {
+      for (var i = 0; i < 32; i++) {
         final rgb = variants.sublist(i * 3, i * 3 + 3);
         expect(rgb.every((c) => c >= 0 && c <= 1), isTrue);
         colours.add(rgb.map((c) => c.toStringAsFixed(5)).join(','));
       }
-      expect(colours, hasLength(16));
+      expect(colours.length, inInclusiveRange(6, 8));
       cacheFluidColourVariants(
         variants,
         const FluidPalette(Colors.grey, Colors.grey, Colors.grey, Colors.grey),
       );
-      for (var i = 0; i < 16; i++) {
+      for (var i = 0; i < 32; i++) {
         expect(variants[i * 3], variants[i * 3 + 1]);
         expect(variants[i * 3 + 1], variants[i * 3 + 2]);
       }
@@ -245,14 +245,14 @@ void main() {
       settings.dispose();
     },
   );
-  test('bright coloured artwork follows 383 pigment selection', () {
+  test('bright coloured artwork preserves colour without black pigments', () {
     final palette = buildWeightedFluidPalette(const [
       FluidColorSample(Colors.white, .60),
       FluidColorSample(Color(0xff55bbe5), .25),
       FluidColorSample(Colors.black, .10),
       FluidColorSample(Color(0xff8e8e8e), .05),
     ], fallbackSeed: Colors.purple);
-    expect(palette.colors, contains(Colors.black));
+    expect(palette.colors, isNot(contains(Colors.black)));
     expect(
       palette.colors.any((c) => HSLColor.fromColor(c).saturation > .5),
       isTrue,

@@ -225,6 +225,11 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
                                       song: song,
                                       index: index,
                                       enableContextMenu: false,
+                                      queueActions: true,
+                                      onQueueChanged: () {
+                                        _originalSource = notifier
+                                            .capturePlaybackSource();
+                                      },
                                       contextPlaylist:
                                           _scope == _QueueScope.playlists &&
                                               _selectedPlaylist != null

@@ -16,7 +16,10 @@ void main() {
       FluidColorSample(other, .30),
     ], fallbackSeed: Colors.pink);
     expect(hueDistance(palette.second, dominant), lessThan(2));
-    expect(HSLColor.fromColor(palette.second).saturation, closeTo(.48, .05));
+    expect(
+      HSLColor.fromColor(palette.second).saturation,
+      inInclusiveRange(.48, .55),
+    );
   });
 
   test(

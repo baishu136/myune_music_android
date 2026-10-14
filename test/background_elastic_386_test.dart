@@ -11,7 +11,7 @@ import 'package:myune_music/page/setting/settings_provider.dart';
 
 void main() {
   test(
-    '383 extraction keeps real black pigment and does not mute coloured accents',
+    'bright extraction avoids black pigment and retains coloured accents',
     () {
       final bright = buildWeightedFluidPalette(const [
         FluidColorSample(Colors.white, .60),
@@ -19,7 +19,7 @@ void main() {
         FluidColorSample(Colors.black, .10),
         FluidColorSample(Colors.grey, .05),
       ], fallbackSeed: Colors.purple);
-      expect(bright.colors.contains(Colors.black), isTrue);
+      expect(bright.colors.contains(Colors.black), isFalse);
       final muted = buildWeightedFluidPalette(const [
         FluidColorSample(Color(0xff929496), .88),
         FluidColorSample(Color(0xfff02947), .12),
@@ -79,7 +79,7 @@ void main() {
     },
   );
   testWidgets(
-    'equal pigments do not acquire capsule outlines from field coverage',
+    'coincident equal pigments form one bounded region and retain their hue',
     (tester) async {
       await tester.runAsync(() async {
         final shader = (await ui.FragmentProgram.fromAsset(
@@ -123,10 +123,14 @@ void main() {
             final samples = [
               for (final y in [5, 50, 100, 150, 195]) rgba[(y * 100 + 50) * 4],
             ];
-            expect(
-              samples.reduce(math.max) - samples.reduce(math.min),
-              lessThanOrEqualTo(4),
-            );
+            expect(samples.first, lessThanOrEqualTo(1));
+            expect(samples.last, lessThanOrEqualTo(1));
+            expect(samples[2], greaterThan(120));
+            for (var i = 0; i < rgba.length; i += 4) {
+              expect(rgba[i + 1], lessThanOrEqualTo(1));
+              expect(rgba[i + 2], lessThanOrEqualTo(1));
+              expect(rgba[i + 3], 255);
+            }
           } finally {
             image.dispose();
             picture.dispose();

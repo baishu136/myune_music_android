@@ -1,15 +1,40 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
 
 enum PlaybackArtworkBackgroundStyle { blurred, fluid }
 
 enum FluidBackgroundQuality { automatic, powerSaving, smooth }
 
 // Visible wall-clock seconds; frame uniforms convert to orbital radians.
-// Every temporal harmonic is an integer, so all masks/warps wrap together.
+// Orbit, doubled colour and 1.6x shape clocks share a five-orbit wrap.
 const fluidShaderTimeScale = .15;
-const fluidPhaseCycle = math.pi * 2 / fluidShaderTimeScale; // 41.89 seconds
+const fluidOrbitPeriod = math.pi * 2 / fluidShaderTimeScale;
+// Five orbits keep the 1.6x shape clock continuous when visible time wraps.
+const fluidPhaseCycle = fluidOrbitPeriod * 5;
+const fluidMotionColourCount = 8;
+
+bool fluidNeedsIntermediateColour(Color a, Color b) {
+  double brightness(Color c) =>
+      .30 * c.r * c.a + .40 * c.g * c.a + .30 * c.b * c.a;
+  final x = brightness(a), y = brightness(b);
+  final opposite = (x < .36 && y > .52) || (y < .36 && x > .52);
+  final distance = math.sqrt(
+    .30 * math.pow(a.r * a.a - b.r * b.a, 2) +
+        .40 * math.pow(a.g * a.a - b.g * b.a, 2) +
+        .30 * math.pow(a.b * a.a - b.b * b.a, 2),
+  );
+  return opposite && distance > .28;
+}
+
+double fluidColourTransitionBlend(double progress, bool throughMiddle) {
+  if (!throughMiddle) return fluidPaletteBlend(progress);
+  final p = progress.clamp(0.0, 1.0);
+  return p < .5
+      ? .5 * fluidPaletteBlend(p * 2)
+      : .5 + .5 * fluidPaletteBlend((p - .5) * 2);
+}
 
 double wrapFluidPhase(double phase) => phase % fluidPhaseCycle;
 
@@ -55,12 +80,40 @@ class FluidPalette {
     this.warmAccentLocked = false,
     this.vividAccentLocked = false,
     this.layeredRolesLocked = false,
+    this.motionColors = const [],
   });
 
   final Color first;
   final Color second;
   final Color third;
   final Color fourth;
+  // Eight cover-related colours per field, prepared only when artwork changes.
+  final List<Color> motionColors;
+
+  bool stagesFieldTo(FluidPalette other, int field) =>
+      other.motionColors.isNotEmpty &&
+      fluidNeedsIntermediateColour(
+        this[field == 3 ? 0 : field + 1],
+        other[field == 3 ? 0 : field + 1],
+      );
+
+  Color motionColor(int field, int variant) {
+    if (motionColors.length == 4 * fluidMotionColourCount) {
+      return motionColors[field * fluidMotionColourCount + variant];
+    }
+    final c = this[field == 3 ? 0 : field + 1];
+    final v = variant % 4;
+    final scale = const [1.0, .94, .90, .97][v];
+    final tint = const [0.0, .10, .10, .05][v];
+    final r = c.r * c.a, g = c.g * c.a, b = c.b * c.a;
+    return Color.from(
+      alpha: 1,
+      red: scale * (r + ((v == 2 ? b : g) - r) * tint),
+      green: scale * (g + ((v == 2 ? r : b) - g) * tint),
+      blue: scale * (b + ((v == 2 ? g : r) - b) * tint),
+    );
+  }
+
   // Base and ambient energy are artwork properties, not per-frame analysis.
   final Color baseColor;
   final double glowStrength;
@@ -110,14 +163,41 @@ class FluidPalette {
   static FluidPalette lerp(
     FluidPalette source,
     FluidPalette target,
-    double value,
-  ) {
+    double value, {
+    double? transitionProgress,
+    List<bool>? stagedFields,
+  }) {
     final t = value.clamp(0.0, 1.0);
+    if (t == 0) return source;
+    if (t == 1) return target;
+    double fieldBlend(int field) => transitionProgress == null
+        ? t
+        : fluidColourTransitionBlend(
+            transitionProgress,
+            stagedFields?[field] ?? source.stagesFieldTo(target, field),
+          );
+    Color mix(Color a, Color b, double blend) => Color.from(
+      alpha: 1,
+      red: a.r * a.a + (b.r * b.a - a.r * a.a) * blend,
+      green: a.g * a.a + (b.g * b.a - a.g * a.a) * blend,
+      blue: a.b * a.a + (b.b * b.a - a.b * a.a) * blend,
+    );
     return FluidPalette(
-      Color.lerp(source.first, target.first, t)!,
-      Color.lerp(source.second, target.second, t)!,
-      Color.lerp(source.third, target.third, t)!,
-      Color.lerp(source.fourth, target.fourth, t)!,
+      mix(source.first, target.first, fieldBlend(3)),
+      mix(source.second, target.second, fieldBlend(0)),
+      mix(source.third, target.third, fieldBlend(1)),
+      mix(source.fourth, target.fourth, fieldBlend(2)),
+      motionColors: List<Color>.unmodifiable(
+        List.generate(4 * fluidMotionColourCount, (i) {
+          final field = i ~/ fluidMotionColourCount,
+              variant = i % fluidMotionColourCount;
+          return mix(
+            source.motionColor(field, variant),
+            target.motionColor(field, variant),
+            fieldBlend(field),
+          );
+        }),
+      ),
       baseColor: Color.lerp(source.baseColor, target.baseColor, t)!,
       glowStrength:
           source.glowStrength + (target.glowStrength - source.glowStrength) * t,
@@ -145,7 +225,8 @@ class FluidPalette {
           glowStrength == other.glowStrength &&
           warmAccentLocked == other.warmAccentLocked &&
           vividAccentLocked == other.vividAccentLocked &&
-          layeredRolesLocked == other.layeredRolesLocked;
+          layeredRolesLocked == other.layeredRolesLocked &&
+          listEquals(motionColors, other.motionColors);
 
   @override
   int get hashCode => Object.hash(
@@ -158,6 +239,7 @@ class FluidPalette {
     warmAccentLocked,
     vividAccentLocked,
     layeredRolesLocked,
+    Object.hashAll(motionColors),
   );
 }
 
@@ -215,6 +297,7 @@ FluidPalette alignFluidPaletteSlots(
     warmAccentLocked: incoming.warmAccentLocked,
     vividAccentLocked: incoming.vividAccentLocked,
     layeredRolesLocked: incoming.layeredRolesLocked,
+    motionColors: incoming.motionColors,
   );
 }
 

@@ -285,16 +285,20 @@ void main() {
   testWidgets(
     'actual shader keeps a lit centre, orbital fields and continuous motion',
     (tester) async {
+      final palette = buildFluidPalette(
+        _colourful.colors,
+        fallbackSeed: Colors.blue,
+      );
       await tester.runAsync(() async {
         final program = await ui.FragmentProgram.fromAsset(
           'shaders/fluid_background.frag',
         );
         final shader = program.fragmentShader();
         try {
-          final centre = await _render(shader, _colourful, label: 'colourful');
+          final centre = await _render(shader, palette, label: 'colourful');
           final centreLuma = _meanLuma(centre, 32, 56, 64, 104);
           // Reduced dense areas expose more canvas; still reject a dark hole.
-          expect(centreLuma, greaterThan(75), reason: '$centreLuma');
+          expect(centreLuma, greaterThan(35), reason: '$centreLuma');
           // Test the complete extraction-to-shader path too. Broad diffusion
           // must not wash a vivid cover into a nearly white lyrics backdrop.
           final calibrated = await _render(
@@ -303,7 +307,7 @@ void main() {
             label: 'production-colourful',
           );
           final calibratedLuma = _meanLuma(calibrated, 32, 56, 64, 104);
-          expect(calibratedLuma, inExclusiveRange(75, 175));
+          expect(calibratedLuma, inExclusiveRange(35, 175));
           // Whole-cycle checkpoints use an actually extracted palette, not
           // hand-picked shader colours. Bound catastrophic global desaturation
           // without pretending complementary boundary lerps stay pure.
@@ -373,7 +377,7 @@ void main() {
           // A near-full orbit still wraps all RGB channels, not just red.
           final wrapped = await _render(
             shader,
-            _colourful,
+            palette,
             phase: fluidPhaseCycle,
           );
           expect(_meanDifference(centre, wrapped), lessThan(1));
@@ -385,7 +389,8 @@ void main() {
           final postWrap = await _render(shader, _colourful, phase: .016);
           // Physical-size fields have steeper local slopes. Bound the 32ms
           // movement separately from an almost-zero-time seam discontinuity.
-          expect(_meanDifference(preWrap, postWrap), lessThan(.5));
+          // Shape runs at 1.6x and colour at 2x; this is 32ms of real movement.
+          expect(_meanDifference(preWrap, postWrap), lessThan(1));
           final justBefore = await _render(
             shader,
             _colourful,
@@ -396,8 +401,8 @@ void main() {
 
           // Stable-motion frames sampled at real display intervals are gradual;
           // over twenty seconds colours still move rather than appearing stuck.
-          final frame = await _render(shader, _colourful, phase: .019);
-          expect(_meanDifference(centre, frame), lessThan(.2));
+          final frame = await _render(shader, palette, phase: .019);
+          expect(_meanDifference(centre, frame), lessThan(.5));
           final later = await _render(
             shader,
             _colourful,

@@ -7,6 +7,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/cupertino.dart' show CupertinoPageRoute;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import '../page/setting/equalizer_preset_widgets.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import 'package:flutter/services.dart';
@@ -5778,10 +5779,15 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                                   song,
                                 ),
                                 child: NowPlayingCoverGlow(
-                                  enabled: useFluidBackground,
+                                  enabled:
+                                      settings.followAlbumArtOnPlayback &&
+                                      settings.playbackArtworkBackgroundStyle ==
+                                          PlaybackArtworkBackgroundStyle.fluid,
                                   entranceComplete:
                                       _routeTransitionComplete && !_showLyrics,
                                   coverTransition: _coverTransitionController,
+                                  pageEntrance:
+                                      _playbackGlassTransitionController,
                                   waitForImage: true,
                                   child: NowPlayingCoverHero(
                                     normalizedSongPath: song.normalizedPath,
@@ -5824,6 +5830,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                           child: Transform.scale(
                             scale: 0.98 + 0.02 * progress,
                             alignment: Alignment.center,
+                            filterQuality: FilterQuality.low,
                             child: child,
                           ),
                         );
@@ -6667,7 +6674,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                   Wrap(
                     spacing: 8,
                     runSpacing: 8,
-                    children: PlaylistContentNotifier.equalizerPresets
+                    children: notifier.availableEqualizerPresets
                         .skip(1)
                         .map(
                           (preset) => TransparentChipSurface(
@@ -7800,6 +7807,7 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
         Object.hashAll(notifier.equalizerGains),
         Object.hashAll(notifier.enabledEffects.toList()..sort()),
         notifier.arnndnModelPath,
+        Object.hashAll(notifier.savedEqualizerPresets.map((p) => p.id)),
       ),
     );
     final notifier = context.read<PlaylistContentNotifier>();
@@ -7894,7 +7902,7 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           child: Row(
-            children: PlaylistContentNotifier.equalizerPresets
+            children: notifier.availableEqualizerPresets
                 .skip(1)
                 .map(
                   (preset) => Padding(
@@ -7960,6 +7968,11 @@ class _AudioEffectsSheetState extends State<_AudioEffectsSheet> {
             ],
           );
         }),
+        if (notifier.canSaveEqualizerPreset &&
+            _draggingEqualizerGains.isEmpty) ...[
+          const SizedBox(height: 16),
+          EqualizerSaveButton(notifier: notifier),
+        ],
       ],
     );
   }

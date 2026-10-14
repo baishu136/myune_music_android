@@ -17,6 +17,7 @@ import 'interlude_animation_widget.dart';
 import 'karaoke_motion.dart';
 import 'lyric_seek_guide.dart';
 import 'lyric_scroll_motion.dart';
+import 'lyric_follow_scroll_controller.dart';
 import 'lyric_elastic_motion.dart';
 import 'lyric_normalized_motion.dart';
 import 'lyric_phase_transition.dart';
@@ -68,6 +69,16 @@ const double mobileLyricsDefaultScrollFrequency = 8.8;
 const double mobileLyricsRenderOverflow = 180;
 const double mobileLyricsActiveScale = 1.1;
 const double mobileLyricsVerticalPadding = 6;
+
+bool canAnimateLyricLine(
+  LyricLine line,
+  bool enabled,
+  KaraokeLyricsMode mode,
+) =>
+    enabled &&
+    !line.isInterlude &&
+    (line.hasTimedWords ||
+        (mode == KaraokeLyricsMode.all && line.allowSyntheticKaraoke));
 
 double mobileLyricsLargeFontProgress(double fontSize) =>
     ((fontSize - 20) / 16).clamp(0.0, 1.0).toDouble();
@@ -817,7 +828,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     with SingleTickerProviderStateMixin {
   static const _focusAnchor = .4;
 
-  ScrollController? _scrollControllerState;
+  LyricFollowScrollController? _scrollControllerState;
   // The karaoke switch changes glyph paint, never the row/list trajectory.
   // Keep the default font-adaptive spring and the optional elastic row driver.
   final LyricScrollMotion _springMotion = LyricScrollMotion(
@@ -837,6 +848,15 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       ValueNotifier(const _LyricBrowseHighlightFrame());
   final GlobalKey _browseTapTargetRenderKey = GlobalKey();
   late final LyricFrameClock _frameClock;
+  late bool _karaokePresentationEnabled = _resolveKaraokePresentation();
+
+  bool _resolveKaraokePresentation() => widget.lines.any(
+    (line) => canAnimateLyricLine(
+      line,
+      widget.karaokeLyricsEnabled,
+      widget.karaokeLyricsMode,
+    ),
+  );
   final _prewarm = _KaraokePrewarmSlot();
   int _prewarmGeneration = 0;
   bool _prewarmPending = false;
@@ -892,7 +912,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   TextDirection? _layoutDirection;
   double _layoutTextScale = -1;
 
-  ScrollController get _scrollController => _scrollControllerState!;
+  LyricFollowScrollController get _scrollController => _scrollControllerState!;
 
   // Elastic mode owns the row displacement; rigid mode owns the list offset.
   // Karaoke glyph lift is independent of either, with no local AnimatedSlide.
@@ -988,6 +1008,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   @override
   void didUpdateWidget(covariant MobileLyricsList oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _karaokePresentationEnabled = _resolveKaraokePresentation();
     if (oldWidget.fontSize != widget.fontSize) {
       _configureMotion();
     }
@@ -1230,7 +1251,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     final style = _prewarmStyle;
     if (_prewarmPending ||
         style == null ||
-        !widget.karaokeLyricsEnabled ||
+        !_karaokePresentationEnabled ||
         _isManuallyBrowsing ||
         index <= 0 ||
         index >= widget.lines.length ||
@@ -1249,7 +1270,13 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     final line = widget.lines[index];
     if (line.isInterlude) return;
     final timed = hasUsableKaraokeTiming(line);
-    if (!timed && widget.karaokeLyricsMode != KaraokeLyricsMode.all) return;
+    if (!canAnimateLyricLine(
+      line,
+      _karaokePresentationEnabled,
+      widget.karaokeLyricsMode,
+    )) {
+      return;
+    }
     final next = index + 1 < widget.lines.length
         ? widget.lines[index + 1].timestamp
         : null;
@@ -1334,7 +1361,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     // Keep the normalized tail subpixel-continuous too: a .05px gate can hold
     // several final frames then jump, even though the model is continuous.
     if (_scrollController.offset != nextOffset) {
-      _scrollController.jumpTo(nextOffset);
+      _scrollController.followTo(nextOffset);
     }
     _updateDebugSnapshot(elapsed, frameSeconds);
     if (_motion.isSettled) _stopMotion();
@@ -1351,7 +1378,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   void _syncScrollProtection() {
     if (_motionVisible && _frameClock.visualMoving.value) {
       _scrollProtection ??= InteractionPerformanceController.instance
-          .beginVisualAnimation();
+          .beginVisualAnimation(allowResourcePreparation: true);
     } else {
       _scrollProtection?.release();
       _scrollProtection = null;
@@ -1360,6 +1387,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   void _stopMotion() {
     _frameClock.setMoving(false);
+    _scrollControllerState?.stopFollowing();
     _lastTick = null;
   }
 
@@ -2119,7 +2147,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                 _itemOffsets.length - 1,
               );
               final initialOffset = _itemOffsets[initialIndex];
-              _scrollControllerState = ScrollController(
+              _scrollControllerState = LyricFollowScrollController(
                 initialScrollOffset: initialOffset,
               );
               _motion.sync(initialOffset, viewportExtent: _viewportHeight);
@@ -2160,6 +2188,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                               _itemHeights[index],
                           itemBuilder: (itemContext, index) {
                             _recompositionCount++;
+                            final line = widget.lines[index];
                             final distance = (index - displayedActive).abs();
                             final browseTarget =
                                 _isManuallyBrowsing &&
@@ -2209,7 +2238,14 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                                   widget.scrollEffect ==
                                   LyricScrollEffect.dynamic,
                               highlightActiveLine: widget.highlightActiveLine,
-                              karaokeLyricsEnabled: widget.karaokeLyricsEnabled,
+                              karaokeLyricsEnabled:
+                                  _karaokePresentationEnabled &&
+                                  (line.isInterlude ||
+                                      canAnimateLyricLine(
+                                        line,
+                                        true,
+                                        widget.karaokeLyricsMode,
+                                      )),
                               karaokeLyricsMode: widget.karaokeLyricsMode,
                               nextTimestamp: index + 1 < widget.lines.length
                                   ? widget.lines[index + 1].timestamp
@@ -2749,13 +2785,15 @@ class _LyricLineItem extends StatelessWidget {
   final Duration position;
   final ValueListenable<Duration>? positionListenable;
 
-  double get _opacity => switch (distance) {
-    0 => 1,
-    1 => .68,
-    2 => .52,
-    3 => .40,
-    _ => .32,
-  };
+  double get _opacity => active
+      ? 1
+      : switch (distance) {
+          0 || 1 => .40,
+          2 => .32,
+          3 => .25,
+          4 => .20,
+          _ => .15,
+        };
 
   double get _scale => line.isInterlude && normalExit
       ? mobileLyricsActiveScale
@@ -2842,7 +2880,9 @@ class _LyricLineItem extends StatelessWidget {
         ? Colors.white
         : resolvedActiveColor;
     final lineColor = browseHighlighted
-        ? browseHighlightColor
+        ? browseHighlightColor.withValues(
+            alpha: ordinaryText && !active ? _opacity : 1,
+          )
         : ordinaryText
         ? Color.lerp(inactiveColor, resolvedActiveColor, wholeLineHighlight)!
         : active
