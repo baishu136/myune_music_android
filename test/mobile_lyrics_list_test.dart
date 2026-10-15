@@ -10,6 +10,7 @@ import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
 import 'package:myune_music/widgets/interlude_animation_widget.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
+import 'package:myune_music/widgets/lyric_viewport_blur.dart';
 
 void main() {
   testWidgets(
@@ -3340,7 +3341,7 @@ void main() {
 
       hostKey.currentState!.setActive(1);
       await tester.pump();
-      final incomingAtStart = tester.widget<ImageFiltered>(
+      final incomingAtStart = tester.renderObject<RenderLyricViewportBlur>(
         find.descendant(
           of: find.byKey(const ValueKey('mobile_lyric_1')),
           matching: find.byWidgetPredicate((widget) => widget is ImageFiltered),
@@ -3354,16 +3355,19 @@ void main() {
       );
 
       await tester.pump(const Duration(milliseconds: 100));
-      final outgoingDuringTransition = tester.widget<ImageFiltered>(
-        find.descendant(
-          of: find.byKey(const ValueKey('mobile_lyric_0')),
-          matching: find.byWidgetPredicate((widget) => widget is ImageFiltered),
-        ),
-      );
+      final outgoingDuringTransition = tester
+          .renderObject<RenderLyricViewportBlur>(
+            find.descendant(
+              of: find.byKey(const ValueKey('mobile_lyric_0')),
+              matching: find.byWidgetPredicate(
+                (widget) => widget is ImageFiltered,
+              ),
+            ),
+          );
       expect(outgoingDuringTransition.enabled, isTrue);
 
       await tester.pump(mobileLyricsFocusTransitionDuration);
-      final incomingSettled = tester.widget<ImageFiltered>(
+      final incomingSettled = tester.renderObject<RenderLyricViewportBlur>(
         find.descendant(
           of: find.byKey(const ValueKey('mobile_lyric_1')),
           matching: find.byWidgetPredicate((widget) => widget is ImageFiltered),

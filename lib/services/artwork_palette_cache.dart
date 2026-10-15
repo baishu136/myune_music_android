@@ -756,7 +756,7 @@ Color _normalizeFluidColor(Color color, _FluidArtworkProfile profile) {
   final normalizedSaturation = hsl.saturation < .20
       ? hsl.saturation
       : profile.vivid
-      ? (hsl.saturation * 1.10).clamp(0.0, .94)
+      ? (hsl.saturation * 1.08).clamp(0.0, .94)
       : (hsl.saturation * 1.06).clamp(0.0, .65);
   return hsl
       .withSaturation(normalizedSaturation)

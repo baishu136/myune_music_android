@@ -24,6 +24,43 @@ class ProjectChangelogEntry {
 /// 0.99 集中记录 0.9.8-android.129 之后的全部有效改动。
 const projectChangelogEntries = <ProjectChangelogEntry>[
   ProjectChangelogEntry(
+    version: '1.0.0-android.397',
+    date: '2026-10-15',
+    fixes: ['关闭逐字歌词时，减少滚动启动和落位时多行模糊控件重建与绘制缓存边界切换。'],
+    optimizations: ['普通歌词直接跳过逐字适配扫描，保留原滚动轨迹、模糊、光晕与背景效果。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.396',
+    date: '2026-10-15',
+    optimizations: [
+      '恢复394版动态背景取色、扩散混色和原有每帧参数。',
+      '歌词模糊动画直接更新滤镜层，逐字绘制仅写入发生变化的参数，减少连续滚动与高亮推进时的重复工作。',
+    ],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.395',
+    date: '2026-10-15',
+    features: ['动态背景采用128种精选候选色，按封面类型规划明暗面积。'],
+    optimizations: [
+      '亮色封面暗部0%～5%，鲜艳封面2%～10%，多色封面5%～45%，低饱和封面维持30%的暗部目标。',
+      '保留391柔和扩散与长距离线性变速，结合可见画面亮度进行平滑校准，保留近黑封面的中性暗调。',
+    ],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.394',
+    date: '2026-10-14',
+    optimizations: ['恢复391版动态背景的柔和扩散与四色混合，保留多色变换、长距离线性加减速及切歌衔接。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.393',
+    date: '2026-10-14',
+    fixes: ['动态背景同色团融合时减少大块色斑和圆形明暗边界，色团中心至边缘恢复柔和衰减。'],
+    optimizations: [
+      '撤销上一版鲜艳颜色额外增强，保留封面原有取色规则与6～8种变色。',
+      '色团采用长距离线性加减速，小范围平滑衔接速度极值，中心游走及径向运动减少短周期变化。',
+    ],
+  ),
+  ProjectChangelogEntry(
     version: '1.0.0-android.392',
     date: '2026-10-14',
     optimizations: [

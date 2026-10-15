@@ -7,6 +7,7 @@ int debugKaraokeTextLayoutCount = 0;
 int debugKaraokeLivePictureCount = 0;
 int debugKaraokeSolidLayerCount = 0;
 int debugKaraokeGradientLayerCount = 0;
+int debugKaraokeInkUniformWriteCount = 0;
 
 ui.FragmentProgram? _karaokeInkProgram;
 Future<ui.FragmentProgram>? _karaokeInkProgramFuture;
@@ -107,10 +108,68 @@ class _KaraokeSweepRelay {
   double front = 0;
 }
 
+class _KaraokeInkShader {
+  _KaraokeInkShader(this.shader);
+  final ui.FragmentShader shader;
+  Color? _active, _inactive;
+  double _front = double.nan, _feather = double.nan;
+  double _direction = double.nan, _strength = double.nan;
+
+  void _write(int index, double value) {
+    shader.setFloat(index, value);
+    assert(() {
+      debugKaraokeInkUniformWriteCount++;
+      return true;
+    }());
+  }
+
+  void configure(
+    Color active,
+    Color inactive,
+    double front,
+    double feather,
+    double direction,
+    double strength,
+  ) {
+    if (_front != front) {
+      _front = front;
+      _write(7, front);
+    }
+    if (_feather != feather) {
+      _feather = feather;
+      _write(8, feather);
+    }
+    if (_direction != direction) {
+      _direction = direction;
+      _write(9, direction);
+    }
+    if (_strength != strength) {
+      _strength = strength;
+      _write(10, strength);
+    }
+    if (_active != active) {
+      _active = active;
+      _write(11, active.r * active.a);
+      _write(12, active.g * active.a);
+      _write(13, active.b * active.a);
+      _write(14, active.a);
+    }
+    if (_inactive != inactive) {
+      _inactive = inactive;
+      _write(15, inactive.r * inactive.a);
+      _write(16, inactive.g * inactive.a);
+      _write(17, inactive.b * inactive.a);
+      _write(18, inactive.a);
+    }
+  }
+
+  void dispose() => shader.dispose();
+}
+
 class _KaraokeNativeInk {
   _KaraokeNativeInk(this.image, this.shader);
   final ui.Image image;
-  final ui.FragmentShader shader;
+  final _KaraokeInkShader shader;
   void dispose() {
     shader.dispose();
     image.dispose();
@@ -124,7 +183,7 @@ class _KaraokeUnit {
   final _KaraokeFragment fragment;
   late final Rect layerBounds;
   int inkId = 0;
-  ui.FragmentShader? shader;
+  _KaraokeInkShader? shader;
   late final KaraokeGlyphTiming timing;
   late KaraokeSweepPath sweep;
 }
@@ -651,9 +710,9 @@ class _KaraokePaintCache extends ChangeNotifier {
   late final int _originalInkId;
   late final int _translationInkId;
   late final ui.Picture _inkMask;
-  ui.FragmentShader? _primaryShader;
-  ui.FragmentShader? _originalShader;
-  ui.FragmentShader? _translationShader;
+  _KaraokeInkShader? _primaryShader;
+  _KaraokeInkShader? _originalShader;
+  _KaraokeInkShader? _translationShader;
   late final bool _primaryNative, _originalNative, _translationNative;
   _KaraokeNativeInk? _originalNativeInk, _translationNativeInk;
   int _nativePixels = 0, _nativeImageCount = 0;
@@ -910,7 +969,7 @@ class _KaraokePaintCache extends ChangeNotifier {
         ..setImageSampler(1, image);
       _nativePixels += w * h;
       _nativeImageCount++;
-      return _KaraokeNativeInk(image, shader);
+      return _KaraokeNativeInk(image, _KaraokeInkShader(shader));
     } catch (_) {
       image?.dispose();
       return null;
@@ -1073,7 +1132,7 @@ class _KaraokePaintCache extends ChangeNotifier {
     }
   }
 
-  ui.FragmentShader _makeShader(
+  _KaraokeInkShader _makeShader(
     ui.FragmentProgram program,
     ui.Image image,
     double id,
@@ -1088,7 +1147,7 @@ class _KaraokePaintCache extends ChangeNotifier {
       ..setFloat(6, _translationInkId.toDouble())
       ..setImageSampler(0, image)
       ..setImageSampler(1, _coverageImage!);
-    return shader;
+    return _KaraokeInkShader(shader);
   }
 
   ui.Picture _recordOwnedMask(List<_KaraokePaintRange> ranges) {
@@ -1235,7 +1294,7 @@ class _KaraokePaintCache extends ChangeNotifier {
 
   void _ink(
     Canvas canvas,
-    ui.FragmentShader shader,
+    _KaraokeInkShader shader,
     Rect bounds,
     double lift,
     Color active,
@@ -1245,20 +1304,15 @@ class _KaraokePaintCache extends ChangeNotifier {
     double strength, {
     double? featherWidth,
   }) {
-    shader
-      ..setFloat(7, front)
-      ..setFloat(8, featherWidth ?? feather)
-      ..setFloat(9, direction)
-      ..setFloat(10, strength)
-      ..setFloat(11, active.r * active.a)
-      ..setFloat(12, active.g * active.a)
-      ..setFloat(13, active.b * active.a)
-      ..setFloat(14, active.a)
-      ..setFloat(15, inactive.r * inactive.a)
-      ..setFloat(16, inactive.g * inactive.a)
-      ..setFloat(17, inactive.b * inactive.a)
-      ..setFloat(18, inactive.a);
-    _inkPaint.shader = shader;
+    shader.configure(
+      active,
+      inactive,
+      front,
+      featherWidth ?? feather,
+      direction,
+      strength,
+    );
+    _inkPaint.shader = shader.shader;
     canvas.save();
     canvas.translate(0, lift);
     canvas.drawRect(bounds, _inkPaint);
@@ -1525,7 +1579,7 @@ class _KaraokePaintCache extends ChangeNotifier {
   void _fixedRows(
     Canvas canvas,
     ui.Picture mask,
-    ui.FragmentShader? shader,
+    _KaraokeInkShader? shader,
     Color color,
     Paint layer,
     _LyricElasticFrame? motion,

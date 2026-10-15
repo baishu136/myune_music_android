@@ -1,8 +1,117 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/widgets/lyric_viewport_blur.dart';
+import 'package:myune_music/widgets/mobile_lyrics_list.dart';
+import 'package:myune_music/page/playlist/playlist_models.dart';
 
 void main() {
+  testWidgets('focus blur animation retains its widget between frames', (
+    tester,
+  ) async {
+    final active = ValueNotifier(3);
+    addTearDown(active.dispose);
+    final lines = List.generate(
+      20,
+      (i) => LyricLine(
+        timestamp: Duration(seconds: i * 3),
+        texts: ['连续滚动 lyric $i', 'Translation $i'],
+      ),
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 360,
+          height: 600,
+          child: ValueListenableBuilder<int>(
+            valueListenable: active,
+            builder: (_, index, _) => MobileLyricsList(
+              lines: lines,
+              active: index,
+              position: Duration(seconds: index * 3),
+              karaokeLyricsEnabled: false,
+              lineBlurEnabled: true,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    active.value = 4;
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 16));
+    final widgets = {
+      for (final e in tester.elementList(find.byType(LyricViewportBlur)))
+        e: e.widget,
+    };
+    expect(widgets, isNotEmpty);
+    for (var frame = 0; frame < 12; frame++) {
+      await tester.pump(const Duration(milliseconds: 16));
+      var retained = 0;
+      for (final e in tester.elementList(find.byType(LyricViewportBlur))) {
+        if (!widgets.containsKey(e)) continue;
+        retained++;
+        expect(
+          identical(e.widget, widgets[e]),
+          isTrue,
+          reason: 'focus/scroll changes only the retained filter layer',
+        );
+      }
+      expect(retained, greaterThan(0));
+    }
+    await tester.pumpWidget(const SizedBox());
+  });
+
+  testWidgets(
+    'animation listener transfers and releases without child layout',
+    (tester) async {
+      final controller = ScrollController();
+      final a = AnimationController(
+        vsync: tester,
+        duration: const Duration(milliseconds: 300),
+      );
+      final b = AnimationController(
+        vsync: tester,
+        duration: const Duration(milliseconds: 300),
+      );
+      final counts = _Counts();
+      Widget host(Animation<double> animation) => MaterialApp(
+        home: LyricViewportBlur(
+          key: const ValueKey('animated'),
+          sigma: 1,
+          sigmaAnimation: animation,
+          contentCenter: 300,
+          viewportHeight: 600,
+          edgeEnabled: false,
+          scrollController: controller,
+          child: _Probe(counts),
+        ),
+      );
+      a.value = .2;
+      await tester.pumpWidget(host(a));
+      final render = tester.renderObject<RenderLyricViewportBlur>(
+        find.byKey(const ValueKey('animated')),
+      );
+      final layouts = counts.layouts, paints = counts.paints;
+      a.value = .8;
+      await tester.pump();
+      expect(render.sigma, .8);
+      expect(counts.layouts, layouts);
+      expect(counts.paints, paints);
+      await tester.pumpWidget(host(b));
+      a.value = .2;
+      expect(render.sigma, 0);
+      b.value = .6;
+      expect(render.sigma, .6);
+      await tester.pumpWidget(const SizedBox());
+      a.value = .1;
+      b.value = .1;
+      expect(render.attached, isFalse);
+      a.dispose();
+      b.dispose();
+      controller.dispose();
+    },
+  );
+
   test(
     'edge blur increases symmetrically, remains bounded and honors opt-out',
     () {

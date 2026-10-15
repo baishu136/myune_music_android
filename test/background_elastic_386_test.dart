@@ -79,7 +79,7 @@ void main() {
     },
   );
   testWidgets(
-    'coincident equal pigments form one bounded region and retain their hue',
+    'coincident equal pigments diffuse without a circular rim',
     (tester) async {
       await tester.runAsync(() async {
         final shader = (await ui.FragmentProgram.fromAsset(
@@ -123,9 +123,11 @@ void main() {
             final samples = [
               for (final y in [5, 50, 100, 150, 195]) rgba[(y * 100 + 50) * 4],
             ];
-            expect(samples.first, lessThanOrEqualTo(1));
-            expect(samples.last, lessThanOrEqualTo(1));
-            expect(samples[2], greaterThan(120));
+            expect(
+              samples.reduce(math.max) - samples.reduce(math.min),
+              lessThanOrEqualTo(6),
+            );
+            expect(samples[2], greaterThan(210));
             for (var i = 0; i < rgba.length; i += 4) {
               expect(rgba[i + 1], lessThanOrEqualTo(1));
               expect(rgba[i + 2], lessThanOrEqualTo(1));

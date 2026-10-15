@@ -5,17 +5,40 @@ import 'dart:ui' as ui;
 import '../../models/fluid_background_state.dart';
 import 'fluid_colour_motion.dart';
 
-/// Integrated low-frequency velocity, not random per-frame speeds. The angular
-/// rate stays .52–1.48 times the base rate; acceleration and jerk are continuous
-/// across the cycle seam. Separate offsets give each blob its own slow ramp.
+// Integral of a triangular speed ramp. Only the small windows around its
+// extrema round the acceleration; the remaining ~19 seconds are linear.
+double _orbitRamp(double phase) {
+  const strength = .4, corner = .12;
+  final cycle = phase % (2 * math.pi);
+  final x = cycle > math.pi ? cycle - math.pi : cycle;
+  double integral;
+  if (x < corner) {
+    integral =
+        -strength * x +
+        strength * corner * x / math.pi +
+        strength * x * x * x / (3 * math.pi * corner);
+  } else if (x > math.pi - corner) {
+    final z = x - math.pi;
+    integral =
+        (strength - strength * corner / math.pi) * z -
+        strength * z * z * z / (3 * math.pi * corner);
+  } else {
+    integral =
+        -strength * x +
+        strength * x * x / math.pi +
+        strength * corner * corner / (3 * math.pi);
+  }
+  return cycle > math.pi ? -integral : integral;
+}
+
+/// Positive, frame-rate independent speed with long linear ramps and no
+/// position or velocity discontinuity at the cycle seam.
 double fluidOrbitAngle(double orbit, int field, double amplitude) {
   final offset = field * math.pi / 2;
+  final stagger = field * .20;
   return orbit +
       offset +
-      amplitude *
-          (.32 * math.sin(orbit) +
-              .04 * math.sin(2 * orbit + 1.7) +
-              .08 * math.sin(orbit + offset + .9));
+      amplitude * (_orbitRamp(orbit + stagger) - _orbitRamp(stagger));
 }
 
 /// Matches the shader: size(2), motion/dim(2), phases(2), centres(8),
@@ -80,8 +103,8 @@ class FluidFrameUniforms {
     final phase2 =
         orbit + .26 * math.sin(orbit + 2.1) + .04 * math.sin(2 * orbit + .8);
     final amplitude = motion.clamp(0.0, 1.0);
-    final hubX = .5 + amplitude * .11 * math.sin(2 * orbit + .9);
-    final hubY = .5 + amplitude * .10 * math.cos(3 * orbit - .4);
+    final hubX = .5 + amplitude * .11 * math.sin(orbit + .9);
+    final hubY = .5 + amplitude * .10 * math.cos(orbit - .4);
     final shortSide = math.min(size.width, size.height);
     final radiusBase = math.min(.52, size.longestSide / shortSide / (3 * 1.16));
     values[0] = size.width;
@@ -96,8 +119,8 @@ class FluidFrameUniforms {
       final radius =
           .46 +
           amplitude *
-              (.20 * math.sin(orbit + offset + .7) +
-                  .12 * math.sin(2 * orbit - offset));
+              (.26 * math.sin(orbit + offset + .7) +
+                  .06 * math.sin(2 * orbit - offset));
       values[6 + field * 2] = hubX + radius * math.cos(angle);
       values[7 + field * 2] = hubY + radius * math.sin(angle) * 1.08;
       final radiusX =

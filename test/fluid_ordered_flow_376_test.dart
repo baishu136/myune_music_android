@@ -74,7 +74,7 @@ void main() {
                             .75)
                         .clamp(0.0, 1.0);
                 final veil =
-                    coverage * (1 - .02 * edge * edge * (3 - 2 * edge)) * .925;
+                    .84 * (1 - .02 * edge * edge * (3 - 2 * edge)) * .925;
                 final rgb = [
                   pixels[i] / (255 * veil),
                   pixels[i + 1] / (255 * veil),

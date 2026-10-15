@@ -465,8 +465,7 @@ List<double> _layerOracle(
     for (var i = 0; i < 4; i++) {
       pigment += colours[i] * weights[i] / math.max(sum, .00001);
     }
-    final coverage = fluidReferenceCoverage(weights);
-    final mixed = lerp(component(palette.baseColor), pigment, coverage);
+    final mixed = lerp(component(palette.baseColor), pigment, .84);
     return mixed * (.98 + .02 * vignette) * (1 - .3 * .25);
   });
 }

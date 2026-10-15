@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -10,6 +11,50 @@ import 'package:myune_music/widgets/mobile_lyrics_list.dart';
 import 'package:myune_music/widgets/karaoke_motion.dart';
 
 void main() {
+  testWidgets(
+    'cached ink writes only changed uniforms and restores exact pixels',
+    (tester) async {
+      await _fonts(tester);
+      await tester.pumpWidget(_host('逐字 highlighter ygp'));
+      final dynamic painter = _painter(tester), cache = painter.cache;
+      await _warm(tester, cache);
+      final dynamic colors = painter.colors;
+      void draw(int time, dynamic style, [double strength = 1]) {
+        final recorder = ui.PictureRecorder();
+        cache.paint(Canvas(recorder), time, 1.0, style, strength);
+        recorder.endRecording().dispose();
+      }
+
+      draw(1500000, colors);
+      final writes = debugKaraokeInkUniformWriteCount;
+      draw(1500000, colors);
+      expect(debugKaraokeInkUniformWriteCount, writes);
+      final units = (cache.lifts as Float64List).length;
+      draw(1516000, colors);
+      expect(
+        debugKaraokeInkUniformWriteCount - writes,
+        lessThanOrEqualTo(units),
+      );
+      await tester.runAsync(() async {
+        final expected = await _render(
+          cache,
+          (canvas) => cache.paint(canvas, 1600000, 1.0, colors),
+        );
+        final dynamic changed = colors.withColors(
+          Colors.orange,
+          Colors.blue.withValues(alpha: .28),
+        );
+        draw(900000, changed, .4);
+        final actual = await _render(
+          cache,
+          (canvas) => cache.paint(canvas, 1600000, 1.0, colors),
+        );
+        expect(actual, expected);
+      });
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
   testWidgets(
     'real narrow-letter onset uses ink bounds with no frame-time scan',
     (tester) async {

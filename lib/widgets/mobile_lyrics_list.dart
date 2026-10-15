@@ -850,13 +850,15 @@ class _MobileLyricsListState extends State<MobileLyricsList>
   late final LyricFrameClock _frameClock;
   late bool _karaokePresentationEnabled = _resolveKaraokePresentation();
 
-  bool _resolveKaraokePresentation() => widget.lines.any(
-    (line) => canAnimateLyricLine(
-      line,
-      widget.karaokeLyricsEnabled,
-      widget.karaokeLyricsMode,
-    ),
-  );
+  bool _resolveKaraokePresentation() =>
+      widget.karaokeLyricsEnabled &&
+      widget.lines.any(
+        (line) => canAnimateLyricLine(
+          line,
+          widget.karaokeLyricsEnabled,
+          widget.karaokeLyricsMode,
+        ),
+      );
   final _prewarm = _KaraokePrewarmSlot();
   int _prewarmGeneration = 0;
   bool _prewarmPending = false;
@@ -3168,9 +3170,22 @@ class _AnimatedLyricBlur extends ImplicitlyAnimatedWidget {
 }
 
 class _AnimatedLyricBlurState
-    extends AnimatedWidgetBaseState<_AnimatedLyricBlur>
+    extends ImplicitlyAnimatedWidgetState<_AnimatedLyricBlur>
     with LyricPhaseRetarget<_AnimatedLyricBlur> {
   Tween<double>? _sigma;
+  final _sigmaValue = ValueNotifier(0.0);
+  late final _sigmaAnimation = Animation<double>.fromValueListenable(
+    _sigmaValue,
+  );
+
+  @override
+  void didUpdateTweens() => _publishSigma();
+
+  void _publishSigma() {
+    _sigmaValue.value = _staticDuringMotion
+        ? widget.sigma
+        : _sigma?.evaluate(animation) ?? widget.sigma;
+  }
 
   @override
   bool get preserveLyricPhase => widget.preservePhase;
@@ -3183,6 +3198,7 @@ class _AnimatedLyricBlurState
   @override
   void initState() {
     super.initState();
+    controller.addListener(_publishSigma);
     widget.motion?.addListener(_motionChanged);
   }
 
@@ -3195,7 +3211,7 @@ class _AnimatedLyricBlurState
 
   void _motionChanged() {
     _holdTarget();
-    if (mounted) setState(() {});
+    _publishSigma();
   }
 
   @override
@@ -3206,11 +3222,14 @@ class _AnimatedLyricBlurState
       widget.motion?.addListener(_motionChanged);
     }
     _holdTarget();
+    _publishSigma();
   }
 
   @override
   void dispose() {
     widget.motion?.removeListener(_motionChanged);
+    controller.removeListener(_publishSigma);
+    _sigmaValue.dispose();
     super.dispose();
   }
 
@@ -3227,12 +3246,10 @@ class _AnimatedLyricBlurState
 
   @override
   Widget build(BuildContext context) {
-    final sigma = _staticDuringMotion
-        ? widget.sigma
-        : _sigma?.evaluate(animation) ?? widget.sigma;
     return LyricViewportBlur(
       key: const ValueKey('mobile_lyric_blur_filter'),
-      sigma: sigma,
+      sigma: _sigmaValue.value,
+      sigmaAnimation: _sigmaAnimation,
       contentCenter: widget.contentCenter,
       viewportHeight: widget.viewportHeight,
       scrollController: widget.scrollController,

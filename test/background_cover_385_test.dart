@@ -79,7 +79,7 @@ void main() {
               shader.setFloat(6 + f * 2, .5);
               shader.setFloat(7 + f * 2, .5);
               // Broader black fields provide a spatial reference; identical
-              // coincident fields now correctly cancel in convex mixing.
+              // coincident fields cancel in the restored 391 convex mixing.
               if (f > 0) {
                 shader.setFloat(29 + f * 4, 1 / .8);
                 shader.setFloat(29 + f * 4 + 1, 0);
@@ -108,7 +108,11 @@ void main() {
                         dx) *
                     4];
             expect((red(40, 0) - red(0, 40)).abs(), lessThanOrEqualTo(2));
-            expect(red(0, size.height ~/ 2 - 3), lessThan(red(0, 0)));
+            final outside = size.width > size.height
+                ? red(size.width ~/ 2 - 3, 0)
+                : red(0, size.height ~/ 2 - 3);
+            expect(outside, lessThan(red(0, 0)));
+            expect(red(0, 0), greaterThan(45));
             image.dispose();
             picture.dispose();
           }

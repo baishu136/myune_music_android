@@ -7,6 +7,7 @@ import 'package:myune_music/page/setting/settings_provider.dart';
 import 'package:myune_music/widgets/lyric_normalized_motion.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
 import 'package:myune_music/widgets/interlude_animation_widget.dart';
+import 'package:myune_music/widgets/lyric_viewport_blur.dart';
 
 void main() {
   test('rest launch has no impulse and reaches a compact exact endpoint', () {
@@ -79,7 +80,7 @@ void main() {
             .widget<AnimatedScale>(part(2, AnimatedScale))
             .duration;
         expect(duration, mobileLyricsDefaultScrollTransitionDuration);
-        final startBlur = tester.widget<ImageFiltered>(
+        final startBlur = tester.renderObject<RenderLyricViewportBlur>(
           find.descendant(
             of: row,
             matching: find.byKey(const ValueKey('mobile_lyric_blur_filter')),
@@ -135,13 +136,13 @@ void main() {
             lessThanOrEqualTo(layoutCount + 1),
             reason: 'one deferred next-line preparation, not per-frame layout',
           );
-          final incomingBlur = tester.widget<ImageFiltered>(
+          final incomingBlur = tester.renderObject<RenderLyricViewportBlur>(
             find.descendant(
               of: row,
               matching: find.byKey(const ValueKey('mobile_lyric_blur_filter')),
             ),
           );
-          final outgoingBlur = tester.widget<ImageFiltered>(
+          final outgoingBlur = tester.renderObject<RenderLyricViewportBlur>(
             find.descendant(
               of: find.byKey(const ValueKey('mobile_lyric_1')),
               matching: find.byKey(const ValueKey('mobile_lyric_blur_filter')),
@@ -158,7 +159,7 @@ void main() {
             ),
           );
           expect(
-            outgoingBlur.imageFilter,
+            cachedLyricBlur(outgoingBlur.baseSigma),
             ui.ImageFilter.blur(
               sigmaX: outgoingSigma,
               sigmaY: outgoingSigma,

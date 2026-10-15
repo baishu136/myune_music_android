@@ -50,6 +50,7 @@ class LyricViewportBlur extends ImageFiltered {
     required this.viewportHeight,
     required this.edgeEnabled,
     required this.scrollController,
+    this.sigmaAnimation,
     required super.child,
   }) : super(imageFilter: cachedLyricBlur(sigma), enabled: sigma > .01);
 
@@ -58,6 +59,7 @@ class LyricViewportBlur extends ImageFiltered {
   final double viewportHeight;
   final bool edgeEnabled;
   final ScrollController scrollController;
+  final Animation<double>? sigmaAnimation;
 
   @override
   RenderLyricViewportBlur createRenderObject(BuildContext context) =>
@@ -78,7 +80,11 @@ class RenderLyricViewportBlur extends RenderProxyBox {
   LyricViewportBlur _config;
   double sigma = 0;
   ui.ImageFilter _filter = cachedLyricBlur(0);
-  bool get _enabled => _config.enabled;
+  final _filterLayer = LayerHandle<ImageFilterLayer>();
+  bool _enabled = false;
+  bool get enabled => _enabled;
+  double get baseSigma => _config.sigmaAnimation?.value ?? _config.sigma;
+  ui.ImageFilter get imageFilter => _filter;
 
   void configure(LyricViewportBlur value) {
     final old = _config;
@@ -86,18 +92,18 @@ class RenderLyricViewportBlur extends RenderProxyBox {
       old.scrollController.removeListener(_refresh);
       value.scrollController.addListener(_refresh);
     }
-    _config = value;
-    if (old.enabled != value.enabled) {
-      markNeedsCompositingBitsUpdate();
-      markNeedsPaint();
+    if (attached && old.sigmaAnimation != value.sigmaAnimation) {
+      old.sigmaAnimation?.removeListener(_refresh);
+      value.sigmaAnimation?.addListener(_refresh);
     }
+    _config = value;
     _refresh();
   }
 
   void _refresh() {
     final position = _config.scrollController;
     final next = lyricViewportBlurSigma(
-      baseSigma: _config.sigma,
+      baseSigma: baseSigma,
       centerY:
           _config.contentCenter -
           (position.hasClients
@@ -107,9 +113,15 @@ class RenderLyricViewportBlur extends RenderProxyBox {
       edgeEnabled: _config.edgeEnabled,
     );
     final nextFilter = cachedLyricBlur(next);
+    final wasEnabled = enabled;
     sigma = next;
+    _enabled = baseSigma > .01;
+    if (wasEnabled != enabled) {
+      markNeedsPaint();
+    }
     if (nextFilter == _filter) return;
     _filter = nextFilter;
+    _filterLayer.layer?.imageFilter = nextFilter;
     markNeedsCompositedLayerUpdate();
   }
 
@@ -117,25 +129,36 @@ class RenderLyricViewportBlur extends RenderProxyBox {
   void attach(PipelineOwner owner) {
     super.attach(owner);
     _config.scrollController.addListener(_refresh);
+    _config.sigmaAnimation?.addListener(_refresh);
     _refresh();
   }
 
   @override
   void detach() {
     _config.scrollController.removeListener(_refresh);
+    _config.sigmaAnimation?.removeListener(_refresh);
     super.detach();
   }
 
   @override
-  bool get alwaysNeedsCompositing => child != null && _enabled;
+  bool get alwaysNeedsCompositing => child != null;
   @override
-  bool get isRepaintBoundary => alwaysNeedsCompositing;
+  bool get isRepaintBoundary => true;
   @override
-  ImageFilterLayer updateCompositedLayer({
-    required covariant ImageFilterLayer? oldLayer,
-  }) {
-    final layer = oldLayer ?? ImageFilterLayer();
-    layer.imageFilter = _filter;
-    return layer;
+  void paint(PaintingContext context, Offset offset) {
+    if (child == null) return;
+    if (!enabled) {
+      super.paint(context, offset);
+      return;
+    }
+    final filter = _filterLayer.layer ??= ImageFilterLayer();
+    filter.imageFilter = _filter;
+    context.pushLayer(filter, super.paint, offset);
+  }
+
+  @override
+  void dispose() {
+    _filterLayer.layer = null;
+    super.dispose();
   }
 }
