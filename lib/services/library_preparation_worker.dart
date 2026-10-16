@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:isolate';
 import 'package:pinyin/pinyin.dart';
 import 'package:characters/characters.dart';
+import 'artist_names.dart';
 
 class PreparedLibraryMetadata {
   PreparedLibraryMetadata(
@@ -116,11 +117,12 @@ PreparedLibraryMetadata prepareLibraryMetadata(
   List<String> labels = const [],
   bool includeSearchIndex = true,
 }) {
-  final valid = separators.where((s) => s.isNotEmpty && s.trim().isNotEmpty);
-  final pattern = valid.isEmpty
-      ? null
-      : RegExp('[${valid.map(RegExp.escape).join('|')}]');
-  final artists = <String, List<int>>{}, albums = <String, List<int>>{};
+  final artists = groupByArtist<int>(
+    Iterable<int>.generate(rows.length),
+    (index) => rows[index][1],
+    ArtistNameParser(separators),
+  );
+  final albums = <String, List<int>>{};
   final keys = <String, String>{};
   final mixedKeys = <String, String>{};
   final pinyin = <List<String>>[], initials = <List<String>>[];
@@ -143,18 +145,6 @@ PreparedLibraryMetadata prepareLibraryMetadata(
           return value.isNotEmpty && value != char ? value : char.toLowerCase();
         }).join(),
       );
-    }
-    final names = row[1].isEmpty
-        ? ['未知歌手']
-        : pattern == null
-        ? [row[1]]
-        : row[1]
-              .split(pattern)
-              .map((s) => s.trim())
-              .where((s) => s.isNotEmpty)
-              .toList();
-    for (final name in names.isEmpty ? [row[1]] : names) {
-      artists.putIfAbsent(name, () => []).add(i);
     }
     albums.putIfAbsent(row[2], () => []).add(i);
     if (includeSearchIndex) {

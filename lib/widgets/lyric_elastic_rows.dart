@@ -123,7 +123,12 @@ class _LyricElasticScope extends InheritedWidget {
       frame != old.frame || physical != old.physical;
 }
 
-Widget _elasticPlainText(BuildContext context, TextSpan text, TextAlign align) {
+Widget _elasticPlainText(
+  BuildContext context,
+  TextSpan text,
+  TextAlign align, {
+  bool cacheForeground = false,
+}) {
   final scope = _LyricElasticScope.of(context);
   return scope?.physical == true
       ? _ElasticPlainParagraph(
@@ -132,7 +137,9 @@ Widget _elasticPlainText(BuildContext context, TextSpan text, TextAlign align) {
           frame: scope!.frame,
         )
       : text.children == null && text.style == null
-      ? Text(text.text ?? '', textAlign: align)
+      ? cacheForeground
+            ? LyricPlainForeground(text: text.text ?? '', textAlign: align)
+            : Text(text.text ?? '', textAlign: align)
       : Text.rich(text, textAlign: align);
 }
 
@@ -144,6 +151,11 @@ class _PhysicalLyricPictures extends ChangeNotifier {
     TextPainter layout,
     double width, {
     int? translationStart,
+    bool splitRows = true,
+    this.padding = 32,
+    this.maxRasterPixels = 262144,
+    this.onReleased,
+    this.priorityForWork,
   }) {
     height = layout.height;
     _width = width;
@@ -153,18 +165,18 @@ class _PhysicalLyricPictures extends ChangeNotifier {
     );
     // One band for every physical row, including long/wrapped Chinese text.
     // Paragraph shaping is shared; glow rows share one bounded raster atlas.
-    const step = 1;
+    final step = splitRows ? 1 : math.max(1, metrics.length);
     for (var i = 0; i < metrics.length; i += step) {
       final end = math.min(metrics.length, i + step);
       final top = i == 0
-          ? -32.0
+          ? -padding
           : (metrics[i - 1].baseline +
                     metrics[i - 1].descent +
                     metrics[i].baseline -
                     metrics[i].ascent) /
                 2;
       final bottom = end == metrics.length
-          ? height + 32
+          ? height + padding
           : (metrics[end - 1].baseline +
                     metrics[end - 1].descent +
                     metrics[end].baseline -
@@ -172,8 +184,8 @@ class _PhysicalLyricPictures extends ChangeNotifier {
                 2;
       final recorder = ui.PictureRecorder();
       final canvas = Canvas(recorder);
-      canvas.clipRect(Rect.fromLTRB(-32, top, width + 32, bottom));
-      bands.add(Rect.fromLTRB(-32, top, width + 32, bottom));
+      canvas.clipRect(Rect.fromLTRB(-padding, top, width + padding, bottom));
+      bands.add(Rect.fromLTRB(-padding, top, width + padding, bottom));
       layout.paint(canvas, Offset.zero);
       pictures.add(recorder.endRecording());
       rowIndices.add(i);
@@ -190,6 +202,18 @@ class _PhysicalLyricPictures extends ChangeNotifier {
   }
   late final double height;
   late final double _width;
+  final double padding;
+  final int maxRasterPixels;
+  final VoidCallback? onReleased;
+  final InteractionWorkPriority Function()? priorityForWork;
+  bool _finished = false, _released = false;
+  void _releaseReservation() {
+    if (_released) return;
+    _released = true;
+    onReleased?.call();
+  }
+
+  double rasterScale = 1;
   final pictures = <ui.Picture>[];
   final centres = <double>[];
   final rowIndices = <int>[];
@@ -206,14 +230,17 @@ class _PhysicalLyricPictures extends ChangeNotifier {
     final scale = math.min(
       pixelRatio.clamp(1.0, 4.0),
       math.min(
-        4096 / math.max(_width + 64, height + 64),
-        math.sqrt(262144 / ((_width + 64) * (height + 64))),
+        4096 / math.max(_width + 2 * padding, height + 2 * padding),
+        math.sqrt(
+          maxRasterPixels / ((_width + 2 * padding) * (height + 2 * padding)),
+        ),
       ),
     );
+    rasterScale = scale;
     final recorder = ui.PictureRecorder();
     final canvas = Canvas(recorder)
       ..scale(scale)
-      ..translate(32, 32);
+      ..translate(padding, padding);
     for (final picture in pictures) {
       canvas.drawPicture(picture);
     }
@@ -223,10 +250,11 @@ class _PhysicalLyricPictures extends ChangeNotifier {
         final image = await InteractionPerformanceController.instance
             .runIdleResource<ui.Image>(
               () => picture.toImage(
-                ((_width + 64) * scale).floor().clamp(1, 4096),
-                ((height + 64) * scale).floor().clamp(1, 4096),
+                ((_width + 2 * padding) * scale).floor().clamp(1, 4096),
+                ((height + 2 * padding) * scale).floor().clamp(1, 4096),
               ),
               priority: InteractionWorkPriority.userVisible,
+              priorityForWork: priorityForWork,
               allowDuringVisualAnimation: true,
               isStillNeeded: _needed,
             );
@@ -238,10 +266,10 @@ class _PhysicalLyricPictures extends ChangeNotifier {
         for (final band in bands) {
           _sources.add(
             Rect.fromLTRB(
-              (band.left + 32) * scale,
-              (band.top + 32) * scale,
-              (band.right + 32) * scale,
-              (band.bottom + 32) * scale,
+              (band.left + padding) * scale,
+              (band.top + padding) * scale,
+              (band.right + padding) * scale,
+              (band.bottom + padding) * scale,
             ),
           );
         }
@@ -251,6 +279,8 @@ class _PhysicalLyricPictures extends ChangeNotifier {
         /* Retain the vector pictures after raster/OOM failure. */
       } finally {
         picture.dispose();
+        _finished = true;
+        if (_disposed || raster == null) _releaseReservation();
       }
     }());
   }
@@ -263,6 +293,7 @@ class _PhysicalLyricPictures extends ChangeNotifier {
     for (final picture in pictures) {
       picture.dispose();
     }
+    if (!_requested || _finished) _releaseReservation();
     super.dispose();
   }
 }

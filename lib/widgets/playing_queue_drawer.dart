@@ -11,6 +11,7 @@ import '../page/playlist/playlist_content_widget.dart';
 import '../page/playlist/playlist_models.dart';
 import '../page/setting/settings_provider.dart';
 import 'custom_theme_background.dart';
+import '../services/artist_names.dart';
 
 class PlayingQueueDrawer extends StatefulWidget {
   const PlayingQueueDrawer({
@@ -74,9 +75,12 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
         final librarySongs = notifier.allSongs;
         // Resolve live metadata on every notifier update, not only on entry.
         final artists = currentSong == null
-            ? const <String>[]
-            : notifier.getIndividualArtists(currentSong.artist);
-        final drawerArtist = artists.isEmpty ? '' : artists.first;
+            ? const <String>{}
+            : notifier
+                  .getIndividualArtists(currentSong.artist)
+                  .where((artist) => artist.trim().isNotEmpty)
+                  .map(artistMatchKey)
+                  .toSet();
         final drawerAlbum = currentSong?.album ?? '';
         final artistSongs = _scope != _QueueScope.artist
             ? const <Song>[]
@@ -86,7 +90,8 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
                         currentSong != null &&
                         notifier
                             .getIndividualArtists(song.artist)
-                            .contains(drawerArtist),
+                            .map(artistMatchKey)
+                            .any(artists.contains),
                   )
                   .toList(growable: false);
         final albumSongs = _scope != _QueueScope.album
@@ -130,7 +135,7 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
                       label: '歌手',
                       icon: Icons.person_outline,
                       selected: _scope == _QueueScope.artist,
-                      enabled: drawerArtist.trim().isNotEmpty,
+                      enabled: artists.isNotEmpty,
                       onTap: () => _setSongScope(_QueueScope.artist),
                     ),
                   ),

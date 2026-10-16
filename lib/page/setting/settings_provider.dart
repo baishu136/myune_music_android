@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:hotkey_manager/hotkey_manager.dart';
 
 import '../../models/fluid_background_state.dart';
+import '../../services/artist_names.dart';
 
 enum LibraryViewMode { list, indexed }
 
@@ -96,6 +97,8 @@ class SettingsProvider with ChangeNotifier {
       'secondaryLyricSource'; // 备用歌词源设置的 key
   static const _addLyricPaddingKey = 'addLyricPadding'; // 歌词上下补位设置的 key
   static const _artistSeparatorsKey = 'artistSeparators'; // 艺术家分隔符设置的 key
+  static const _artistSlashDefaultsMigratedKey =
+      'artistSlashDefaultsMigrated400';
   static const _minimizeToTrayKey = 'minimizeToTray'; // 最小化到托盘设置的 key
   static const _enableLyricBlurKey = 'enableLyricBlur'; // 歌词模糊效果设置的 key
   static const _enableLyricElasticScrollKey = 'enableLyricElasticScroll';
@@ -265,7 +268,7 @@ class SettingsProvider with ChangeNotifier {
   List<String> _hiddenPages = [];
 
   // 默认艺术家分隔符
-  List<String> _artistSeparators = [';', '、', '；', '，', ','];
+  List<String> _artistSeparators = List.of(defaultArtistSeparators);
 
   int get maxLinesPerLyric => _maxLinesPerLyric;
   double get fontSize => _fontSize;
@@ -672,8 +675,19 @@ class SettingsProvider with ChangeNotifier {
       prefs,
       _artistSeparatorsKey,
     );
-    if (separatorsList != null && separatorsList.isNotEmpty) {
-      _artistSeparators = separatorsList;
+    if (separatorsList != null) {
+      _artistSeparators = List.of(separatorsList);
+    }
+    if (_readPreference<bool>(prefs, _artistSlashDefaultsMigratedKey) != true) {
+      final usesLegacyDefaults =
+          separatorsList != null &&
+          separatorsList.length == legacyArtistSeparators.length &&
+          legacyArtistSeparators.every(separatorsList.contains);
+      if (usesLegacyDefaults) {
+        _artistSeparators = List.of(defaultArtistSeparators);
+        await prefs.setStringList(_artistSeparatorsKey, _artistSeparators);
+      }
+      await prefs.setBool(_artistSlashDefaultsMigratedKey, true);
     }
 
     final alignmentString = _readPreference<String>(prefs, _lyricAlignmentKey);
@@ -834,12 +848,13 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setBool(_autoAdjustLyricLayoutKey, value);
   }
 
-  void setArtistSeparators(List<String> separators) async {
-    _artistSeparators = separators;
+  Future<void> setArtistSeparators(List<String> separators) async {
+    _artistSeparators = List.of(separators);
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     // 使用字符串列表而不是用逗号连接的字符串，避免与分隔符冲突
     await prefs.setStringList(_artistSeparatorsKey, separators);
+    await prefs.setBool(_artistSlashDefaultsMigratedKey, true);
   }
 
   void setMinimizeToTray(bool value) async {

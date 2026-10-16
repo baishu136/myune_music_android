@@ -36,6 +36,7 @@ import '../../services/foreground_lifecycle.dart';
 import '../../services/lyric_seek_notifier.dart';
 import '../../services/search_service.dart';
 import '../../services/library_preparation_worker.dart';
+import '../../services/artist_names.dart';
 import '../../services/song_group_presentation.dart';
 import '../../services/library_song_visibility.dart';
 import '../../services/playlist_folder_policy.dart';
@@ -8608,42 +8609,20 @@ class PlaylistContentNotifier extends ChangeNotifier
   // --- 分组歌曲 ---
 
   // 根据设置的自定义分隔符，将歌手字符串拆分为独立歌手
-  List<String> getIndividualArtists(String artistString) {
-    return _splitIndividualArtists(
-      artistString,
-      _artistSeparatorPattern(_settingsProvider.artistSeparators),
-    );
-  }
+  List<String> getIndividualArtists(String artistString) =>
+      _artistNameParser.split(artistString);
 
-  RegExp? _artistSeparatorPattern(Iterable<String> separators) {
-    final validSeparators = separators.where(
-      (separator) => separator.isNotEmpty && separator.trim().isNotEmpty,
-    );
-    if (validSeparators.isEmpty) return null;
-    final pattern = validSeparators.map(RegExp.escape).join('|');
-    return RegExp('[$pattern]');
-  }
+  ArtistNameParser? _cachedArtistNameParser;
+  List<String>? _cachedArtistSeparators;
 
-  List<String> _splitIndividualArtists(
-    String artistString,
-    RegExp? separatorPattern,
-  ) {
-    if (artistString.isEmpty) {
-      return ['未知歌手'];
+  ArtistNameParser get _artistNameParser {
+    final separators = _settingsProvider.artistSeparators;
+    if (_cachedArtistNameParser == null ||
+        !listEquals(_cachedArtistSeparators, separators)) {
+      _cachedArtistSeparators = List<String>.of(separators);
+      _cachedArtistNameParser = ArtistNameParser(separators);
     }
-    if (separatorPattern == null) return [artistString];
-
-    final individualArtists = artistString
-        .split(separatorPattern)
-        .map((artist) => artist.trim())
-        .where((artist) => artist.isNotEmpty)
-        .toList();
-
-    if (individualArtists.isEmpty) {
-      return [artistString];
-    }
-
-    return individualArtists;
+    return _cachedArtistNameParser!;
   }
 
   // 多歌手识别与分组
@@ -8654,19 +8633,11 @@ class PlaylistContentNotifier extends ChangeNotifier
         _artistGroupsSeparatorSignature == separatorSignature) {
       return _artistGroupsCache;
     }
-    final Map<String, List<Song>> grouped = {};
-    final separatorPattern = _artistSeparatorPattern(separators);
-
-    for (final song in _allSongs) {
-      final individualArtists = _splitIndividualArtists(
-        song.artist,
-        separatorPattern,
-      );
-
-      for (final artistName in individualArtists) {
-        grouped.putIfAbsent(artistName, () => []).add(song);
-      }
-    }
+    final grouped = groupByArtist<Song>(
+      _allSongs,
+      (song) => song.artist,
+      _artistNameParser,
+    );
 
     _artistGroupsRevision = _libraryRevision;
     _artistGroupsSeparatorSignature = separatorSignature;

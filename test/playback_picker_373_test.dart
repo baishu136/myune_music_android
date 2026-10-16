@@ -4,6 +4,7 @@ import 'package:myune_music/page/playlist/playlist_content_notifier.dart';
 import 'package:myune_music/page/playlist/playlist_content_widget.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
+import 'package:myune_music/services/artist_names.dart';
 import 'package:myune_music/widgets/home_glass_surface.dart';
 import 'package:myune_music/widgets/karaoke_motion.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
@@ -12,6 +13,7 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _QueueNotifier extends ChangeNotifier implements PlaylistContentNotifier {
+  final artistParser = ArtistNameParser(defaultArtistSeparators);
   final songs = [
     Song(title: 'A first', artist: 'A', album: 'One', filePath: 'a.mp3'),
     Song(title: 'A second', artist: 'A/B', album: 'Two', filePath: 'b.mp3'),
@@ -26,7 +28,8 @@ class _QueueNotifier extends ChangeNotifier implements PlaylistContentNotifier {
   @override
   List<Song> get allSongs => songs;
   @override
-  List<String> getIndividualArtists(String artist) => artist.split('/');
+  List<String> getIndividualArtists(String artist) =>
+      artistParser.split(artist);
   @override
   List<Song> searchSongs(String keyword, Iterable<Song> source) => source
       .where((song) => song.title.toLowerCase().contains(keyword.toLowerCase()))
@@ -199,6 +202,87 @@ void main() {
     expect(notifier.playedDynamic?.map((s) => s.title), ['A second', 'B only']);
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets(
+    'solo artist includes slash collaborations regardless of case or spacing',
+    (tester) async {
+      final notifier = await mount(tester);
+      notifier.songs
+        ..clear()
+        ..addAll([
+          Song(title: 'Solo', artist: 'The Weeknd', filePath: 'solo.mp3'),
+          Song(
+            title: 'Shared',
+            artist: 'Future/the WEEKND',
+            filePath: 'shared.mp3',
+          ),
+          Song(
+            title: 'Full width',
+            artist: 'Future／THE   WEEKND',
+            filePath: 'wide.mp3',
+          ),
+          Song(
+            title: 'Different name',
+            artist: 'The Weekend',
+            filePath: 'other.mp3',
+          ),
+          Song(title: 'Future solo', artist: 'Future', filePath: 'future.mp3'),
+        ]);
+      notifier.changeSong(notifier.songs.first);
+      await tester.pump();
+      await tester.tap(find.byTooltip('歌手'));
+      await tester.pumpAndSettle();
+      expect(visibleSongs(tester), ['Solo', 'Shared', 'Full width']);
+      notifier.changeSong(notifier.songs[1]);
+      await tester.pumpAndSettle();
+      expect(visibleSongs(tester), [
+        'Solo',
+        'Shared',
+        'Full width',
+        'Future solo',
+      ]);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+  testWidgets(
+    'multi-artist scope includes every collaborator once in library order',
+    (tester) async {
+      final notifier = await mount(tester);
+      final unrelated = Song(
+        title: 'Unrelated',
+        artist: 'AA',
+        filePath: 'unrelated.mp3',
+      );
+      final secondCollaboration = Song(
+        title: 'A second',
+        artist: 'B/C',
+        filePath: 'other-collaboration.mp3',
+      );
+      notifier.songs.addAll([unrelated, secondCollaboration]);
+      notifier.changeSong(notifier.songs[1]);
+      await tester.pump();
+      await tester.tap(find.byTooltip('歌手'));
+      await tester.pumpAndSettle();
+      final tiles = tester
+          .widgetList<SongTileWidget>(find.byType(SongTileWidget))
+          .toList();
+      expect(tiles.map((tile) => tile.song.filePath), [
+        'a.mp3',
+        'b.mp3',
+        'c.mp3',
+        'other-collaboration.mp3',
+      ]);
+      await tester.tap(find.text('B only'));
+      await tester.pumpAndSettle();
+      expect(notifier.playedDynamic?.map((song) => song.filePath), [
+        'a.mp3',
+        'b.mp3',
+        'c.mp3',
+        'other-collaboration.mp3',
+      ]);
+      expect(visibleSongs(tester), ['A second', 'B only', 'A second']);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
   testWidgets(
     'search filters library, survives song updates and plays exact result',
     (tester) async {

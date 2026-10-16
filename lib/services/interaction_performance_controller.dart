@@ -118,11 +118,13 @@ class InteractionPerformanceController {
     Future<T> Function() start, {
     InteractionWorkPriority priority = InteractionWorkPriority.background,
     bool Function()? isStillNeeded,
+    InteractionWorkPriority Function()? priorityForWork,
     bool allowDuringVisualAnimation = false,
   }) async {
     final lease = await acquireIdleWork(
       priority: priority,
       isStillNeeded: isStillNeeded,
+      priorityForWork: priorityForWork,
       allowDuringVisualAnimation: allowDuringVisualAnimation,
     );
     if (!lease.isGranted) return null;

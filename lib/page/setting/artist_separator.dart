@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../services/artist_names.dart';
 
 class ArtistSeparator extends StatefulWidget {
   final List<String> separators;
@@ -14,7 +15,7 @@ class ArtistSeparatorState extends State<ArtistSeparator> {
   final _textController = TextEditingController();
 
   // 默认分隔符
-  final List<String> _defaultSeparators = [';', '、', '；', '，', ','];
+  final List<String> _defaultSeparators = List.of(defaultArtistSeparators);
 
   @override
   void initState() {

@@ -29,6 +29,7 @@ import '../page/setting/settings_provider.dart';
 import '../page/setting/tabs/info_icon.dart';
 import '../page/statistics_page/statistics_manager.dart';
 import '../widgets/playing_queue_drawer.dart';
+import '../widgets/copyable_song_detail_row.dart';
 import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/now_playing_cover_hero.dart';
 import '../widgets/now_playing_immersive_layout.dart';
@@ -7152,48 +7153,52 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           initialChildSize: .72,
           minChildSize: .45,
           maxChildSize: .92,
-          builder: (context, controller) => SafeArea(
-            child: ListView(
-              controller: controller,
-              padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
-              children: [
-                Text('歌曲详情', style: Theme.of(context).textTheme.headlineSmall),
-                const SizedBox(height: 12),
-                _DetailRow(label: '歌曲名', value: song.title),
-                _DetailRow(label: '歌手', value: song.artist),
-                _DetailRow(label: '专辑', value: song.album),
-                _DetailRow(label: '收听次数', value: '$playCount 次'),
-                _DetailRow(
-                  label: '累计收听时间',
-                  value: '${_longDuration(estimatedListening)}（估算）',
-                ),
-                _DetailRow(
-                  label: '比特率',
-                  value: bitrate == null
-                      ? '未知'
-                      : '${(bitrate / 1000).round()} kbps',
-                ),
-                _DetailRow(
-                  label: '采样率',
-                  value: sampleRate == null
-                      ? '未知'
-                      : '${(sampleRate / 1000).toStringAsFixed(1)} kHz',
-                ),
-                _DetailRow(label: '时长', value: _duration(duration)),
-                _DetailRow(
-                  label: '创建日期',
-                  value: stat == null ? '未知' : _dateTime(stat.changed),
-                ),
-                _DetailRow(
-                  label: '修改日期',
-                  value: stat == null ? '未知' : _dateTime(stat.modified),
-                ),
-                _DetailRow(
-                  label: '文件路径',
-                  value: song.filePath,
-                  selectable: true,
-                ),
-              ],
+          builder: (context, controller) => SongDetailsFeedbackSurface(
+            child: SafeArea(
+              child: ListView(
+                controller: controller,
+                padding: const EdgeInsets.fromLTRB(20, 12, 20, 28),
+                children: [
+                  Text(
+                    '歌曲详情',
+                    style: Theme.of(context).textTheme.headlineSmall,
+                  ),
+                  const SizedBox(height: 12),
+                  CopyableSongDetailRow(label: '歌曲名', value: song.title),
+                  CopyableSongDetailRow(label: '歌手', value: song.artist),
+                  CopyableSongDetailRow(label: '专辑', value: song.album),
+                  CopyableSongDetailRow(label: '收听次数', value: '$playCount 次'),
+                  CopyableSongDetailRow(
+                    label: '累计收听时间',
+                    value: '${_longDuration(estimatedListening)}（估算）',
+                  ),
+                  CopyableSongDetailRow(
+                    label: '比特率',
+                    value: bitrate == null
+                        ? '未知'
+                        : '${(bitrate / 1000).round()} kbps',
+                  ),
+                  CopyableSongDetailRow(
+                    label: '采样率',
+                    value: sampleRate == null
+                        ? '未知'
+                        : '${(sampleRate / 1000).toStringAsFixed(1)} kHz',
+                  ),
+                  CopyableSongDetailRow(
+                    label: '时长',
+                    value: _duration(duration),
+                  ),
+                  CopyableSongDetailRow(
+                    label: '创建日期',
+                    value: stat == null ? '未知' : _dateTime(stat.changed),
+                  ),
+                  CopyableSongDetailRow(
+                    label: '修改日期',
+                    value: stat == null ? '未知' : _dateTime(stat.modified),
+                  ),
+                  CopyableSongDetailRow(label: '文件路径', value: song.filePath),
+                ],
+              ),
             ),
           ),
         );
@@ -8099,33 +8104,6 @@ class _SettingsTab extends StatelessWidget {
       onSwipeBackFromFirstSection: onSwipeBack,
     );
   }
-}
-
-class _DetailRow extends StatelessWidget {
-  const _DetailRow({
-    required this.label,
-    required this.value,
-    this.selectable = false,
-  });
-
-  final String label;
-  final String value;
-  final bool selectable;
-
-  @override
-  Widget build(BuildContext context) => Padding(
-    padding: const EdgeInsets.symmetric(vertical: 8),
-    child: Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        SizedBox(
-          width: 104,
-          child: Text(label, style: Theme.of(context).textTheme.labelLarge),
-        ),
-        Expanded(child: selectable ? SelectableText(value) : Text(value)),
-      ],
-    ),
-  );
 }
 
 class _RequestedGroupArtwork extends StatefulWidget {

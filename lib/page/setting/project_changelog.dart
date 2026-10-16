@@ -24,6 +24,34 @@ class ProjectChangelogEntry {
 /// 0.99 集中记录 0.9.8-android.129 之后的全部有效改动。
 const projectChangelogEntries = <ProjectChangelogEntry>[
   ProjectChangelogEntry(
+    version: '1.0.0-android.401',
+    date: '2026-10-16',
+    optimizations: [
+      '普通歌词透明度变化时复用原生文字，保留原有颜色、字形边缘和独立光晕。',
+      '优先准备正播行、下一行与退出行的光晕，限制缓存占用并分帧准备，减少换行时的集中开销。',
+    ],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.400',
+    date: '2026-10-16',
+    optimizations: ['复制歌曲信息成功后轻微震动，屏幕底部短暂显示“已复制歌曲信息”。'],
+    fixes: ['统一主页与播放页多歌手识别，默认支持斜杠分隔，合并大小写及多余空格差异，避免合唱歌曲遗漏。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.399',
+    date: '2026-10-16',
+    features: ['播放页歌曲详情的信息添加下划线，长按即可复制对应内容。'],
+    fixes: ['播放页歌手歌曲列表包含当前歌曲的全部参与歌手，避免多歌手歌曲遗漏相关曲目。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.398',
+    date: '2026-10-16',
+    optimizations: [
+      '默认与动感模式预先缓存歌词光晕，缩放时复用原效果，限制缓存占用并保留未就绪时的正常绘制。',
+      '普通白色歌词淡入淡出时复用文字绘制缓存，光晕保持独立混合，减少连续滚动中的重复绘制工作。',
+    ],
+  ),
+  ProjectChangelogEntry(
     version: '1.0.0-android.397',
     date: '2026-10-15',
     fixes: ['关闭逐字歌词时，减少滚动启动和落位时多行模糊控件重建与绘制缓存边界切换。'],

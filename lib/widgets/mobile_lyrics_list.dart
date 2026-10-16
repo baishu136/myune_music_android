@@ -26,6 +26,7 @@ import 'synthetic_karaoke_timing.dart';
 import 'karaoke_sweep_path.dart';
 import 'karaoke_sweep_timeline.dart';
 import 'lyric_viewport_blur.dart';
+import 'lyric_plain_foreground.dart';
 
 export 'synthetic_karaoke_timing.dart';
 
@@ -33,6 +34,7 @@ part 'karaoke_media_clock.dart';
 part 'karaoke_paint_cache.dart';
 part 'karaoke_prewarm.dart';
 part 'lyric_elastic_rows.dart';
+part 'lyric_glow_pool.dart';
 part 'karaoke_ink_bounds.dart';
 
 double mobileLyricWholeLineHighlight(int distance, {bool hasFocus = true}) =>
@@ -2938,6 +2940,7 @@ class _LyricLineItem extends StatelessWidget {
           context,
           TextSpan(text: line.texts.join('\n')),
           textAlign,
+          cacheForeground: ordinaryText,
         );
       }
       // Distant rows have no changing glyph state. Keep a single shaped
@@ -2992,6 +2995,7 @@ class _LyricLineItem extends StatelessWidget {
                   child: RepaintBoundary(
                     child: IgnorePointer(
                       child: _CachedMobileLyricGlow(
+                        relativeDistance: relativeDistance,
                         painter: MobileLyricGlowPainter(
                           text: line.texts.join('\n'),
                           style: glowStyle,
@@ -3265,8 +3269,12 @@ class _AnimatedLyricBlurState
 /// elastic transforms reuse the rasterized blur instead of rebuilding a text
 /// shadow on every foreground color or karaoke-progress frame.
 class _CachedMobileLyricGlow extends StatefulWidget {
-  const _CachedMobileLyricGlow({required this.painter});
+  const _CachedMobileLyricGlow({
+    required this.painter,
+    required this.relativeDistance,
+  });
   final MobileLyricGlowPainter painter;
+  final int relativeDistance;
   @override
   State<_CachedMobileLyricGlow> createState() => _CachedMobileLyricGlowState();
 }
@@ -3276,10 +3284,102 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
   MobileLyricGlowPainter? _previous;
   double? _width;
   _PhysicalLyricPictures? _rowPictures;
+  double? _rasterPixelRatio;
+  int _normalPixels = 0, _normalRank = 10000;
+  final int _normalSequence = _nextNormalGlowClient++;
+  double _normalDpr = 1, _normalPadding = 32;
+  bool _normalFailed = false;
+  _NormalGlowReservation? _reservation;
+  bool Function()? _recordNeeded;
+  MobileLyricGlowPainter? _nativeLayoutConfig;
+
+  @override
+  void initState() {
+    super.initState();
+    _normalGlowClients.add(this);
+  }
+
+  int get _normalDemand => _normalFailed ? 0 : _normalPixels;
+  InteractionWorkPriority _normalPriority() => _normalRank <= 1
+      ? InteractionWorkPriority.currentVisual
+      : _normalRank <= 3
+      ? InteractionWorkPriority.userVisible
+      : InteractionWorkPriority.background;
+
+  void _reserveNormalRaster() {
+    final token = _NormalGlowReservation(this, _normalDemand);
+    _reservation = token;
+    _rasterPixelRatio = _normalDpr;
+    bool needed() => mounted && _reservation == token && !token.released;
+    _recordNeeded = needed;
+    unawaited(() async {
+      final lease = await InteractionPerformanceController.instance
+          .acquireIdleWork(
+            priority: _normalPriority(),
+            priorityForWork: _normalPriority,
+            isStillNeeded: needed,
+            allowDuringVisualAnimation: true,
+          );
+      try {
+        if (!lease.isGranted || !needed()) return;
+        final geometry = _previous!;
+        final ownMask = _nativeLayoutConfig?.color != geometry.color;
+        final mask = ownMask ? geometry.createLayout(_width!) : _layout!;
+        try {
+          _rowPictures = _PhysicalLyricPictures(
+            mask,
+            _width!,
+            splitRows: false,
+            padding: _normalPadding,
+            maxRasterPixels: 2097152,
+            onReleased: token.release,
+            priorityForWork: _normalPriority,
+          )..addListener(_rasterReady);
+        } finally {
+          if (ownMask) mask.dispose();
+        }
+        _rowPictures!.prepareRaster(_normalDpr);
+      } catch (_) {
+        if (needed()) _normalFailed = true;
+      } finally {
+        if (_recordNeeded == needed) _recordNeeded = null;
+        if (_reservation != token || _rowPictures == null) token.release();
+        lease.release();
+      }
+    }());
+  }
+
+  void _rasterReady() {
+    if (mounted) setState(() {});
+  }
+
+  void _evictNormalRaster() {
+    _discardPictures();
+    if (mounted) setState(() {});
+  }
+
+  void _discardPictures() {
+    final token = _reservation;
+    _reservation = null;
+    final needed = _recordNeeded;
+    _recordNeeded = null;
+    if (needed != null) {
+      InteractionPerformanceController.instance.cancelIdleWork(needed);
+    }
+    final pictures = _rowPictures;
+    _rowPictures?.removeListener(_rasterReady);
+    _rowPictures?.dispose();
+    _rowPictures = null;
+    _rasterPixelRatio = null;
+    if (pictures == null) token?.release();
+  }
+
   @override
   void dispose() {
+    _normalGlowClients.remove(this);
     _layout?.dispose();
-    _rowPictures?.dispose();
+    _discardPictures();
+    _scheduleNormalGlowPool();
     super.dispose();
   }
 
@@ -3288,30 +3388,36 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
     builder: (context, constraints) {
       final config = widget.painter;
       final elastic = _LyricElasticScope.of(context);
-      final geometry = elastic?.physical == true
-          ? MobileLyricGlowPainter(
-              text: config.text,
-              style: config.style,
-              color: Colors.white,
-              blurRadius: config.blurRadius,
-              textAlign: config.textAlign,
-              textDirection: config.textDirection,
-              textScaler: config.textScaler,
-              locale: config.locale,
-              primaryRowOnly: config.primaryRowOnly,
-            )
-          : config;
+      final geometry = MobileLyricGlowPainter(
+        text: config.text,
+        style: config.style,
+        color: Colors.white.withValues(
+          alpha: elastic?.physical == true ? 1 : config.color.a,
+        ),
+        blurRadius: config.blurRadius,
+        textAlign: config.textAlign,
+        textDirection: config.textDirection,
+        textScaler: config.textScaler,
+        locale: config.locale,
+        primaryRowOnly: config.primaryRowOnly,
+      );
       if (_layout == null ||
           _width != constraints.maxWidth ||
           geometry.shouldRepaint(_previous!)) {
         _layout?.dispose();
-        _rowPictures?.dispose();
-        _rowPictures = null;
-        _layout = geometry.createLayout(constraints.maxWidth);
+        _discardPictures();
+        final native = elastic?.physical == true ? geometry : config;
+        _layout = native.createLayout(constraints.maxWidth);
+        _nativeLayoutConfig = native;
+        _normalFailed = false;
         _width = constraints.maxWidth;
         _previous = geometry;
       }
       if (elastic?.physical == true) {
+        if (_normalPixels != 0) {
+          _normalPixels = 0;
+          _scheduleNormalGlowPool();
+        }
         _rowPictures ??= _PhysicalLyricPictures(_layout!, constraints.maxWidth);
         _rowPictures!.prepareRaster(MediaQuery.devicePixelRatioOf(context));
         return ColorFiltered(
@@ -3327,6 +3433,52 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
           ),
         );
       }
+      final pixelRatio = MediaQuery.devicePixelRatioOf(context);
+      final padding = math.max(32.0, config.blurRadius * 2 + 8);
+      final rasterWidth = ((constraints.maxWidth + padding * 2) * pixelRatio)
+          .ceil();
+      final rasterHeight = ((_layout!.height + padding * 2) * pixelRatio)
+          .ceil();
+      final pixels = rasterWidth * rasterHeight;
+      // Cache only complete native-density glows. Small/hard shadows, elastic
+      // rows and oversized paragraphs retain their original vector painter.
+      final eligible =
+          elastic == null &&
+          config.blurRadius >= 6 &&
+          pixelRatio >= 1 &&
+          pixelRatio <= 4 &&
+          rasterWidth <= 4096 &&
+          rasterHeight <= 4096 &&
+          pixels <= 2097152 &&
+          (config.style.decoration == null ||
+              config.style.decoration == TextDecoration.none);
+      if (_reservation != null &&
+          (!eligible || _rasterPixelRatio != pixelRatio)) {
+        _discardPictures();
+        _normalFailed = false;
+      }
+      final demand = eligible ? pixels : 0;
+      final rank = _normalGlowRank(
+        widget.relativeDistance,
+        TickerMode.valuesOf(context).enabled,
+      );
+      if (_normalPixels != demand ||
+          _normalRank != rank ||
+          _normalDpr != pixelRatio) {
+        if (_normalDpr != pixelRatio) _normalFailed = false;
+        _normalPixels = demand;
+        _normalRank = rank;
+        _normalDpr = pixelRatio;
+        _normalPadding = padding;
+        _scheduleNormalGlowPool();
+      }
+      final raster = _rowPictures?.raster;
+      if (raster == null && _nativeLayoutConfig?.color != config.color) {
+        _layout?.dispose();
+        _layout = config.createLayout(constraints.maxWidth);
+        _nativeLayoutConfig = config;
+      }
+      final rasterScale = _rowPictures?.rasterScale ?? pixelRatio;
       return CustomPaint(
         key: const ValueKey('mobile_lyric_glow_layer'),
         isComplex: true,
@@ -3342,6 +3494,31 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
           locale: config.locale,
           primaryRowOnly: config.primaryRowOnly,
           preparedLayout: _layout,
+          preparedRaster: raster,
+          preparedRasterTint:
+              raster == null ||
+                  config.color.withValues(alpha: 1) == Colors.white
+              ? null
+              : ColorFilter.mode(
+                  config.color.withValues(alpha: 1),
+                  BlendMode.modulate,
+                ),
+          preparedRasterSource: raster == null
+              ? null
+              : Rect.fromLTWH(
+                  0,
+                  0,
+                  raster.width.toDouble(),
+                  raster.height.toDouble(),
+                ),
+          preparedRasterBounds: raster == null
+              ? null
+              : Rect.fromLTWH(
+                  -padding,
+                  -padding,
+                  raster.width / rasterScale,
+                  raster.height / rasterScale,
+                ),
         ),
       );
     },
@@ -3360,6 +3537,10 @@ class MobileLyricGlowPainter extends CustomPainter {
     required this.locale,
     this.primaryRowOnly = false,
     this.preparedLayout,
+    this.preparedRaster,
+    this.preparedRasterSource,
+    this.preparedRasterBounds,
+    this.preparedRasterTint,
   });
 
   final String text;
@@ -3372,10 +3553,31 @@ class MobileLyricGlowPainter extends CustomPainter {
   final Locale? locale;
   final bool primaryRowOnly;
   final TextPainter? preparedLayout;
+  final ui.Image? preparedRaster;
+  final Rect? preparedRasterSource;
+  final Rect? preparedRasterBounds;
+  final ColorFilter? preparedRasterTint;
+  static final _rasterPaint = Paint()..filterQuality = FilterQuality.low;
 
   @override
   void paint(Canvas canvas, Size size) {
     if (text.isEmpty || size.isEmpty || color.a <= 0 || blurRadius <= 0) {
+      return;
+    }
+    if (preparedRaster != null &&
+        preparedRasterSource != null &&
+        preparedRasterBounds != null &&
+        preparedLayout != null) {
+      canvas.save();
+      _rasterPaint.colorFilter = preparedRasterTint;
+      canvas.translate(0, (size.height - preparedLayout!.height) / 2);
+      canvas.drawImageRect(
+        preparedRaster!,
+        preparedRasterSource!,
+        preparedRasterBounds!,
+        _rasterPaint,
+      );
+      canvas.restore();
       return;
     }
     final painter = preparedLayout ?? createLayout(size.width);
@@ -3427,6 +3629,10 @@ class MobileLyricGlowPainter extends CustomPainter {
       oldDelegate.textDirection != textDirection ||
       oldDelegate.textScaler != textScaler ||
       oldDelegate.locale != locale ||
+      oldDelegate.preparedRaster != preparedRaster ||
+      oldDelegate.preparedRasterSource != preparedRasterSource ||
+      oldDelegate.preparedRasterBounds != preparedRasterBounds ||
+      oldDelegate.preparedRasterTint != preparedRasterTint ||
       oldDelegate.primaryRowOnly != primaryRowOnly;
 }
 
