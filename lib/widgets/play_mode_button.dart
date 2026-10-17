@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../page/playlist/playlist_content_notifier.dart';
+import 'playback_mode_glyph.dart';
 
 class PlayModeButton extends StatefulWidget {
   final PlayMode playMode;
@@ -31,6 +32,10 @@ class _PlayModeButtonState extends State<PlayModeButton> {
     if (widget.playMode == PlayMode.shuffle) {
       icon = Icons.shuffle;
       tooltip = '随机播放';
+      iconColor = widget.activeColor;
+    } else if (widget.playMode == PlayMode.repeatShuffle) {
+      icon = Icons.repeat;
+      tooltip = '循环播放后随机播放';
       iconColor = widget.activeColor;
     } else if (widget.playMode == PlayMode.repeatOne) {
       icon = Icons.repeat_one;
@@ -69,7 +74,14 @@ class _PlayModeButtonState extends State<PlayModeButton> {
             ],
           );
         },
-        child: Icon(icon, key: ValueKey(widget.playMode), color: iconColor),
+        child: widget.playMode == PlayMode.repeatShuffle
+            ? PlaybackModeGlyph(
+                key: ValueKey(widget.playMode),
+                mode: widget.playMode,
+                color: iconColor,
+                size: widget.size,
+              )
+            : Icon(icon, key: ValueKey(widget.playMode), color: iconColor),
       ),
       onPressed: widget.onPressed,
     );

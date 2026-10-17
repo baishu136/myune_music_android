@@ -7,6 +7,8 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 
 import '../../models/fluid_background_state.dart';
 import '../../services/artist_names.dart';
+import '../../services/playback_picker_memory.dart';
+import '../../services/desktop_lyric_presentation.dart';
 
 enum LibraryViewMode { list, indexed }
 
@@ -63,6 +65,15 @@ GroupViewMode _decodeGroupViewMode(
 }
 
 class SettingsProvider with ChangeNotifier {
+  PlaybackPickerMemory _playbackPickerMemory = const PlaybackPickerMemory();
+  PlaybackPickerMemory get playbackPickerMemory => _playbackPickerMemory;
+  Future<void> rememberPlaybackPicker(PlaybackPickerMemory memory) async {
+    _playbackPickerMemory = memory;
+    final payload = jsonEncode(memory.toJson());
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('playback_picker_memory_403', payload);
+  }
+
   static const double defaultLyricFontSize = 20.0;
   static const double minLyricFontSize = 12.0;
   static const double maxLyricFontSize = 40.0;
@@ -90,6 +101,8 @@ class SettingsProvider with ChangeNotifier {
   static const _enableOnlineLyricsKey = 'enableOnlineLyrics';
   static const _enableLyricTranslationKey = 'enableLyricTranslation';
   static const _enableLyricSourceFallbackKey = 'enableLyricSourceFallback';
+  static const _enableTimedLyricSourceFallbackKey =
+      'enableTimedLyricSourceFallback';
   static const _lyricVerticalSpacingKey =
       'lyricVerticalSpacing'; // 歌词垂直间距设置的 key
   static const _primaryLyricSourceKey = 'primaryLyricSource'; // 主要歌词源设置的 key
@@ -173,6 +186,10 @@ class SettingsProvider with ChangeNotifier {
   static const _desktopLyricsOutlineWidthKey = 'desktopLyricsOutlineWidth';
   static const _desktopLyricsOutlineColorKey = 'desktopLyricsOutlineColor';
   static const _desktopLyricsOutlineOpacityKey = 'desktopLyricsOutlineOpacity';
+  static const _desktopLyricsAutoSizeKey = 'desktopLyricsAutoSize';
+  static const _desktopLyricsKaraokeKey = 'desktopLyricsKaraoke';
+  static const _desktopLyricsHighlightColorKey = 'desktopLyricsHighlightColor';
+  static const _desktopLyricsAlignmentKey = 'desktopLyricsAlignment';
 
   int _maxLinesPerLyric = 2;
   double _fontSize = defaultLyricFontSize;
@@ -249,6 +266,10 @@ class SettingsProvider with ChangeNotifier {
   double _desktopLyricsOutlineWidth = 1.15;
   int _desktopLyricsOutlineColor = 0xFFFFFFFF;
   double _desktopLyricsOutlineOpacity = 1.0;
+  bool _desktopLyricsAutoSize = false;
+  bool _desktopLyricsKaraoke = false;
+  int? _desktopLyricsHighlightColor;
+  TextAlign _desktopLyricsAlignment = TextAlign.center;
 
   bool _enableGlobalHotkeys = true;
   HotKey? _playPauseHotKey;
@@ -261,6 +282,7 @@ class SettingsProvider with ChangeNotifier {
   bool _enableOnlineLyrics = false; // 默认不启用从网络获取歌词
   bool _enableLyricTranslation = false; // 默认不显示网络歌词翻译
   bool _enableLyricSourceFallback = false; // 默认仅使用用户选择的歌词源
+  bool _enableTimedLyricSourceFallback = false;
   String _primaryLyricSource = 'netease'; // 默认主要歌词源为网易云音乐
   String _secondaryLyricSource = 'qq'; // 与网易优先的回退顺序一致；回退默认关闭
 
@@ -295,6 +317,7 @@ class SettingsProvider with ChangeNotifier {
   bool get enableOnlineLyrics => _enableOnlineLyrics;
   bool get enableLyricTranslation => _enableLyricTranslation;
   bool get enableLyricSourceFallback => _enableLyricSourceFallback;
+  bool get enableTimedLyricSourceFallback => _enableTimedLyricSourceFallback;
   String get primaryLyricSource => _primaryLyricSource; // 获取主要歌词源
   String get secondaryLyricSource => _secondaryLyricSource; // 获取备用歌词源
 
@@ -366,6 +389,15 @@ class SettingsProvider with ChangeNotifier {
   double get desktopLyricsOutlineWidth => _desktopLyricsOutlineWidth;
   int get desktopLyricsOutlineColor => _desktopLyricsOutlineColor;
   double get desktopLyricsOutlineOpacity => _desktopLyricsOutlineOpacity;
+  bool get desktopLyricsAutoSize => _desktopLyricsAutoSize;
+  bool get desktopLyricsKaraoke => _desktopLyricsKaraoke;
+  TextAlign get desktopLyricsAlignment => _desktopLyricsAlignment;
+  int get desktopLyricsHighlightColor =>
+      _desktopLyricsHighlightColor ??
+      desktopLyricHighlightColor(
+        _desktopLyricsColor,
+        _desktopLyricsOutlineColor,
+      );
 
   bool get enableGlobalHotkeys => _enableGlobalHotkeys;
   HotKey? get playPauseHotKey => _playPauseHotKey;
@@ -398,6 +430,16 @@ class SettingsProvider with ChangeNotifier {
 
   Future<void> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
+    try {
+      final saved = jsonDecode(
+        _readPreference<String>(prefs, 'playback_picker_memory_403') ?? '{}',
+      );
+      if (saved is Map<String, dynamic>) {
+        _playbackPickerMemory = PlaybackPickerMemory.fromJson(saved);
+      }
+    } on FormatException {
+      _playbackPickerMemory = const PlaybackPickerMemory();
+    }
     _maxLinesPerLyric = _readPreference<int>(prefs, _prefsKey) ?? 2;
     _fontSize = normalizedLyricFontSize(
       _readDoublePreference(prefs, _fontSizeKey) ?? defaultLyricFontSize,
@@ -421,6 +463,9 @@ class SettingsProvider with ChangeNotifier {
         _readPreference<bool>(prefs, _enableLyricTranslationKey) ?? false;
     _enableLyricSourceFallback =
         _readPreference<bool>(prefs, _enableLyricSourceFallbackKey) ?? false;
+    _enableTimedLyricSourceFallback =
+        _readPreference<bool>(prefs, _enableTimedLyricSourceFallbackKey) ??
+        false;
     _lyricVerticalSpacing =
         _readDoublePreference(prefs, _lyricVerticalSpacingKey) ??
         6.0; // 加载歌词垂直间距设置
@@ -656,6 +701,23 @@ class SettingsProvider with ChangeNotifier {
     _desktopLyricsOutlineOpacity =
         (_readDoublePreference(prefs, _desktopLyricsOutlineOpacityKey) ?? 1.0)
             .clamp(0.1, 1.0);
+    _desktopLyricsAutoSize =
+        _readPreference<bool>(prefs, _desktopLyricsAutoSizeKey) ?? false;
+    _desktopLyricsKaraoke =
+        _readPreference<bool>(prefs, _desktopLyricsKaraokeKey) ?? false;
+    _desktopLyricsHighlightColor = _readPreference<int>(
+      prefs,
+      _desktopLyricsHighlightColorKey,
+    );
+    final desktopAlignment = _readPreference<String>(
+      prefs,
+      _desktopLyricsAlignmentKey,
+    );
+    _desktopLyricsAlignment =
+        const [TextAlign.left, TextAlign.center, TextAlign.right].firstWhere(
+          (a) => a.name == desktopAlignment,
+          orElse: () => TextAlign.center,
+        );
     if (_enableLoudness && _enableReplayGain) {
       _enableReplayGain = false;
       await prefs.setBool(_enableReplayGainKey, false);
@@ -797,6 +859,14 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_enableLyricSourceFallbackKey, value);
+  }
+
+  Future<void> setEnableTimedLyricSourceFallback(bool value) async {
+    if (_enableTimedLyricSourceFallback == value) return;
+    _enableTimedLyricSourceFallback = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_enableTimedLyricSourceFallbackKey, value);
   }
 
   void setLyricVerticalSpacing(double value) async {
@@ -1348,6 +1418,55 @@ class SettingsProvider with ChangeNotifier {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_desktopLyricsEnabledKey, value);
     if (!value) await prefs.setBool(_desktopLyricsLockedKey, false);
+  }
+
+  Future<void> setDesktopLyricsAutoSize(bool value) async {
+    if (_desktopLyricsAutoSize == value) return;
+    _desktopLyricsAutoSize = value;
+    notifyListeners();
+    await (await SharedPreferences.getInstance()).setBool(
+      _desktopLyricsAutoSizeKey,
+      value,
+    );
+  }
+
+  Future<void> setDesktopLyricsKaraoke(bool value) async {
+    if (_desktopLyricsKaraoke == value) return;
+    _desktopLyricsKaraoke = value;
+    notifyListeners();
+    await (await SharedPreferences.getInstance()).setBool(
+      _desktopLyricsKaraokeKey,
+      value,
+    );
+  }
+
+  Future<void> setDesktopLyricsHighlightColor(int? value) async {
+    if (_desktopLyricsHighlightColor == value) return;
+    _desktopLyricsHighlightColor = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    if (value == null) {
+      await prefs.remove(_desktopLyricsHighlightColorKey);
+    } else {
+      await prefs.setInt(_desktopLyricsHighlightColorKey, value);
+    }
+  }
+
+  Future<void> setDesktopLyricsAlignment(TextAlign value) async {
+    if (!const [
+          TextAlign.left,
+          TextAlign.center,
+          TextAlign.right,
+        ].contains(value) ||
+        _desktopLyricsAlignment == value) {
+      return;
+    }
+    _desktopLyricsAlignment = value;
+    notifyListeners();
+    await (await SharedPreferences.getInstance()).setString(
+      _desktopLyricsAlignmentKey,
+      value.name,
+    );
   }
 
   Future<void> setDesktopLyricsLocked(bool value) async {

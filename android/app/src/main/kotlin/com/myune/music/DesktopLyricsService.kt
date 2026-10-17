@@ -6,6 +6,8 @@ import android.content.Intent
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import io.flutter.plugin.common.StandardMessageCodec
+import java.nio.ByteBuffer
 
 /**
  * Owns the desktop-lyrics window independently from MainActivity.
@@ -128,6 +130,13 @@ class DesktopLyricsService : Service() {
         }
 
         private fun Intent.putOverlayValues(values: Map<String, Any?>): Intent = apply {
+            // Preserve nested word timing and every style field on first start,
+            // just as the direct live-service update path does.
+            val encoded = StandardMessageCodec.INSTANCE.encodeMessage(values)!!
+            encoded.flip()
+            val bytes = ByteArray(encoded.remaining())
+            encoded.get(bytes)
+            putExtra("presentation406", bytes)
             putExtra(EXTRA_TITLE, values[EXTRA_TITLE]?.toString().orEmpty())
             putExtra(EXTRA_ARTIST, values[EXTRA_ARTIST]?.toString().orEmpty())
             putExtra(EXTRA_LYRIC, values[EXTRA_LYRIC]?.toString().orEmpty())
@@ -140,7 +149,12 @@ class DesktopLyricsService : Service() {
             putExtra(EXTRA_DYNAMIC_COLOR, values[EXTRA_DYNAMIC_COLOR] as? Boolean ?: false)
         }
 
-        private fun Intent.toOverlayValues(): Map<String, Any?> = mapOf(
+        @Suppress("UNCHECKED_CAST")
+        private fun Intent.toOverlayValues(): Map<String, Any?> {
+            getByteArrayExtra("presentation406")?.let {
+                return StandardMessageCodec.INSTANCE.decodeMessage(ByteBuffer.wrap(it)) as Map<String, Any?>
+            }
+            return mapOf(
             EXTRA_TITLE to getStringExtra(EXTRA_TITLE).orEmpty(),
             EXTRA_ARTIST to getStringExtra(EXTRA_ARTIST).orEmpty(),
             EXTRA_LYRIC to getStringExtra(EXTRA_LYRIC).orEmpty(),
@@ -151,6 +165,7 @@ class DesktopLyricsService : Service() {
             EXTRA_OPACITY to getFloatExtra(EXTRA_OPACITY, 1f),
             EXTRA_FONT_WEIGHT to getIntExtra(EXTRA_FONT_WEIGHT, 600),
             EXTRA_DYNAMIC_COLOR to getBooleanExtra(EXTRA_DYNAMIC_COLOR, false),
-        )
+            )
+        }
     }
 }

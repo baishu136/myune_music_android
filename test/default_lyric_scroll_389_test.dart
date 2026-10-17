@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
-import 'package:myune_music/widgets/lyric_scroll_motion.dart';
+import 'package:myune_music/widgets/lyric_normalized_motion.dart';
 
 void main() {
   testWidgets('default follow uses one scrolling activity at 60/90/120Hz', (
@@ -116,9 +116,8 @@ void main() {
           tester.getCenter(find.byKey(const ValueKey('mobile_lyric_2'))).dy -
           tester.getCenter(find.byKey(const ValueKey('mobile_lyric_1'))).dy;
       final motion =
-          LyricScrollMotion(
-              frequency: mobileLyricsScrollFrequencyForFontSize(24),
-              dampingRatio: .90,
+          LyricNormalizedMotion(
+              duration: mobileLyricsDefaultScrollTransitionDuration,
             )
             ..sync(start)
             ..retarget(start + travel);

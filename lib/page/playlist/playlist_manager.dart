@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'package:path/path.dart' as p;
 import 'playlist_models.dart';
+import '../../services/library_root_playlist.dart';
 
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -162,9 +163,9 @@ class PlaylistManager {
       final metadataFile = await _getMetadataFile();
       if (!await metadataFile.exists()) {
         // 如果元数据文件不存在，则创建默认歌单并保存
-        final List<Playlist> defaultPlaylists = [
+        final List<Playlist> defaultPlaylists = ensureLibraryRoot([
           Playlist(name: '收藏', isDefault: true),
-        ];
+        ]);
         // 调用 savePlaylists 会同时保存元数据和歌曲文件
         await savePlaylists(defaultPlaylists);
         return defaultPlaylists;
@@ -192,14 +193,12 @@ class PlaylistManager {
         }
         loadedPlaylists.add(playlist);
       }
-      return loadedPlaylists;
+      return ensureLibraryRoot(loadedPlaylists);
     } catch (e) {
       // 元数据格式异常时只在内存中降级。这里不能立即保存默认歌单，
       // savePlaylists 会清理未被默认歌单引用的歌曲路径文件，使一次读取
       // 失败变成不可恢复的数据丢失。全部歌曲页仍可从顺序文件恢复路径。
-      return [
-        Playlist(name: '默认歌单', isDefault: true),
-      ];
+      return ensureLibraryRoot([Playlist(name: '默认歌单', isDefault: true)]);
     }
   }
 

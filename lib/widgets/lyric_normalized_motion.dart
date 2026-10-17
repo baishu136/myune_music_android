@@ -90,6 +90,20 @@ class LyricNormalizedMotion implements LyricScrollDriver {
 
   @override
   bool get isSettled => !_moving;
+  double get progress => !_moving || _seconds == 0
+      ? 1
+      : transitionCurve.transform((_elapsed / _seconds).clamp(0.0, 1.0));
+
+  /// Focus may change with no list travel at a clamped viewport edge.
+  void startStationaryFocus() {
+    if (_moving) return;
+    _start = target = offset;
+    _distance = _elapsed = 0;
+    transitionDuration = duration;
+    transitionCurve = lyricTransitionCurve;
+    _seconds = duration.inMicroseconds / 1000000;
+    _moving = true;
+  }
 
   @override
   void sync(double value, {bool resetVelocity = true, double? viewportExtent}) {

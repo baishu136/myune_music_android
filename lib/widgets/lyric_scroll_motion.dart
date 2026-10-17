@@ -36,6 +36,9 @@ class LyricScrollMotion implements LyricScrollDriver {
   @override
   double velocity = 0;
   double viewportExtent = 1;
+  double? _tailStart;
+  double _tailVelocity = 0, _tailElapsed = 0;
+  static const _tailSeconds = .08;
 
   void updateDynamics({required double frequency, double? dampingRatio}) {
     if (!frequency.isFinite || frequency <= 0) return;
@@ -46,10 +49,11 @@ class LyricScrollMotion implements LyricScrollDriver {
   }
 
   @override
-  bool get isSettled => (target - offset).abs() < .35 && velocity.abs() < 1.2;
+  bool get isSettled => offset == target && velocity == 0;
 
   @override
   void sync(double value, {bool resetVelocity = true, double? viewportExtent}) {
+    _tailStart = null;
     offset = value;
     target = value;
     if (resetVelocity) velocity = 0;
@@ -64,6 +68,7 @@ class LyricScrollMotion implements LyricScrollDriver {
     double? viewportExtent,
     bool launchFromRest = false,
   }) {
+    if (value != target) _tailStart = null;
     target = value;
     if (viewportExtent != null && viewportExtent > 0) {
       this.viewportExtent = viewportExtent;
@@ -80,15 +85,13 @@ class LyricScrollMotion implements LyricScrollDriver {
   /// unstable leap after the application resumes or the UI thread stalls.
   @override
   double advance(double elapsedSeconds) {
-    if (elapsedSeconds <= 0 || isSettled) {
-      if (isSettled) {
-        offset = target;
-        velocity = 0;
-      }
+    if (elapsedSeconds <= 0 || !elapsedSeconds.isFinite || isSettled) {
       return offset;
     }
-
-    if (!elapsedSeconds.isFinite) return offset;
+    if (_tailStart != null ||
+        ((target - offset).abs() < .35 && velocity.abs() < 1.2)) {
+      return _advanceTail(elapsedSeconds);
+    }
     // Analytic solutions remain stable across delayed frames. Discarding the
     // time after 50ms made the list visibly lag behind its wall-time trajectory.
     final elapsed = elapsedSeconds;
@@ -104,10 +107,6 @@ class LyricScrollMotion implements LyricScrollDriver {
       final decay = math.exp(-frequency * elapsed);
       offset = target + (displacement + coefficient * elapsed) * decay;
       velocity = (velocity - frequency * coefficient * elapsed) * decay;
-      if (isSettled) {
-        offset = target;
-        velocity = 0;
-      }
       return offset;
     }
 
@@ -130,10 +129,6 @@ class LyricScrollMotion implements LyricScrollDriver {
           decay *
           (-decayRate * wave +
               dampedFrequency * (-displacement * sine + coefficient * cosine));
-      if (isSettled) {
-        offset = target;
-        velocity = 0;
-      }
       return offset;
     }
 
@@ -153,10 +148,34 @@ class LyricScrollMotion implements LyricScrollDriver {
       remaining -= dt;
     }
 
-    if (isSettled) {
+    return offset;
+  }
+
+  // Join the former .35px snap with a short C1 tail. No new ticker, layout,
+  // numerical integration, or prolonged asymptotic settling is needed.
+  double _advanceTail(double seconds) {
+    if (_tailStart == null) {
+      _tailStart = offset;
+      _tailVelocity = velocity;
+      _tailElapsed = 0;
+    }
+    _tailElapsed += seconds;
+    if (_tailElapsed >= _tailSeconds) {
       offset = target;
       velocity = 0;
+      _tailStart = null;
+      return offset;
     }
+    final t = _tailElapsed / _tailSeconds;
+    final distance = _tailStart! - target;
+    final slope = _tailVelocity * _tailSeconds;
+    offset =
+        target +
+        (2 * t * t * t - 3 * t * t + 1) * distance +
+        (t * t * t - 2 * t * t + t) * slope;
+    velocity =
+        ((6 * t * t - 6 * t) * distance + (3 * t * t - 4 * t + 1) * slope) /
+        _tailSeconds;
     return offset;
   }
 }

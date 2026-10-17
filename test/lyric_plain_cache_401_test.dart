@@ -58,7 +58,8 @@ void main() {
           )
           .opacity;
       final before = opacity();
-      for (var i = 0; i < 40; i++) {
+      // Shared long-row focus now ends with the list at up to 680ms.
+      for (var i = 0; i < 45; i++) {
         await tester.pump(const Duration(milliseconds: 16));
         expect(paragraph.text, same(shaped));
       }

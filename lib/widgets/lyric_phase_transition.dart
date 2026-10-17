@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'lyric_shared_focus.dart';
 
 /// Flutter replaces the curve before sampling a running tween. A dense lyric
 /// retarget can therefore change the displayed value without elapsed time.
@@ -7,6 +8,61 @@ import 'package:flutter/material.dart';
 /// This runs only on widget updates, not on animation frames.
 mixin LyricPhaseRetarget<T extends ImplicitlyAnimatedWidget>
     on ImplicitlyAnimatedWidgetState<T> {
+  LyricSharedFocus? _sharedPhase;
+  int _sharedGeneration = -1;
+  bool get rebuildOnSharedPhase => false;
+  void sharedPhaseChanged() {}
+  @override
+  Animation<double> get animation => _sharedPhase ?? super.animation;
+
+  void _sharedChanged() {
+    final phase = _sharedPhase!;
+    if (_sharedGeneration != phase.generation) {
+      final old = AlwaysStoppedAnimation(phase.previousValue);
+      forEachTween((tween, target, constructor) {
+        if (tween != null) {
+          tween
+            ..begin = tween.evaluate(old)
+            ..end = target;
+        }
+        return tween;
+      });
+      _sharedGeneration = phase.generation;
+    }
+    sharedPhaseChanged();
+    if (rebuildOnSharedPhase && mounted) setState(() {});
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = LyricSharedFocusScope.of(context);
+    if (next == _sharedPhase) return;
+    final previous = animation.value;
+    forEachTween((tween, target, constructor) {
+      if (tween != null) {
+        tween.begin = tween.evaluate(AlwaysStoppedAnimation(previous));
+      }
+      return tween;
+    });
+    _sharedPhase?.removeListener(_sharedChanged);
+    _sharedPhase = next;
+    _sharedGeneration = next?.generation ?? -1;
+    next?.addListener(_sharedChanged);
+    if (next != null) {
+      controller.stop();
+    } else {
+      controller.forward(from: 0);
+    }
+    didUpdateTweens();
+  }
+
+  @override
+  void dispose() {
+    _sharedPhase?.removeListener(_sharedChanged);
+    super.dispose();
+  }
+
   bool get preserveLyricPhase => true;
   // Hidden entry preparation and explicit seeks use exact target poses.
   // Duration.zero alone cannot finish a tween whose TickerMode is muted.
@@ -14,7 +70,8 @@ mixin LyricPhaseRetarget<T extends ImplicitlyAnimatedWidget>
 
   @override
   void didUpdateWidget(covariant T oldWidget) {
-    if (preserveLyricPhase &&
+    if (_sharedPhase == null &&
+        preserveLyricPhase &&
         !snapLyricPhase &&
         (oldWidget.curve != widget.curve ||
             oldWidget.duration != widget.duration)) {
@@ -30,6 +87,7 @@ mixin LyricPhaseRetarget<T extends ImplicitlyAnimatedWidget>
       });
     }
     super.didUpdateWidget(oldWidget);
+    if (_sharedPhase != null) controller.stop();
     if (snapLyricPhase) {
       forEachTween((tween, target, constructor) {
         if (target == null) return null;
@@ -218,6 +276,8 @@ class _LyricPhaseTextStyleState
     extends AnimatedWidgetBaseState<AnimatedDefaultTextStyle>
     with LyricPhaseRetarget<AnimatedDefaultTextStyle> {
   TextStyleTween? _style;
+  @override
+  bool get rebuildOnSharedPhase => true;
   @override
   bool get preserveLyricPhase => (widget as LyricPhaseTextStyle).preservePhase;
   @override

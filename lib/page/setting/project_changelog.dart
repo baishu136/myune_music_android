@@ -24,6 +24,46 @@ class ProjectChangelogEntry {
 /// 0.99 集中记录 0.9.8-android.129 之后的全部有效改动。
 const projectChangelogEntries = <ProjectChangelogEntry>[
   ProjectChangelogEntry(
+    version: '1.0.0-android.406',
+    date: '2026-10-17',
+    features: ['桌面歌词支持逐行自动缩小、独立逐字高亮与自定义已播放颜色，以及左、中、右对齐。'],
+    fixes: ['桌面歌词首次显示完整保留字体与描边设置，字号上限与设置页一致。'],
+    optimizations: ['桌面逐字高亮在原生窗口内推进，缓存行内位置，暂停和隐藏后停止连续绘制。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.405',
+    date: '2026-10-17',
+    fixes: ['默认歌词滚动使用无回退轨迹，滚动与焦点变化同步收束。'],
+    optimizations: ['临近普通歌词正文在空闲时预先绘制，正文与光晕共享有限缓存，减少换行时的冷绘制开销。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.404',
+    date: '2026-10-17',
+    features: ['歌词源增加未匹配到逐字时切换其他平台，按网易、QQ、酷狗顺序补查且不重复请求已选平台。'],
+    fixes: ['逐字范围选择全部时，普通网络歌词也可按估算时间逐字显示；保留仅真实逐字范围。', '歌词滚动末尾改为连续收束，消除小幅吸附位移。'],
+    optimizations: ['连续切歌改为每0.6秒一次，循环随机图标改为尾部连接的随机箭头与数字1。'],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.403',
+    date: '2026-10-17',
+    optimizations: [
+      '循环随机使用组合线条图标，播放模式、收藏及封面长按面板统一底部弹出与透明样式。',
+      '选歌控件保留上次分栏、歌单、搜索及列表位置。',
+      '长按连续切歌改为每1.2秒一次，期间暂缓歌词、取色与预热，结束后恢复最终歌曲。',
+      '仅总歌曲显示歌单页底部导入按钮，顶部控件切页加入分段淡入淡出。',
+    ],
+  ),
+  ProjectChangelogEntry(
+    version: '1.0.0-android.402',
+    date: '2026-10-17',
+    features: [
+      '长按播放页上一曲或下一曲，按住期间每两秒切换一首，松手停止。',
+      '新增优先固定的“总歌曲”歌单，与音乐库共用管理和播放范围，导入歌曲不再自动收藏。',
+      '长按收藏键可新建歌单或将当前歌曲加入已有歌单。',
+      '新增循环播放后随机切歌模式，长按播放模式键可设置模式及收听次数、标题语言跳过规则。',
+    ],
+  ),
+  ProjectChangelogEntry(
     version: '1.0.0-android.401',
     date: '2026-10-16',
     optimizations: [

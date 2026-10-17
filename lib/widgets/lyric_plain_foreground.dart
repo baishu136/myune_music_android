@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'lyric_plain_raster.dart';
+import 'lyric_raster_pool.dart';
 
 final _nativeColorGlyph = RegExp(
   r'[\u00a9\u00ae\u200d\u20e3\u2600-\u27ff\ufe0f\u{1f000}-\u{1faff}]',
@@ -46,20 +48,38 @@ class _LyricPlainForegroundState extends State<LyricPlainForeground> {
         (previous.b - color.b).abs() > 1e-12) {
       _opaqueColor = color.withValues(alpha: 1);
     }
+    final inkStyle = style.copyWith(
+      inherit: false,
+      color: _opaqueColor,
+      decorationColor: _opaqueColor,
+    );
+    Widget ink = Text(
+      widget.text,
+      textAlign: widget.textAlign,
+      style: inkStyle,
+    );
+    final rank = LyricRasterScope.rankOf(context);
+    if (rank != null) {
+      ink = LyricPlainRaster(
+        identity: (
+          widget.text,
+          inkStyle,
+          widget.textAlign,
+          Directionality.of(context),
+          MediaQuery.textScalerOf(context),
+          Localizations.maybeLocaleOf(context),
+          DefaultTextStyle.of(context).maxLines,
+          DefaultTextStyle.of(context).textHeightBehavior,
+        ),
+        pixelRatio: MediaQuery.devicePixelRatioOf(context),
+        rank: rank,
+        child: ink,
+      );
+    }
     return Opacity(
       key: const ValueKey('mobile_lyric_foreground_opacity'),
       opacity: color.a,
-      child: RepaintBoundary(
-        child: Text(
-          widget.text,
-          textAlign: widget.textAlign,
-          style: style.copyWith(
-            inherit: false,
-            color: _opaqueColor,
-            decorationColor: _opaqueColor,
-          ),
-        ),
-      ),
+      child: RepaintBoundary(child: ink),
     );
   }
 }

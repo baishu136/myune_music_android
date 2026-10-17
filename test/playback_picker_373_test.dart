@@ -5,6 +5,7 @@ import 'package:myune_music/page/playlist/playlist_content_widget.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
 import 'package:myune_music/services/artist_names.dart';
+import 'package:myune_music/services/playback_picker_memory.dart';
 import 'package:myune_music/widgets/home_glass_surface.dart';
 import 'package:myune_music/widgets/karaoke_motion.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
@@ -13,6 +14,10 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class _QueueNotifier extends ChangeNotifier implements PlaylistContentNotifier {
+  @override
+  List<Playlist> playlists = [
+    Playlist(id: 'evening', name: '晚间歌单', songFilePaths: ['a.mp3']),
+  ];
   final artistParser = ArtistNameParser(defaultArtistSeparators);
   final songs = [
     Song(title: 'A first', artist: 'A', album: 'One', filePath: 'a.mp3'),
@@ -117,6 +122,73 @@ void main() {
       .widgetList<SongTileWidget>(find.byType(SongTileWidget))
       .map((tile) => tile.song.title)
       .toList();
+
+  testWidgets(
+    'picker restores search after remount without changing playback source',
+    (tester) async {
+      final notifier = await mount(tester);
+      final context = tester.element(find.byType(PlayingQueueDrawer));
+      final settings = context.read<SettingsProvider>();
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('queue-library-search')),
+        'second',
+      );
+      await tester.pumpAndSettle();
+      expect(visibleSongs(tester), ['A second']);
+      Widget host(Widget body) => MultiProvider(
+        providers: [
+          ChangeNotifierProvider<PlaylistContentNotifier>.value(
+            value: notifier,
+          ),
+          ChangeNotifierProvider<SettingsProvider>.value(value: settings),
+        ],
+        child: MaterialApp(home: Scaffold(body: body)),
+      );
+      await tester.pumpWidget(host(const SizedBox()));
+      await tester.pumpAndSettle();
+      expect(settings.playbackPickerMemory.page, PlaybackPickerPage.search);
+      await tester.pumpWidget(
+        host(const PlayingQueueDrawer(syncHomeBackground: false)),
+      );
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<TextField>(
+              find.byKey(const ValueKey('queue-library-search')),
+            )
+            .controller!
+            .text,
+        'second',
+      );
+      expect(visibleSongs(tester), ['A second']);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('removed remembered playlist falls back to live playlist list', (
+    tester,
+  ) async {
+    final notifier = await mount(tester);
+    final settings = tester
+        .element(find.byType(PlayingQueueDrawer))
+        .read<SettingsProvider>();
+    await tester.tap(find.byTooltip('歌单'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('晚间歌单'));
+    await tester.pumpAndSettle();
+    expect(visibleSongs(tester), ['A first']);
+    expect(settings.playbackPickerMemory.playlistId, 'evening');
+    notifier.playlists.clear();
+    notifier.changeSong(notifier.songs.first);
+    await tester.pumpAndSettle();
+    expect(find.text('暂无已创建的歌单'), findsOneWidget);
+    expect(visibleSongs(tester), isEmpty);
+    await tester.pumpWidget(const SizedBox());
+    expect(settings.playbackPickerMemory.page, PlaybackPickerPage.playlists);
+    expect(settings.playbackPickerMemory.playlistId, isNull);
+  });
 
   test('retained lift is seven percent at small and scaled text heights', () {
     final config = KaraokeMotionConfig();

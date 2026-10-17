@@ -86,6 +86,8 @@ class SongMetadataCacheEntry {
 }
 
 class Playlist {
+  static const libraryId = 'library-root-402';
+  bool get isLibrary => id == libraryId;
   final String id;
   String name;
   final bool isDefault;

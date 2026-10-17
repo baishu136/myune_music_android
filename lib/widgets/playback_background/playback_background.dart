@@ -30,6 +30,7 @@ class PlaybackBackground extends StatefulWidget {
     required this.child,
     this.paletteArtworkBytes,
     this.rhythmFrames,
+    this.suspended = false,
   });
 
   final PlaybackArtworkBackgroundStyle style;
@@ -51,6 +52,7 @@ class PlaybackBackground extends StatefulWidget {
   final double coverBlur;
   final bool usePlaybackTheme;
   final Widget child;
+  final bool suspended;
 
   @override
   State<PlaybackBackground> createState() => _PlaybackBackgroundState();
@@ -60,6 +62,7 @@ class _PlaybackBackgroundState extends State<PlaybackBackground> {
   late PlaybackArtworkBackgroundStyle _displayedStyle;
   late PlaybackArtworkBackgroundStyle _requestedStyle;
   int _styleChangeGeneration = 0;
+  Widget? _retainedBackground;
 
   bool get _useFluid =>
       _displayedStyle == PlaybackArtworkBackgroundStyle.fluid &&
@@ -75,6 +78,7 @@ class _PlaybackBackgroundState extends State<PlaybackBackground> {
   @override
   void didUpdateWidget(covariant PlaybackBackground oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (widget.suspended) return;
     if (widget.style == _requestedStyle) return;
     _requestedStyle = widget.style;
     if (_requestedStyle == _displayedStyle) {
@@ -139,34 +143,44 @@ class _PlaybackBackgroundState extends State<PlaybackBackground> {
 
   @override
   Widget build(BuildContext context) {
+    if (!widget.suspended || _retainedBackground == null) {
+      _retainedBackground = _buildBackground();
+    }
     return Stack(
       fit: StackFit.expand,
       children: [
         ColoredBox(color: widget.fallbackSeed),
-        AnimatedSwitcher(
-          duration: const Duration(milliseconds: 280),
-          reverseDuration: const Duration(milliseconds: 220),
-          switchInCurve: Curves.easeOutCubic,
-          switchOutCurve: Curves.easeInCubic,
-          layoutBuilder: (currentChild, previousChildren) => Stack(
-            fit: StackFit.expand,
-            children: [
-              // Freeze the outgoing display list; fade only its retained layer.
-              for (final previous in previousChildren)
-                TickerMode(key: previous.key, enabled: false, child: previous),
-              if (currentChild != null)
-                TickerMode(
-                  key: currentChild.key,
-                  enabled: true,
-                  child: currentChild,
-                ),
-            ],
+        TickerMode(
+          enabled: !widget.suspended,
+          child: AnimatedSwitcher(
+            duration: const Duration(milliseconds: 280),
+            reverseDuration: const Duration(milliseconds: 220),
+            switchInCurve: Curves.easeOutCubic,
+            switchOutCurve: Curves.easeInCubic,
+            layoutBuilder: (currentChild, previousChildren) => Stack(
+              fit: StackFit.expand,
+              children: [
+                // Freeze the outgoing display list; fade only its retained layer.
+                for (final previous in previousChildren)
+                  TickerMode(
+                    key: previous.key,
+                    enabled: false,
+                    child: previous,
+                  ),
+                if (currentChild != null)
+                  TickerMode(
+                    key: currentChild.key,
+                    enabled: true,
+                    child: currentChild,
+                  ),
+              ],
+            ),
+            transitionBuilder: (child, animation) => FadeTransition(
+              opacity: animation,
+              child: RepaintBoundary(child: child),
+            ),
+            child: _retainedBackground,
           ),
-          transitionBuilder: (child, animation) => FadeTransition(
-            opacity: animation,
-            child: RepaintBoundary(child: child),
-          ),
-          child: _buildBackground(),
         ),
         widget.child,
       ],

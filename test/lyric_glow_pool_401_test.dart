@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/services/interaction_performance_controller.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
+import 'package:myune_music/widgets/lyric_raster_pool.dart';
 
 MobileLyricGlowPainter glow(WidgetTester tester, int row) =>
     tester
@@ -193,10 +194,13 @@ void main() {
           ),
         ),
       );
-      await waitForGlows(tester, [15, 16, 14, 17]);
+      // Native foreground ink now shares the budget. Under this pressure the
+      // focus/next glows win; other glows retain their exact native painter.
+      await waitForGlows(tester, [15, 16]);
       final retained = {
-        for (final row in [15, 16, 17]) row: glow(tester, row).preparedRaster!,
+        for (final row in [15, 16]) row: glow(tester, row).preparedRaster!,
       };
+      expect(LyricRasterPool.pixels, lessThanOrEqualTo(8 * 1024 * 1024));
       final mounted = tester
           .widgetList<CustomPaint>(
             find.byKey(const ValueKey('mobile_lyric_glow_layer')),
@@ -210,9 +214,11 @@ void main() {
       );
       update(() => active = 16);
       await tester.pump();
-      await waitForGlows(tester, [16, 17, 15, 18]);
+      await waitForGlows(tester, [16, 17]);
       for (final entry in retained.entries) {
-        expect(glow(tester, entry.key).preparedRaster, same(entry.value));
+        if (entry.key == 16) {
+          expect(glow(tester, entry.key).preparedRaster, same(entry.value));
+        }
       }
       await unmount(tester);
       for (final image in retained.values) {

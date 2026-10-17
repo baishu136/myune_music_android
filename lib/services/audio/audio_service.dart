@@ -120,6 +120,8 @@ class AudioService {
   late final Future<void> _initialization;
   bool _disposed = false;
   int _trackLoadRevision = 0;
+  int _nextReplacementRevision = 0;
+  Future<void> _nextReplacement = Future<void>.value();
   _PlaybackConfiguration? _desiredConfiguration;
   _PlaybackConfiguration? _appliedConfiguration;
   Future<void>? _configurationDrain;
@@ -368,20 +370,29 @@ class AudioService {
 
   // 替换 mpv playlist 中的预备项（index 1）
   Future<void> replaceNext(String? nextPath) async {
+    final revision = ++_nextReplacementRevision;
+    final trackRevision = _trackLoadRevision;
     await _ensureReady();
-    try {
-      // 先移除旧的预备项（如果有）
-      final playlist = _player.state.playlist;
-      if (playlist.items.length > 1) {
-        await _player.remove(1);
+    bool needed() =>
+        !_disposed &&
+        revision == _nextReplacementRevision &&
+        trackRevision == _trackLoadRevision;
+    final previous = _nextReplacement;
+    final task = () async {
+      await previous;
+      if (!needed()) return;
+      try {
+        while (_player.state.playlist.items.length > 1) {
+          await _player.remove(_player.state.playlist.items.length - 1);
+          if (!needed()) return;
+        }
+        if (nextPath != null) await _player.add(Media(nextPath));
+      } catch (_) {
+        // A failed optional preload must not interrupt the current song.
       }
-      // 追加新的预备项
-      if (nextPath != null) {
-        await _player.add(Media(nextPath));
-      }
-    } catch (e) {
-      //
-    }
+    }();
+    _nextReplacement = task;
+    await task;
   }
 
   // 移除 mpv playlist 中已播完的首项，使当前播放回到 index 0

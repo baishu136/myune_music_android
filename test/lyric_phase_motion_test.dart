@@ -79,7 +79,13 @@ void main() {
         final duration = tester
             .widget<AnimatedScale>(part(2, AnimatedScale))
             .duration;
-        expect(duration, mobileLyricsDefaultScrollTransitionDuration);
+        expect(
+          duration,
+          lyricTransitionDurationForDistance(
+            travel,
+            base: mobileLyricsDefaultScrollTransitionDuration,
+          ),
+        );
         final startBlur = tester.renderObject<RenderLyricViewportBlur>(
           find.descendant(
             of: row,

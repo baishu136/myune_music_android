@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
-import 'package:myune_music/widgets/lyric_scroll_motion.dart';
+import 'package:myune_music/widgets/lyric_normalized_motion.dart';
 
 void main() {
   testWidgets(
@@ -81,25 +81,20 @@ void main() {
                   .getCenter(find.byKey(const ValueKey('mobile_lyric_2')))
                   .dy -
               tester.getCenter(find.byKey(const ValueKey('mobile_lyric_1'))).dy;
-          final motion = LyricScrollMotion(
-            frequency: mobileLyricsScrollFrequencyForFontSize(24),
-            dampingRatio: .90,
+          final motion = LyricNormalizedMotion(
+            duration: mobileLyricsDefaultScrollTransitionDuration,
           )..retarget(travel);
           update(() => active = 2);
           await tester.pump();
           for (var frame = 0; frame < hz * .6; frame++) {
             await tester.pump(Duration(microseconds: (1000000 / hz).round()));
-            final p = mobileLyricsFocusTransitionCurve.transform(
-              (((frame + 1) * (1000000 / hz).round()) /
-                      mobileLyricsKaraokeLineShiftDuration.inMicroseconds)
-                  .clamp(0.0, 1.0),
-            );
+            motion.advance((1000000 / hz).round() / 1000000);
+            final p = motion.progress;
             expect(
               spacing(1, 2),
               closeTo(firstGap + (.16 * height1 - .22 * height2) * p, .01),
               reason: '$mode $hz Hz frame $frame',
             );
-            motion.advance((1000000 / hz).round() / 1000000);
             final expected = startY - motion.offset - .22 * height2 * p;
             expect(tester.getCenter(paint(2)).dy, closeTo(expected, .01));
             expect(

@@ -27,6 +27,8 @@ import 'karaoke_sweep_path.dart';
 import 'karaoke_sweep_timeline.dart';
 import 'lyric_viewport_blur.dart';
 import 'lyric_plain_foreground.dart';
+import 'lyric_raster_pool.dart';
+import 'lyric_shared_focus.dart';
 
 export 'synthetic_karaoke_timing.dart';
 
@@ -79,8 +81,7 @@ bool canAnimateLyricLine(
 ) =>
     enabled &&
     !line.isInterlude &&
-    (line.hasTimedWords ||
-        (mode == KaraokeLyricsMode.all && line.allowSyntheticKaraoke));
+    (line.hasTimedWords || mode == KaraokeLyricsMode.all);
 
 double mobileLyricsLargeFontProgress(double fontSize) =>
     ((fontSize - 20) / 16).clamp(0.0, 1.0).toDouble();
@@ -832,14 +833,18 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   LyricFollowScrollController? _scrollControllerState;
   // The karaoke switch changes glyph paint, never the row/list trajectory.
-  // Keep the default font-adaptive spring and the optional elastic row driver.
   final LyricScrollMotion _springMotion = LyricScrollMotion(
     dampingRatio: .90,
     frequency: mobileLyricsDefaultScrollFrequency,
   );
   Duration _focusDuration = mobileLyricsFocusTransitionDuration;
   Curve _focusCurve = mobileLyricsFocusTransitionCurve;
-  LyricScrollDriver get _motion => _springMotion;
+  final _normalizedMotion = LyricNormalizedMotion(
+    duration: mobileLyricsDefaultScrollTransitionDuration,
+  );
+  final _sharedFocus = LyricSharedFocus();
+  LyricScrollDriver get _motion =>
+      _usesRowElastic ? _springMotion : _normalizedMotion;
   final ValueNotifier<_LyricDebugSnapshot> _debugSnapshot = ValueNotifier(
     const _LyricDebugSnapshot(),
   );
@@ -1152,7 +1157,14 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       _focusDuration = mobileLyricsFocusTransitionDuration;
       _focusCurve = mobileLyricsFocusTransitionCurve;
       if (_scrollControllerState?.hasClients ?? false) {
-        _motion.sync(_scrollController.offset, viewportExtent: _viewportHeight);
+        _springMotion.sync(
+          _scrollController.offset,
+          viewportExtent: _viewportHeight,
+        );
+        _normalizedMotion.sync(
+          _scrollController.offset,
+          viewportExtent: _viewportHeight,
+        );
       }
       if (!_isManuallyBrowsing && !_lyricsPointerDown) {
         _retargetIndex(widget.active, force: true, springLines: false);
@@ -1362,6 +1374,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       viewportExtent: _viewportHeight,
     );
     final nextOffset = _motion.advance(frameSeconds).clamp(0.0, maxOffset);
+    if (!_usesRowElastic) _sharedFocus.update(_normalizedMotion.progress);
     // Keep the normalized tail subpixel-continuous too: a .05px gate can hold
     // several final frames then jump, even though the model is continuous.
     if (_scrollController.offset != nextOffset) {
@@ -1481,8 +1494,16 @@ class _MobileLyricsListState extends State<MobileLyricsList>
       viewportExtent: _viewportHeight,
       launchFromRest: false,
     );
-    _focusDuration = mobileLyricsDefaultScrollTransitionDuration;
-    _focusCurve = mobileLyricsFocusTransitionCurve;
+    if (!_usesRowElastic) {
+      _normalizedMotion.startStationaryFocus();
+      _sharedFocus.begin();
+    }
+    _focusDuration = _usesRowElastic
+        ? mobileLyricsDefaultScrollTransitionDuration
+        : _normalizedMotion.transitionDuration;
+    _focusCurve = _usesRowElastic
+        ? mobileLyricsFocusTransitionCurve
+        : _normalizedMotion.transitionCurve;
     _startMotion();
     return true;
   }
@@ -2117,6 +2138,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     _scrollProtection?.release();
     widget.controller?._detach(this);
     _frameClock.dispose();
+    _sharedFocus.dispose();
     _prewarmGeneration++;
     _prewarm.clear();
     _scrollControllerState?.dispose();
@@ -2302,7 +2324,20 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                                 child: item,
                               );
                             }
-                            return item;
+                            return LyricSharedFocusScope(
+                              phase: _usesRowElastic || _isManuallyBrowsing
+                                  ? null
+                                  : _sharedFocus,
+                              child: LyricRasterScope(
+                                rank: _usesRowElastic
+                                    ? 9999
+                                    : _normalGlowRank(
+                                        index - displayedActive,
+                                        _motionVisible,
+                                      ),
+                                child: item,
+                              ),
+                            );
                           },
                         ),
                       ),
@@ -3192,6 +3227,9 @@ class _AnimatedLyricBlurState
   }
 
   @override
+  void sharedPhaseChanged() => _publishSigma();
+
+  @override
   bool get preserveLyricPhase => widget.preservePhase;
   @override
   bool get snapLyricPhase => widget.snapToTarget;
@@ -3279,14 +3317,15 @@ class _CachedMobileLyricGlow extends StatefulWidget {
   State<_CachedMobileLyricGlow> createState() => _CachedMobileLyricGlowState();
 }
 
-class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
+class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow>
+    implements LyricRasterClient {
   TextPainter? _layout;
   MobileLyricGlowPainter? _previous;
   double? _width;
   _PhysicalLyricPictures? _rowPictures;
   double? _rasterPixelRatio;
   int _normalPixels = 0, _normalRank = 10000;
-  final int _normalSequence = _nextNormalGlowClient++;
+  late final int _normalSequence;
   double _normalDpr = 1, _normalPadding = 32;
   bool _normalFailed = false;
   _NormalGlowReservation? _reservation;
@@ -3296,10 +3335,22 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
   @override
   void initState() {
     super.initState();
-    _normalGlowClients.add(this);
+    _normalSequence = LyricRasterPool.register(this);
   }
 
   int get _normalDemand => _normalFailed ? 0 : _normalPixels;
+  @override
+  int get rasterDemand => _normalDemand;
+  @override
+  int get rasterRank => _normalRank * 2 + 1;
+  @override
+  int get rasterSequence => _normalSequence;
+  @override
+  bool get rasterReserved => _reservation != null;
+  @override
+  void reserveRaster() => _reserveNormalRaster();
+  @override
+  void evictRaster() => _evictNormalRaster();
   InteractionWorkPriority _normalPriority() => _normalRank <= 1
       ? InteractionWorkPriority.currentVisual
       : _normalRank <= 3
@@ -3376,7 +3427,7 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow> {
 
   @override
   void dispose() {
-    _normalGlowClients.remove(this);
+    LyricRasterPool.unregister(this);
     _layout?.dispose();
     _discardPictures();
     _scheduleNormalGlowPool();

@@ -7,14 +7,11 @@ import 'package:myune_music/services/lyric_content.dart';
 
 void main() {
   test(
-    'ALL does not estimate network LRC, while local ALL and real word timing remain supported',
+    'explicit ALL estimates both network and local LRC; timed-only requires real timing',
     () {
       final local = LyricLine(timestamp: Duration.zero, texts: ['歌词']);
       final network = local.withSyntheticKaraoke(false);
-      expect(
-        canAnimateLyricLine(network, true, KaraokeLyricsMode.all),
-        isFalse,
-      );
+      expect(canAnimateLyricLine(network, true, KaraokeLyricsMode.all), isTrue);
       expect(canAnimateLyricLine(local, true, KaraokeLyricsMode.all), isTrue);
       expect(
         canAnimateLyricLine(local, true, KaraokeLyricsMode.timedOnly),

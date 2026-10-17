@@ -128,6 +128,10 @@ class DesktopLyricsPage extends StatelessWidget {
                 outlineColor: Color(
                   value.outlineColor,
                 ).withValues(alpha: value.outlineOpacity),
+                autoSize: value.autoSize,
+                karaoke: value.karaoke,
+                highlightColor: Color(value.highlightColor),
+                alignment: value.alignment,
               ),
             ),
             const Divider(height: 1),
@@ -187,6 +191,10 @@ class DesktopLyricsPage extends StatelessWidget {
                           await value.setOutlineWidth(1.15);
                           await value.setOutlineColor(0xFFFFFFFF);
                           await value.setOutlineOpacity(1);
+                          await value.setAutoSize(false);
+                          await value.setKaraoke(false);
+                          await value.setHighlightColor(null);
+                          await value.setAlignment(TextAlign.center);
                         },
                         icon: const Icon(Icons.restart_alt),
                       ),
@@ -265,6 +273,67 @@ class DesktopLyricsPage extends StatelessWidget {
                       ),
                     ),
                   ],
+                  const SizedBox(height: 16),
+                  SwitchListTile.adaptive(
+                    key: const ValueKey('desktop-lyrics-auto-size'),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('动态调整桌面歌词字体大小'),
+                    value: value.autoSize,
+                    onChanged: value.setAutoSize,
+                  ),
+                  SwitchListTile.adaptive(
+                    key: const ValueKey('desktop-lyrics-karaoke'),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('桌面逐字歌词'),
+                    value: value.karaoke,
+                    onChanged: value.setKaraoke,
+                  ),
+                  if (value.karaoke)
+                    ListTile(
+                      key: const ValueKey('desktop-lyrics-highlight-color'),
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('已播放部分颜色'),
+                      trailing: CircleAvatar(
+                        radius: 14,
+                        backgroundColor: Color(value.highlightColor),
+                        child: Icon(
+                          Icons.colorize,
+                          size: 18,
+                          color:
+                              ThemeData.estimateBrightnessForColor(
+                                    Color(value.highlightColor),
+                                  ) ==
+                                  Brightness.dark
+                              ? Colors.white
+                              : Colors.black,
+                        ),
+                      ),
+                      onTap: () async {
+                        final selected = await showDialog<Color>(
+                          context: context,
+                          builder: (_) => AdobeColorPickerDialog(
+                            initial: Color(value.highlightColor),
+                            title: '已播放部分颜色',
+                          ),
+                        );
+                        if (selected == null || !context.mounted) return;
+                        await value.setHighlightColor(selected.toARGB32());
+                      },
+                    ),
+                  const SizedBox(height: 12),
+                  const Text('歌词对齐方式'),
+                  const SizedBox(height: 8),
+                  SegmentedButton<TextAlign>(
+                    key: const ValueKey('desktop-lyrics-alignment'),
+                    segments: const [
+                      ButtonSegment(value: TextAlign.left, label: Text('左对齐')),
+                      ButtonSegment(value: TextAlign.center, label: Text('居中')),
+                      ButtonSegment(value: TextAlign.right, label: Text('右对齐')),
+                    ],
+                    selected: {value.alignment},
+                    onSelectionChanged: (values) =>
+                        value.setAlignment(values.first),
+                  ),
                   const SizedBox(height: 16),
                   Align(
                     alignment: Alignment.centerLeft,
@@ -436,6 +505,10 @@ class _DesktopLyricsPreview extends StatelessWidget {
     required this.outlineEnabled,
     required this.outlineWidth,
     required this.outlineColor,
+    required this.autoSize,
+    required this.karaoke,
+    required this.highlightColor,
+    required this.alignment,
   });
 
   final Color color;
@@ -446,6 +519,10 @@ class _DesktopLyricsPreview extends StatelessWidget {
   final bool outlineEnabled;
   final double outlineWidth;
   final Color outlineColor;
+  final bool autoSize;
+  final bool karaoke;
+  final Color highlightColor;
+  final TextAlign alignment;
 
   @override
   Widget build(BuildContext context) {
@@ -468,34 +545,119 @@ class _DesktopLyricsPreview extends StatelessWidget {
         color: const Color(0x80303030),
         borderRadius: BorderRadius.circular(14),
       ),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          if (outlineEnabled)
-            Text(
-              previewText,
-              maxLines: 3,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.center,
-              style: fillStyle.copyWith(
-                foreground: Paint()
-                  ..style = PaintingStyle.stroke
-                  ..strokeJoin = StrokeJoin.round
-                  ..strokeWidth = outlineWidth
-                  ..color = outlineColor.withValues(
-                    alpha: outlineColor.a * opacity,
-                  ),
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          Widget row(String text, {required bool fit}) {
+            var style = fillStyle;
+            if (fit) {
+              final painter = TextPainter(
+                text: TextSpan(text: text, style: style),
+                textDirection: TextDirection.ltr,
+                maxLines: 1,
+              )..layout();
+              final available = (constraints.maxWidth - outlineWidth * 2 - 2)
+                  .clamp(1.0, double.infinity);
+              if (painter.width > available) {
+                style = style.copyWith(
+                  fontSize: size * available / painter.width,
+                );
+              }
+              painter.dispose();
+            }
+            Widget label(TextStyle textStyle) => SizedBox(
+              width: double.infinity,
+              child: Text(
+                text,
+                maxLines: fit ? 1 : 3,
+                overflow: TextOverflow.ellipsis,
+                textAlign: alignment,
+                style: textStyle,
               ),
-            ),
-          Text(
-            previewText,
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
-            style: fillStyle,
-          ),
-        ],
+            );
+            return SizedBox(
+              width: double.infinity,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  if (outlineEnabled)
+                    label(
+                      style.copyWith(
+                        foreground: Paint()
+                          ..style = PaintingStyle.stroke
+                          ..strokeJoin = StrokeJoin.round
+                          ..strokeWidth = outlineWidth
+                          ..color = outlineColor.withValues(
+                            alpha: outlineColor.a * opacity,
+                          ),
+                      ),
+                    ),
+                  label(style),
+                  if (karaoke)
+                    Positioned.fill(
+                      child: ClipPath(
+                        clipper: _DesktopPreviewHighlight(
+                          text,
+                          style,
+                          alignment,
+                        ),
+                        child: label(
+                          style.copyWith(
+                            color: highlightColor.withValues(alpha: opacity),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            );
+          }
+
+          return autoSize
+              ? Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: previewText
+                      .split('\n')
+                      .map((text) => row(text, fit: true))
+                      .toList(),
+                )
+              : row(previewText, fit: false);
+        },
       ),
     );
   }
+}
+
+class _DesktopPreviewHighlight extends CustomClipper<Path> {
+  const _DesktopPreviewHighlight(this.text, this.style, this.alignment);
+  final String text;
+  final TextStyle style;
+  final TextAlign alignment;
+  @override
+  Path getClip(Size size) {
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: style),
+      textAlign: alignment,
+      textDirection: TextDirection.ltr,
+      maxLines: 3,
+    )..layout(maxWidth: size.width);
+    final first = text.split('\n').first;
+    final count = first.characters
+        .take((first.characters.length / 2).ceil())
+        .join()
+        .length;
+    final path = Path();
+    for (final box in painter.getBoxesForSelection(
+      TextSelection(baseOffset: 0, extentOffset: count),
+    )) {
+      path.addRect(box.toRect());
+    }
+    painter.dispose();
+    return path;
+  }
+
+  @override
+  bool shouldReclip(_DesktopPreviewHighlight oldClipper) =>
+      oldClipper.text != text ||
+      oldClipper.style != style ||
+      oldClipper.alignment != alignment;
 }

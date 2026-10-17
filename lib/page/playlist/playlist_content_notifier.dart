@@ -37,10 +37,16 @@ import '../../services/lyric_seek_notifier.dart';
 import '../../services/search_service.dart';
 import '../../services/library_preparation_worker.dart';
 import '../../services/artist_names.dart';
+import '../../services/playback_navigation.dart';
+import '../../services/continuous_skip_session.dart';
+export '../../services/playback_navigation.dart';
 import '../../services/song_group_presentation.dart';
 import '../../services/library_song_visibility.dart';
 import '../../services/playlist_folder_policy.dart';
 import '../../services/network_lyric_client.dart';
+import '../../services/network_lyric_resolver.dart';
+export '../../services/network_lyric_resolver.dart'
+    show networkLyricSourceOrder;
 import '../../services/lyric_content.dart';
 import '../../services/equalizer_preset_store.dart';
 import '../../models/equalizer_preset.dart';
@@ -75,8 +81,6 @@ enum SortCriterion {
   trackNumber,
 }
 
-enum PlayMode { sequence, shuffle, repeatOne }
-
 enum DetailViewContext { playlist, allSongs, artist, album }
 
 enum ArtworkRequestPriority { visible, near, far, background }
@@ -95,22 +99,6 @@ class PlaybackSourceSnapshot {
   final List<Song> songs;
   final int currentIndex;
   final Playlist? playlist;
-}
-
-const _networkLyricFallbackPriority = ['netease', 'qq', 'kugou'];
-
-List<String> networkLyricSourceOrder(
-  String selectedSource, {
-  bool enableFallback = true,
-}) {
-  final selected = _networkLyricFallbackPriority.contains(selectedSource)
-      ? selectedSource
-      : _networkLyricFallbackPriority.first;
-  if (!enableFallback) return [selected];
-  return [
-    selected,
-    ..._networkLyricFallbackPriority.where((source) => source != selected),
-  ];
 }
 
 List<String> lyricResolutionPriority({
@@ -319,7 +307,10 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   Playlist? get favoritePlaylist {
     for (final playlist in _playlists) {
-      if (playlist.isDefault || playlist.name == '收藏') return playlist;
+      if (!playlist.isLibrary &&
+          (playlist.isDefault || playlist.name == '收藏')) {
+        return playlist;
+      }
     }
     return null;
   }
@@ -471,6 +462,18 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   int _selectedIndex = -1; // 当前选中的歌单索引
   int get selectedIndex => _selectedIndex;
+  bool get isLibraryPlaylistSelected =>
+      _selectedIndex >= 0 &&
+      _selectedIndex < _playlists.length &&
+      _playlists[_selectedIndex].isLibrary;
+
+  Playlist? get libraryPlaylist {
+    for (final playlist in _playlists) {
+      if (playlist.isLibrary) return playlist;
+    }
+    return null;
+  }
+
   Playlist? _playingPlaylist; // 当前正在播放的歌单
   Playlist? get playingPlaylist => _playingPlaylist;
   int _playingSongIndex = -1; // 当前播放的歌曲在歌单路径列表中的索引
@@ -681,11 +684,16 @@ class PlaylistContentNotifier extends ChangeNotifier
   final Map<String, SongSortPreference> _songSortPreferences = {};
   final Map<String, int> _sortMembershipSignatures = {};
 
-  String playlistPinScope(String playlistId) => 'playlist:$playlistId';
+  String playlistPinScope(String playlistId) => playlistId == Playlist.libraryId
+      ? libraryPinScope
+      : 'playlist:$playlistId';
   String artistSongsPinScope(String artist) => 'artistSongs:$artist';
   String albumSongsPinScope(String album) => 'albumSongs:$album';
 
-  String _playlistSortScope(String playlistId) => 'playlist:$playlistId';
+  String _playlistSortScope(String playlistId) =>
+      playlistId == Playlist.libraryId
+      ? _allSongsSortScope
+      : 'playlist:$playlistId';
   String _artistSortScope(String artist) => 'artist:$artist';
   String _albumSortScope(String album) => 'album:$album';
 
@@ -864,6 +872,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   Future<void> _reapplyChangedPlaylistSorts() async {
     for (final playlist in _playlists) {
+      if (playlist.isLibrary) continue;
       final scope = _playlistSortScope(playlist.id);
       final preference =
           _songSortPreferences[scope] ??
@@ -1233,7 +1242,6 @@ class PlaylistContentNotifier extends ChangeNotifier
   Song? _viewingSong; // 当前在详情页查看的歌曲
   Song? get viewingSong => _viewingSong ?? _currentSong;
 
-  bool _isAutoPlaying = false; // 是否为自动播放（播放完成后的自动切换）
   bool _stopAfterQueue = false; // 播完当前队列后是否暂停
 
   bool get stopAfterQueue => _stopAfterQueue;
@@ -1241,6 +1249,81 @@ class PlaylistContentNotifier extends ChangeNotifier
   PlayMode _playMode = PlayMode.sequence; // 播放模式：顺序、随机、单曲循环
   static const _playModeKey = 'play_mode'; // 存储播放模式的 key
   PlayMode get playMode => _playMode;
+  final ContinuousSkipSession _continuousSkip = ContinuousSkipSession();
+  InteractionWorkLease? _continuousWorkGuard;
+  String? _continuousOriginalPath;
+  bool _continuousPlaybackStarted = false;
+  bool get isContinuousSkipping => _continuousSkip.value;
+  ValueListenable<bool> get continuousSkipListenable => _continuousSkip;
+  VoidCallback beginContinuousSkip() => _continuousSkip.hold();
+
+  void _handleContinuousSkipChanged() {
+    if (isContinuousSkipping) {
+      _continuousOriginalPath = _currentSong?.normalizedPath;
+      _continuousPlaybackStarted = false;
+      _continuousWorkGuard ??= InteractionPerformanceController.instance
+          .beginTransition();
+      _lyricRequestGeneration++;
+      _lyricPrefetchGeneration++;
+      _dynamicColorApplyGeneration++;
+      _dynamicColorPrefetchGeneration++;
+      _metadataVerificationGeneration++;
+      _playbackStateSaveGeneration++;
+      _playbackStateSaveTimer?.cancel();
+      _clearPlaybackArtworkPrewarm();
+      PlaybackTracker().pauseTracking();
+      if (_gaplessEnabled) unawaited(_audioService.replaceNext(null));
+    } else {
+      _continuousWorkGuard?.release();
+      _continuousWorkGuard = null;
+      final song = _currentSong;
+      if (song != null) {
+        if (_continuousOriginalPath != song.normalizedPath) {
+          _currentLyrics = [];
+          _setCurrentLyricLineIndex(-1);
+        }
+        _setCurrentPosition(_audioService.player.state.position);
+        updateLyricLine(_currentPosition);
+        signalLyricSeek(_currentPosition);
+        unawaited(_loadLyricsForSong(song.filePath));
+        unawaited(_applyDynamicColorForSong(song));
+        unawaited(_publishMediaSessionForTrack(song, _playbackRequestRevision));
+        _refreshAdjacentPlaybackArtworkPrewarm();
+        _refreshGaplessNext();
+        if (_continuousPlaybackStarted) {
+          PlaybackTracker().startTracking(song);
+        } else {
+          PlaybackTracker().resumeTracking();
+        }
+        if (!_playbackIntent) PlaybackTracker().pauseTracking();
+        _schedulePlaybackStateSave();
+        unawaited(_verifySongMetadataInBackground([song.filePath]));
+      }
+    }
+    notifyListeners();
+  }
+
+  PlaybackSkipRules _skipRules = const PlaybackSkipRules();
+  PlaybackSkipRules get skipRules => _skipRules;
+
+  Future<void> setSkipRules(PlaybackSkipRules rules) async {
+    _skipRules = rules.copyWith(
+      minimumPlayCount: rules.minimumPlayCount < 0 ? 0 : rules.minimumPlayCount,
+    );
+    _refreshGaplessNext();
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      'playback_skip_rules_402',
+      jsonEncode({
+        'lowPlayCount': _skipRules.lowPlayCount,
+        'minimumPlayCount': _skipRules.minimumPlayCount,
+        'english': _skipRules.english,
+        'japanese': _skipRules.japanese,
+        'chinese': _skipRules.chinese,
+      }),
+    );
+  }
 
   List<int> _shuffledIndices = []; // 用于随机播放时的索引列表
   final Random _random = Random(); // 用于打乱索引
@@ -1530,7 +1613,8 @@ class PlaylistContentNotifier extends ChangeNotifier
   bool _isLoadingSongs = false; // 是否正在加载歌曲
   bool _isPickingAudioImport = false;
 
-  List<Song> get currentPlaylistSongs => _currentPlaylistSongs;
+  List<Song> get currentPlaylistSongs =>
+      isLibraryPlaylistSelected ? _allSongs : _currentPlaylistSongs;
   bool get isLoadingSongs => _isLoadingSongs;
 
   // 支持的音频文件扩展名
@@ -1605,6 +1689,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     this._coverOverrides,
   ) {
     WidgetsBinding.instance.addObserver(this);
+    _continuousSkip.addListener(_handleContinuousSkipChanged);
     _coverOverrides.addListener(_handleCoverOverridesChanged);
     _setupMediaPlayerListeners(); // 设置 media-kit 的监听器
     _initLogFile();
@@ -2064,6 +2149,10 @@ class PlaylistContentNotifier extends ChangeNotifier
   @override
   // --- 播放器相关 ---
   void dispose() {
+    _continuousSkip.removeListener(_handleContinuousSkipChanged);
+    _continuousSkip.dispose();
+    _continuousWorkGuard?.release();
+    _continuousWorkGuard = null;
     _automaticSortTimer?.cancel();
     _preparationDisposed = true;
     _savedPresetStore?.removeListener(notifyListeners);
@@ -2171,6 +2260,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     _positionSubscription = _audioService.player.stream.position.listen((
       position,
     ) {
+      if (isContinuousSkipping) {
+        _currentPosition = position;
+        return;
+      }
       final previousLyricIndex = _currentLyricLineIndex;
       _setCurrentPosition(position);
       updateLyricLine(position);
@@ -2344,9 +2437,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       if (completed && _playbackIntent && _activeTrackChangeRevision == null) {
         _isPlaying = false; // 更新内部状态
         notifyListeners();
-        _isAutoPlaying = true; // 标记为自动播放
         await _playNextLogic();
-        _isAutoPlaying = false; // 重置标记
       }
     });
 
@@ -2456,7 +2547,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     _transportCommandRevision++;
     _playbackIntent = playing;
     _isPlaying = playing;
-    if (playing) {
+    if (playing && !isContinuousSkipping) {
       PlaybackTracker().resumeTracking();
     } else {
       PlaybackTracker().pauseTracking();
@@ -2545,6 +2636,13 @@ class PlaylistContentNotifier extends ChangeNotifier
       return;
     }
 
+    if (isLibraryPlaylistSelected) {
+      _currentPlaylistSongs = _allSongs;
+      _isLoadingSongs = false;
+      if (_isSearching) _updateFilteredSongs();
+      notifyListeners();
+      return;
+    }
     _isLoadingSongs = true;
     _currentPlaylistSongs = [];
     notifyListeners();
@@ -2552,6 +2650,11 @@ class PlaylistContentNotifier extends ChangeNotifier
     final currentPlaylist = _playlists[_selectedIndex];
     // 确保当前播放列表的歌曲已被解析且与文件路径列表一致
     await _ensurePlaylistSongs(currentPlaylist);
+    if (_selectedIndex < 0 ||
+        _selectedIndex >= _playlists.length ||
+        !identical(_playlists[_selectedIndex], currentPlaylist)) {
+      return;
+    }
     _currentPlaylistSongs = currentPlaylist.songs!;
 
     _isLoadingSongs = false;
@@ -2905,6 +3008,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   Future<void> _verifySongMetadataInBackground(
     Iterable<String> filePaths,
   ) async {
+    if (isContinuousSkipping) return;
     final verificationGeneration = ++_metadataVerificationGeneration;
     // 延迟执行以避免与前台操作竞争资源
     await Future.delayed(const Duration(milliseconds: 300));
@@ -3182,6 +3286,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   /// the interaction controller, while a real track change promotes an already
   /// queued path to visible priority through the normal request merger.
   void _refreshAdjacentPlaybackArtworkPrewarm() {
+    if (isContinuousSkipping) return;
     final currentPath = _currentSong?.normalizedPath;
     final desired = currentPath == null
         ? <String>{}
@@ -3798,6 +3903,11 @@ class PlaylistContentNotifier extends ChangeNotifier
       return false;
     }
 
+    if (!isLibraryPlaylistSelected) {
+      _infoStreamController.add('请在“总歌曲”中导入歌曲');
+      return false;
+    }
+    final currentPlaylist = _playlists[_selectedIndex];
     final bool allowAnyFormat = _settingsProvider.allowAnyFormat;
 
     final result = await _pickSongFiles(allowAnyFormat: allowAnyFormat);
@@ -3806,7 +3916,6 @@ class PlaylistContentNotifier extends ChangeNotifier
       return false; // 用户取消
     }
 
-    final currentPlaylist = _playlists[_selectedIndex];
     final List<String> newSongPaths = [];
     final selectedSongPaths = <String>[];
     var skippedUnsupportedFiles = 0;
@@ -3867,6 +3976,11 @@ class PlaylistContentNotifier extends ChangeNotifier
       return false;
     }
 
+    if (!isLibraryPlaylistSelected) {
+      _infoStreamController.add('请在“总歌曲”中导入歌曲');
+      return false;
+    }
+    final currentPlaylist = _playlists[_selectedIndex];
     final folderPath = await _pickSongFolder();
     if (folderPath == null) return false;
 
@@ -3878,7 +3992,6 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     await _recordImportedAudioFolders([folderPath]);
 
-    final currentPlaylist = _playlists[_selectedIndex];
     final normalizedFolder = p.normalize(folderPath);
     if (!currentPlaylist.folderPaths.any(
       (path) =>
@@ -4093,6 +4206,10 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   bool addPlaylist(String name, {List<String>? folderPaths}) {
+    if (folderPaths?.isNotEmpty ?? false) {
+      _infoStreamController.add('请在“总歌曲”中导入文件夹');
+      return false;
+    }
     final trimmedName = name.trim();
 
     if (trimmedName.isEmpty) {
@@ -4609,7 +4726,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     }
 
     final playlistToDelete = _playlists[index];
-    if (playlistToDelete.isDefault) {
+    if (playlistToDelete.isDefault || playlistToDelete.isLibrary) {
       _errorStreamController.add('默认歌单不可删除');
       return false;
     }
@@ -4660,13 +4777,13 @@ class PlaylistContentNotifier extends ChangeNotifier
     if (index < 0 || index >= _playlists.length) return false;
 
     final playlist = _playlists[index];
-    if (playlist.isDefault) {
+    if (playlist.isDefault || playlist.isLibrary) {
       _infoStreamController.add('默认歌单已固定在顶部');
       return false;
     }
 
     final firstUserPlaylistIndex = _playlists.indexWhere(
-      (item) => !item.isDefault,
+      (item) => !item.isDefault && !item.isLibrary,
     );
     if (firstUserPlaylistIndex < 0 || index == firstUserPlaylistIndex) {
       _infoStreamController.add('“${playlist.name}”已经置顶');
@@ -4689,6 +4806,12 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   bool editPlaylistName(int index, String newName) {
+    if (index < 0 ||
+        index >= _playlists.length ||
+        _playlists[index].isDefault ||
+        _playlists[index].isLibrary) {
+      return false;
+    }
     final trimmedName = newName.trim();
 
     // 检查名称是否为空
@@ -4924,7 +5047,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       return;
     }
     _isPlaying = true;
-    PlaybackTracker().resumeTracking();
+    if (!isContinuousSkipping) PlaybackTracker().resumeTracking();
 
     notifyListeners();
   }
@@ -5124,121 +5247,60 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   // 用于无缝播放模式下，将下一首预加载到 mpv playlist 中
+  List<String> get _navigationPaths => _isUsingQueue
+      ? (_currentPlayingQueueFilePaths ?? const [])
+      : (_playingPlaylist?.songFilePaths ?? const []);
+
+  int? _selectNavigationIndex({
+    required bool automatic,
+    bool previous = false,
+  }) {
+    final paths = _navigationPaths;
+    if (paths.isEmpty) return null;
+    final current = _isUsingQueue ? _currentQueueIndex : _playingSongIndex;
+    if ((_playMode == PlayMode.shuffle ||
+            _playMode == PlayMode.repeatShuffle) &&
+        _shuffledIndices.length != paths.length) {
+      _generateShuffledIndices(count: paths.length);
+    }
+    return nextPlaybackIndex(
+      count: paths.length,
+      current: current,
+      mode: _playMode,
+      automatic: automatic,
+      previous: previous,
+      stopAfterQueue: _stopAfterQueue,
+      shuffleOrder: _shuffledIndices,
+      allows: (index) {
+        final path = paths[index];
+        final source = _isUsingQueue
+            ? _currentPlayingQueue
+            : _playingPlaylist?.songs;
+        final metadata = _songMetadataCache[_normalizePath(path)];
+        final song =
+            source != null &&
+                index < source.length &&
+                source[index].normalizedPath == _normalizePath(path)
+            ? source[index]
+            : Song(
+                title: metadata?.title ?? p.basenameWithoutExtension(path),
+                artist: metadata?.artist ?? '',
+                filePath: path,
+              );
+        return _skipRules.allows(
+          song,
+          StatisticsManager().getSongStatByPath(path)?.playCount ?? 0,
+        );
+      },
+    );
+  }
+
   String? _peekNextPath() {
-    // 独立队列模式
-    if (_isUsingQueue &&
-        _currentPlayingQueue != null &&
-        _currentPlayingQueue!.isNotEmpty) {
-      final songCount = _currentPlayingQueue!.length;
-      final currentIndex = _currentQueueIndex;
-
-      int nextIndex;
-
-      if (_playMode == PlayMode.shuffle) {
-        if (_shuffledIndices.length != songCount) return null;
-        final int currentShuffledPos = _shuffledIndices.indexOf(currentIndex);
-        if (currentShuffledPos == -1) return null;
-        // 到达随机列表末尾
-        if (currentShuffledPos == _shuffledIndices.length - 1) {
-          if (_stopAfterQueue) return null;
-          // 循环到随机列表开头
-          return _currentPlayingQueueFilePaths![_shuffledIndices[0]];
-        }
-        nextIndex = _shuffledIndices[currentShuffledPos + 1];
-      } else if (_playMode == PlayMode.repeatOne) {
-        if (_stopAfterQueue) return null;
-        nextIndex = currentIndex;
-      } else {
-        // 顺序模式
-        if (currentIndex == songCount - 1 && _stopAfterQueue) return null;
-        nextIndex = (currentIndex + 1) % songCount;
-      }
-
-      if (nextIndex >= 0 && nextIndex < _currentPlayingQueueFilePaths!.length) {
-        return _currentPlayingQueueFilePaths![nextIndex];
-      }
-      return null;
-    }
-
-    // 歌单模式
-    if (_playingPlaylist == null || _playingPlaylist!.songFilePaths.isEmpty) {
-      return null;
-    }
-
-    final songCount = _playingPlaylist!.songFilePaths.length;
-    final currentIndex = _playingSongIndex;
-
-    int nextIndex;
-
-    if (_playMode == PlayMode.shuffle) {
-      if (_shuffledIndices.length != songCount) return null;
-      final int currentShuffledPos = _shuffledIndices.indexOf(currentIndex);
-      if (currentShuffledPos == -1) return null;
-      if (currentShuffledPos == _shuffledIndices.length - 1) {
-        if (_stopAfterQueue) return null;
-        return _playingPlaylist!.songFilePaths[_shuffledIndices[0]];
-      }
-      nextIndex = _shuffledIndices[currentShuffledPos + 1];
-    } else if (_playMode == PlayMode.repeatOne) {
-      if (_stopAfterQueue) return null;
-      nextIndex = currentIndex;
-    } else {
-      if (currentIndex == songCount - 1 && _stopAfterQueue) return null;
-      nextIndex = (currentIndex + 1) % songCount;
-    }
-
-    if (nextIndex >= 0 && nextIndex < _playingPlaylist!.songFilePaths.length) {
-      return _playingPlaylist!.songFilePaths[nextIndex];
-    }
-    return null;
+    final next = _selectNavigationIndex(automatic: true);
+    return next == null ? null : _navigationPaths[next];
   }
 
-  /// 计算下一首的索引（不修改状态），供 _handleGaplessTransition 使用
-  int _peekNextIndex() {
-    if (_isUsingQueue &&
-        _currentPlayingQueue != null &&
-        _currentPlayingQueue!.isNotEmpty) {
-      final songCount = _currentPlayingQueue!.length;
-      final currentIndex = _currentQueueIndex;
-
-      if (_playMode == PlayMode.shuffle) {
-        if (_shuffledIndices.length != songCount) {
-          return (currentIndex + 1) % songCount;
-        }
-        final int pos = _shuffledIndices.indexOf(currentIndex);
-        if (pos == -1 || pos == _shuffledIndices.length - 1) {
-          return _shuffledIndices.isNotEmpty ? _shuffledIndices[0] : 0;
-        }
-        return _shuffledIndices[pos + 1];
-      } else if (_playMode == PlayMode.repeatOne) {
-        return currentIndex;
-      } else {
-        return (currentIndex + 1) % songCount;
-      }
-    }
-
-    // 歌单模式
-    if (_playingPlaylist == null || _playingPlaylist!.songFilePaths.isEmpty) {
-      return 0;
-    }
-    final songCount = _playingPlaylist!.songFilePaths.length;
-    final currentIndex = _playingSongIndex;
-
-    if (_playMode == PlayMode.shuffle) {
-      if (_shuffledIndices.length != songCount) {
-        return (currentIndex + 1) % songCount;
-      }
-      final int pos = _shuffledIndices.indexOf(currentIndex);
-      if (pos == -1 || pos == _shuffledIndices.length - 1) {
-        return _shuffledIndices.isNotEmpty ? _shuffledIndices[0] : 0;
-      }
-      return _shuffledIndices[pos + 1];
-    } else if (_playMode == PlayMode.repeatOne) {
-      return currentIndex;
-    } else {
-      return (currentIndex + 1) % songCount;
-    }
-  }
+  int _peekNextIndex() => _selectNavigationIndex(automatic: true) ?? -1;
 
   void updateGaplessMode(bool enabled) {
     _gaplessEnabled = enabled;
@@ -5253,6 +5315,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _refreshGaplessNext() {
+    if (isContinuousSkipping) return;
     _refreshAdjacentPlaybackArtworkPrewarm();
     if (!_gaplessEnabled) return;
     if (_playbackSleepWaitingForTrackEnd) {
@@ -5268,11 +5331,14 @@ class PlaylistContentNotifier extends ChangeNotifier
     final transitionRevision = _playbackRequestRevision;
     final previousVisualPath = _currentSong?.filePath;
     _isGaplessTransitioning = true;
-    _isAutoPlaying = true;
     unawaited(_audioService.fadeInCurrentTrack());
 
     try {
       final nextIndex = _peekNextIndex();
+      if (nextIndex < 0) {
+        await stop();
+        return;
+      }
       if (_isUsingQueue &&
           _currentPlayingQueue != null &&
           _currentPlayingQueue!.isNotEmpty) {
@@ -5358,7 +5424,6 @@ class PlaylistContentNotifier extends ChangeNotifier
         _setPlaybackVisualCover(previousVisualPath);
       }
     } finally {
-      _isAutoPlaying = false;
       _isGaplessTransitioning = false;
     }
   }
@@ -5369,198 +5434,51 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   // 根据播放模式播放下一首
-  Future<void> _playNextLogic({bool playAfterLoad = true}) async {
-    // 独立队列
-    if (_isUsingQueue &&
-        _currentPlayingQueue != null &&
-        _currentPlayingQueue!.isNotEmpty) {
-      int nextIndex;
-      final songCount = _currentPlayingQueue!.length;
-      final currentIndex = _currentQueueIndex;
-
-      if (_playMode == PlayMode.shuffle) {
-        // 只有在随机索引列表为空或者长度不匹配时才重新生成
-        if (_shuffledIndices.length != songCount) {
-          _generateShuffledIndices(count: songCount);
-        }
-
-        int currentShuffledPos = _shuffledIndices.indexOf(currentIndex);
-        // 如果当前歌曲不在随机列表中（异常情况）
-        if (currentShuffledPos == -1) {
-          // 重新生成随机列表
-          _generateShuffledIndices(count: songCount);
-          currentShuffledPos = -1; // 从新的随机列表的第一首开始
-        }
-        // 如果已经播放到列表末尾
-        else if (currentShuffledPos == _shuffledIndices.length - 1) {
-          //
-          if (_stopAfterQueue && _isAutoPlaying) {
-            return;
-          }
-          // 播放完一轮后重新生成随机列表
-          _generateShuffledIndices(count: songCount);
-          currentShuffledPos = -1; // 从新的随机列表的第一首开始
-        }
-
-        nextIndex =
-            _shuffledIndices[(currentShuffledPos + 1) %
-                _shuffledIndices.length];
-      } else if (_playMode == PlayMode.repeatOne && _isAutoPlaying) {
-        if (_stopAfterQueue) {
-          return;
-        }
-        // 只有在自动播放且为单曲循环模式时才重复播放当前歌曲
-        nextIndex = currentIndex;
+  Future<void> _advancePlayback({
+    required bool automatic,
+    bool previous = false,
+    bool playAfterLoad = true,
+  }) async {
+    final next = _selectNavigationIndex(
+      automatic: automatic,
+      previous: previous,
+    );
+    if (next == null) {
+      if (automatic) {
+        await stop();
       } else {
-        if (currentIndex == songCount - 1 &&
-            _stopAfterQueue &&
-            _isAutoPlaying) {
-          return;
-        }
-        // 顺序播放或其他情况（包括手动点击下一首）
-        nextIndex = (currentIndex + 1) % songCount;
+        _infoStreamController.add('没有符合切歌条件的歌曲');
       }
-
-      _currentQueueIndex = nextIndex; // 更新队列索引
-      await _startPlaybackNow(playAfterLoad: playAfterLoad);
       return;
     }
-
-    // 否则按原来的逻辑播放
-    if (_playingPlaylist == null || _playingPlaylist!.songFilePaths.isEmpty) {
-      await stop();
-      return;
-    }
-
-    int nextIndex;
-    final songCount = _playingPlaylist!.songFilePaths.length;
-    final currentIndex = _playingSongIndex;
-
-    if (_playMode == PlayMode.shuffle) {
-      // 只有在随机索引列表为空或者长度不匹配时才重新生成
-      if (_shuffledIndices.length != songCount) {
-        _generateShuffledIndices(count: songCount);
-      }
-
-      int currentShuffledPos = _shuffledIndices.indexOf(currentIndex);
-      // 如果当前歌曲不在随机列表中（异常情况）
-      if (currentShuffledPos == -1) {
-        // 重新生成随机列表
-        _generateShuffledIndices(count: songCount);
-        currentShuffledPos = -1; // 从新的随机列表的第一首开始
-      }
-      // 如果已经播放到列表末尾
-      else if (currentShuffledPos == _shuffledIndices.length - 1) {
-        if (_stopAfterQueue && _isAutoPlaying) {
-          return; // 不再播放下一首
-        }
-        // 播放完一轮后重新生成随机列表
-        _generateShuffledIndices(count: songCount);
-        currentShuffledPos = -1; // 从新的随机列表的第一首开始
-      }
-      // // 有10%的概率重新生成随机列表
-      // else if (_random.nextDouble() < 0.1) {
-      //   _generateShuffledIndices(count: songCount);
-      //   currentShuffledPos = -1; // 从新的随机列表的第一首开始
-      // }
-
-      nextIndex =
-          _shuffledIndices[(currentShuffledPos + 1) % _shuffledIndices.length];
-    } else if (_playMode == PlayMode.repeatOne && _isAutoPlaying) {
-      if (_stopAfterQueue) {
-        return; // 不再播放下一首
-      }
-      // 只有在自动播放且为单曲循环模式时才重复播放当前歌曲
-      nextIndex = currentIndex;
+    final current = _isUsingQueue ? _currentQueueIndex : _playingSongIndex;
+    final wrappedShuffle =
+        _playMode == PlayMode.shuffle &&
+        !previous &&
+        _shuffledIndices.indexOf(next) <= _shuffledIndices.indexOf(current);
+    if (_isUsingQueue) {
+      _currentQueueIndex = next;
     } else {
-      if (currentIndex == songCount - 1 && _stopAfterQueue && _isAutoPlaying) {
-        return; // 不再播放下一首
-      }
-      // 顺序播放或其他情况（包括手动点击下一首）
-      nextIndex = (currentIndex + 1) % songCount;
+      _playingSongIndex = next;
     }
-
-    _playingSongIndex = nextIndex; // 更新播放索引
+    if (wrappedShuffle) {
+      _generateShuffledIndices(count: _navigationPaths.length);
+    }
     await _startPlaybackNow(playAfterLoad: playAfterLoad);
   }
 
-  Future<void> playNext({bool playAfterLoad = true}) async {
-    await _playNextLogic(playAfterLoad: playAfterLoad);
-  }
+  Future<void> _playNextLogic({bool playAfterLoad = true}) =>
+      _advancePlayback(automatic: true, playAfterLoad: playAfterLoad);
 
-  // 播放上一首
-  Future<void> playPrevious({bool playAfterLoad = true}) async {
-    // 独立队列
-    if (_isUsingQueue &&
-        _currentPlayingQueue != null &&
-        _currentPlayingQueue!.isNotEmpty) {
-      int prevIndex;
-      final songCount = _currentPlayingQueue!.length;
-      final currentIndex = _currentQueueIndex;
+  Future<void> playNext({bool playAfterLoad = true}) =>
+      _advancePlayback(automatic: false, playAfterLoad: playAfterLoad);
 
-      // 根据不同的播放模式计算上一首的索引
-      if (_playMode == PlayMode.shuffle) {
-        // 随机模式下，在随机索引列表中找到上一个位置
-        if (_shuffledIndices.length != songCount) {
-          _generateShuffledIndices(count: songCount);
-        }
+  Future<void> playPrevious({bool playAfterLoad = true}) => _advancePlayback(
+    automatic: false,
+    previous: true,
+    playAfterLoad: playAfterLoad,
+  );
 
-        int currentShuffledPos = _shuffledIndices.indexOf(currentIndex);
-        if (currentShuffledPos == -1 || currentShuffledPos == 0) {
-          // 如果当前歌曲不在随机列表中，或已经是第一首，则跳到随机列表的最后一首
-          currentShuffledPos = _shuffledIndices.length;
-        }
-        prevIndex =
-            _shuffledIndices[(currentShuffledPos - 1) %
-                _shuffledIndices.length];
-      } else {
-        // 顺序播放或其他情况（包括手动点击上一首）
-        // `+ songCount` 是为了防止 `currentIndex` 为 0 时出现负数
-        prevIndex = (currentIndex - 1 + songCount) % songCount;
-      }
-
-      // 更新队列索引
-      _currentQueueIndex = prevIndex;
-      _isAutoPlaying = false;
-      await _startPlaybackNow(playAfterLoad: playAfterLoad);
-      return;
-    }
-
-    if (_playingPlaylist == null || _playingPlaylist!.songFilePaths.isEmpty) {
-      return;
-    }
-
-    int prevIndex;
-    final songCount = _playingPlaylist!.songFilePaths.length;
-    final currentIndex = _playingSongIndex;
-
-    // 根据不同的播放模式计算上一首的索引
-    if (_playMode == PlayMode.shuffle) {
-      // 随机模式下，在随机索引列表中找到上一个位置
-      if (_shuffledIndices.length != songCount) {
-        _generateShuffledIndices(count: songCount);
-      }
-
-      int currentShuffledPos = _shuffledIndices.indexOf(currentIndex);
-      if (currentShuffledPos == -1 || currentShuffledPos == 0) {
-        // 如果当前歌曲不在随机列表中，或已经是第一首，则跳到随机列表的最后一首
-        currentShuffledPos = _shuffledIndices.length;
-      }
-      prevIndex =
-          _shuffledIndices[(currentShuffledPos - 1) % _shuffledIndices.length];
-    } else {
-      // 顺序播放或其他情况（包括手动点击上一首）
-      // `+ songCount` 是为了防止 `currentIndex` 为 0 时出现负数
-      prevIndex = (currentIndex - 1 + songCount) % songCount;
-    }
-
-    // 更新播放索引
-    _playingSongIndex = prevIndex;
-    _isAutoPlaying = false;
-    await _startPlaybackNow(playAfterLoad: playAfterLoad);
-  }
-
-  // 这个方法专门用于播放抽屉内的点击事件
   Future<void> playSongFromQueue(int index) async {
     if (_isUsingQueue) {
       // 队列模式下：播放队列中的歌曲
@@ -5696,25 +5614,20 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   // 切换播放模式
-  void togglePlayMode() {
-    switch (_playMode) {
-      case PlayMode.sequence:
-        _playMode = PlayMode.shuffle;
-        _generateShuffledIndices();
-        break;
-      case PlayMode.shuffle:
-        _playMode = PlayMode.repeatOne;
-        break;
-      case PlayMode.repeatOne:
-        _playMode = PlayMode.sequence;
-        break;
+  void togglePlayMode() => setPlayMode(
+    PlayMode.values[(_playMode.index + 1) % PlayMode.values.length],
+  );
+
+  void setPlayMode(PlayMode mode) {
+    _playMode = mode;
+    if (mode == PlayMode.shuffle || mode == PlayMode.repeatShuffle) {
+      _generateShuffledIndices(count: _navigationPaths.length);
     }
-    _savePlayMode(); // 保存当前模式
+    unawaited(_savePlayMode());
     _refreshGaplessNext();
     notifyListeners();
   }
 
-  // 生成随机播放索引列表
   void _generateShuffledIndices({int? count}) {
     // 如果调用时没有传入 count (值为 null)，则使用旧的逻辑，以 _currentPlaylistSongs 的长度为准。
     // 如果传入了 count，则使用传入的 count。
@@ -5731,11 +5644,28 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   Future<void> loadPlayMode() async {
     final prefs = await SharedPreferences.getInstance();
+    try {
+      final value = jsonDecode(
+        prefs.getString('playback_skip_rules_402') ?? '{}',
+      );
+      if (value is Map<String, dynamic>) {
+        final minimum = value['minimumPlayCount'];
+        _skipRules = PlaybackSkipRules(
+          lowPlayCount: value['lowPlayCount'] == true,
+          minimumPlayCount: minimum is int && minimum >= 0 ? minimum : 10,
+          english: value['english'] == true,
+          japanese: value['japanese'] == true,
+          chinese: value['chinese'] == true,
+        );
+      }
+    } on FormatException {
+      _skipRules = const PlaybackSkipRules();
+    }
     final index = prefs.getInt(_playModeKey);
     if (index != null && index >= 0 && index < PlayMode.values.length) {
       _playMode = PlayMode.values[index];
-      notifyListeners(); // 确保 UI 更新
     }
+    notifyListeners();
   }
 
   void _initQueueFromCurrentPlaylist() {
@@ -5898,6 +5828,10 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 播放指定索引的歌曲
   Future<void> playSongAtIndex(int index) async {
+    if (isLibraryPlaylistSelected) {
+      await playSongFromAllSongs(index);
+      return;
+    }
     // 切换到歌单播放模式，清空独立队列
     _isUsingQueue = false;
     _currentPlayingQueue = null;
@@ -5965,6 +5899,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       return;
     }
 
+    final releaseLoad = _continuousSkip.trackLoad();
     try {
       _setPlaybackVisualCover(songFilePath);
       final songToPlay = await _prepareSongForPlayback(songFilePath);
@@ -5973,7 +5908,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       if (_gaplessEnabled) {
         await _audioService.playSongGapless(
           songFilePath,
-          nextPath: _peekNextPath(),
+          nextPath: isContinuousSkipping ? null : _peekNextPath(),
           pitch: _currentPitch,
           rate: _currentPlaybackRate,
           eqGains: _equalizerGains,
@@ -6000,6 +5935,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       final newSongPath = songToPlay.normalizedPath;
 
       _currentSong = songToPlay;
+      if (isContinuousSkipping) _continuousPlaybackStarted = true;
       _evictableCoverPaths.remove(newSongPath);
       _refreshAdjacentPlaybackArtworkPrewarm();
       if (oldSongPath != null &&
@@ -6013,12 +5949,16 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // Media-session publication is independent of native file replacement.
       // Do not put Android notification work in front of audible playback.
-      unawaited(_publishMediaSessionForTrack(songToPlay, requestRevision));
+      if (!isContinuousSkipping) {
+        unawaited(_publishMediaSessionForTrack(songToPlay, requestRevision));
+      }
 
       // Same-song replay must not tear down/reload the lyric list, nor reuse
       // the last line's exit/clock. Retain the exact loaded lyrics and publish
       // an explicit zero-time discontinuity before resuming the first phrase.
-      if (oldSongPath == newSongPath && _currentLyrics.isNotEmpty) {
+      if (isContinuousSkipping) {
+        // The retained lyric tree and background keep the last complete frame.
+      } else if (oldSongPath == newSongPath && _currentLyrics.isNotEmpty) {
         signalLyricSeekIntent();
         _setCurrentPosition(Duration.zero);
         updateLyricLine(Duration.zero);
@@ -6033,7 +5973,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       unawaited(_applyDynamicColorForSong(songToPlay));
 
       // 开始跟踪播放
-      PlaybackTracker().startTracking(songToPlay);
+      if (!isContinuousSkipping) PlaybackTracker().startTracking(songToPlay);
       if (!_playbackIntent) {
         PlaybackTracker().pauseTracking();
       }
@@ -6065,6 +6005,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       if (_activeTrackChangeRevision == requestRevision) {
         _activeTrackChangeRevision = null;
       }
+      releaseLoad();
     }
   }
 
@@ -6201,6 +6142,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 保存播放状态
   void _schedulePlaybackStateSave() {
+    if (isContinuousSkipping) return;
     final generation = ++_playbackStateSaveGeneration;
     _playbackStateSaveTimer?.cancel();
     _playbackStateSaveTimer = Timer(
@@ -6363,6 +6305,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // -- 主题管理 --
   Future<void> _applyDynamicColorForSong(Song song) async {
+    if (isContinuousSkipping) return;
     if (!_settingsProvider.useDynamicColor) return;
     final songPath = song.normalizedPath;
     final cached = _takeDynamicColor(songPath);
@@ -6376,11 +6319,13 @@ class PlaylistContentNotifier extends ChangeNotifier
         .acquireIdleWork(
           priority: InteractionWorkPriority.userVisible,
           isStillNeeded: () =>
+              !isContinuousSkipping &&
               _settingsProvider.useDynamicColor &&
               _currentSong?.normalizedPath == songPath,
         );
     try {
-      if (!_settingsProvider.useDynamicColor ||
+      if (isContinuousSkipping ||
+          !_settingsProvider.useDynamicColor ||
           _currentSong?.normalizedPath != songPath) {
         return;
       }
@@ -6406,7 +6351,9 @@ class PlaylistContentNotifier extends ChangeNotifier
     String? sourceSongPath,
   }) async {
     final requestGeneration = ++_dynamicColorApplyGeneration;
-    if (!_settingsProvider.useDynamicColor || albumArt == null) {
+    if (isContinuousSkipping ||
+        !_settingsProvider.useDynamicColor ||
+        albumArt == null) {
       return;
     }
 
@@ -6418,6 +6365,7 @@ class PlaylistContentNotifier extends ChangeNotifier
           .acquireIdleWork(
             priority: InteractionWorkPriority.userVisible,
             isStillNeeded: () =>
+                !isContinuousSkipping &&
                 requestGeneration == _dynamicColorApplyGeneration &&
                 _settingsProvider.useDynamicColor &&
                 _currentSong?.normalizedPath == songPath,
@@ -6566,6 +6514,10 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 排序歌曲
   Future<void> reorderSong(int oldIndex, int newIndex) async {
+    if (isLibraryPlaylistSelected) {
+      await reorderAllSongs(oldIndex, newIndex);
+      return;
+    }
     if (_selectedIndex < 0) return;
 
     // 边界检查
@@ -6601,7 +6553,10 @@ class PlaylistContentNotifier extends ChangeNotifier
   Future<void> reorderPlaylist(int oldIndex, int newIndex) async {
     if (oldIndex == newIndex) return;
 
-    if (_playlists[oldIndex].isDefault || _playlists[newIndex].isDefault) {
+    if (_playlists[oldIndex].isDefault ||
+        _playlists[newIndex].isDefault ||
+        _playlists[oldIndex].isLibrary ||
+        _playlists[newIndex].isLibrary) {
       _infoStreamController.add('默认歌单不能改变顺序');
       notifyListeners();
       return;
@@ -6802,6 +6757,10 @@ class PlaylistContentNotifier extends ChangeNotifier
     required bool descending,
   }) async {
     if (_selectedIndex < 0) return;
+    if (isLibraryPlaylistSelected) {
+      await sortAllSongs(criterion: criterion, descending: descending);
+      return;
+    }
 
     final currentPlaylist = _playlists[_selectedIndex];
     final originalPaths = List<String>.from(currentPlaylist.songFilePaths);
@@ -6850,6 +6809,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 加载指定歌曲的歌词
   Future<void> _loadLyricsForSong(String songFilePath) async {
+    if (isContinuousSkipping) return;
     final requestGeneration = ++_lyricRequestGeneration;
     final prefetchGeneration = ++_lyricPrefetchGeneration;
     final song = _currentSong?.normalizedPath == _normalizePath(songFilePath)
@@ -6889,8 +6849,9 @@ class PlaylistContentNotifier extends ChangeNotifier
         _currentSong?.normalizedPath != song.normalizedPath) {
       return;
     }
+    final hadProvisionalLyrics = _currentLyrics.isNotEmpty;
     if (!sameLyricContent(_currentLyrics, lyrics)) _currentLyrics = lyrics;
-    if (hadVisibleLyrics) {
+    if (hadVisibleLyrics || hadProvisionalLyrics) {
       updateLyricLine(_currentPosition);
     } else {
       _setCurrentLyricLineIndex(-1);
@@ -6905,6 +6866,9 @@ class PlaylistContentNotifier extends ChangeNotifier
     _settingsProvider.enableOnlineLyrics ? 'online' : 'local',
     _settingsProvider.primaryLyricSource,
     _settingsProvider.enableLyricSourceFallback ? 'fallback' : 'single',
+    _settingsProvider.enableTimedLyricSourceFallback
+        ? 'timedFallback'
+        : 'timedSingle',
     _settingsProvider.enableLyricTranslation ? 'translated' : 'original',
   ].join('|');
 
@@ -6951,12 +6915,14 @@ class PlaylistContentNotifier extends ChangeNotifier
       enableOnlineLyrics: _settingsProvider.enableOnlineLyrics,
     );
     for (final source in priority) {
+      if (_preparationDisposed || isContinuousSkipping) return const [];
       try {
         final lyrics = switch (source) {
           'external' => await _readExternalLyrics(song.filePath),
           'embedded' => await _readEmbeddedLyrics(song.filePath),
           _ => await _fetchOnlineLyrics(song),
         };
+        if (_preparationDisposed || isContinuousSkipping) return const [];
         if (lyrics.isNotEmpty) return lyrics;
       } catch (error) {
         // A broken network response or unreadable embedded tag must not stop
@@ -6968,18 +6934,37 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<List<LyricLine>> _fetchOnlineLyrics(Song song) async {
-    for (final source in networkLyricSourceOrder(
-      _settingsProvider.primaryLyricSource,
+    final translation = _settingsProvider.enableLyricTranslation;
+    final cacheKey = _lyricCacheKey(song);
+    final foregroundRequest =
+        _currentSong?.normalizedPath == song.normalizedPath;
+    bool currentRequest() =>
+        !_preparationDisposed &&
+        !isContinuousSkipping &&
+        _lyricCacheKey(song) == cacheKey &&
+        _currentSong?.normalizedPath == song.normalizedPath;
+    return resolveNetworkLyrics(
+      selectedSource: _settingsProvider.primaryLyricSource,
       enableFallback: _settingsProvider.enableLyricSourceFallback,
-    )) {
-      final lyrics = switch (source) {
-        'netease' => await _fetchNeteaseLyrics(song),
-        'qq' => await _fetchQQLyrics(song),
-        _ => await _fetchKugouLyrics(song),
-      };
-      if (lyrics.isNotEmpty) return lyrics;
-    }
-    return const [];
+      enableTimedFallback: _settingsProvider.enableTimedLyricSourceFallback,
+      isStillNeeded: () =>
+          !_preparationDisposed &&
+          !isContinuousSkipping &&
+          (!foregroundRequest || currentRequest()),
+      onFallback: (lyrics) {
+        if (!foregroundRequest ||
+            !currentRequest() ||
+            sameLyricContent(_currentLyrics, lyrics)) {
+          return;
+        }
+        _currentLyrics = lyrics;
+        updateLyricLine(_currentPosition);
+        notifyListeners();
+      },
+      fetch: (source) =>
+          _fetchPlatformLyrics(source, song, translated: translation),
+      onError: (source, error) => _writeErrorToLog('网络歌词源 $source 读取失败', error),
+    );
   }
 
   List<Song?> _activePlaybackSongs() {
@@ -7082,17 +7067,11 @@ class PlaylistContentNotifier extends ChangeNotifier
     return const [];
   }
 
-  Future<List<LyricLine>> _fetchNeteaseLyrics(Song song) =>
-      _fetchPlatformLyrics('netease', song);
-
-  Future<List<LyricLine>> _fetchKugouLyrics(Song song) =>
-      _fetchPlatformLyrics('kugou', song);
-
-  Future<List<LyricLine>> _fetchQQLyrics(Song song) =>
-      _fetchPlatformLyrics('qq', song);
-
-  Future<List<LyricLine>> _fetchPlatformLyrics(String source, Song song) async {
-    final translated = _settingsProvider.enableLyricTranslation;
+  Future<List<LyricLine>> _fetchPlatformLyrics(
+    String source,
+    Song song, {
+    required bool translated,
+  }) async {
     final content = await NetworkLyricClient().fetch(
       source: source,
       title: song.title,
@@ -7742,6 +7721,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void updateLyricLine(Duration currentPosition) {
+    if (isContinuousSkipping) return;
     if (_currentLyrics.isEmpty) {
       if (_currentLyricLineIndex != -1) {
         _setCurrentLyricLineIndex(-1);
@@ -7791,6 +7771,12 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 删除选定的歌曲
   Future<void> removeSongFromCurrentPlaylist(int index) async {
+    if (isLibraryPlaylistSelected) {
+      if (index >= 0 && index < _allSongs.length) {
+        await hideSongsFromLibrary([_allSongs[index]]);
+      }
+      return;
+    }
     if (_selectedIndex < 0 || _selectedIndex >= _playlists.length) {
       return;
     }
@@ -7845,6 +7831,10 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // 将歌曲移动到顶部
   Future<void> moveSongToTop(int index) async {
+    if (isLibraryPlaylistSelected) {
+      await moveSongToTopInAllSongs(index);
+      return;
+    }
     if (_selectedIndex == -1 ||
         index < 0 ||
         index >= _currentPlaylistSongs.length ||
@@ -7916,6 +7906,16 @@ class PlaylistContentNotifier extends ChangeNotifier
     if (!_isMultiSelectMode) return;
     if (_selectedSongPaths.isEmpty) return;
     if (_selectedIndex < 0 || _selectedIndex >= _playlists.length) return;
+
+    if (isLibraryPlaylistSelected) {
+      await hideSongsFromLibrary(
+        _allSongs
+            .where((song) => _selectedSongPaths.contains(song.filePath))
+            .toList(),
+      );
+      exitMultiSelectMode();
+      return;
+    }
 
     final currentPlaylist = _playlists[_selectedIndex];
 
@@ -8757,6 +8757,7 @@ class PlaylistContentNotifier extends ChangeNotifier
         .toList(growable: false);
     _allSongsVirtualPlaylist.songFilePaths = paths;
     _allSongsVirtualPlaylist.songs = List<Song>.from(_allSongs);
+    if (isLibraryPlaylistSelected) _currentPlaylistSongs = _allSongs;
     if (identical(_playingPlaylist, _allSongsVirtualPlaylist) &&
         _currentSong != null) {
       _playingSongIndex = _allSongs.indexWhere(
@@ -8785,6 +8786,15 @@ class PlaylistContentNotifier extends ChangeNotifier
       final sourcePaths = _playlists
           .expand((playlist) => playlist.songFilePaths)
           .toSet();
+      final root = libraryPlaylist;
+      if (root != null) {
+        final added = sourcePaths.difference(root.songFilePaths.toSet());
+        if (added.isNotEmpty) {
+          root.songFilePaths.addAll(added);
+          await _playlistManager.savePlaylists(_playlists);
+          if (updateGeneration != _allSongsUpdateGeneration) return;
+        }
+      }
       final mayRecoverSavedOrder = shouldRecoverSavedLibraryOrder(
         hasSourcePaths: sourcePaths.isNotEmpty,
         sourceWasSeen: _librarySourceWasSeen,
@@ -8891,6 +8901,11 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
 
       final finalPathOrder = _allSongs.map((s) => s.filePath).toList();
+      if (root != null &&
+          root.songFilePaths.isEmpty &&
+          finalPathOrder.isNotEmpty) {
+        root.songFilePaths = finalPathOrder;
+      }
       await _playlistManager.saveAllSongsOrder(finalPathOrder);
       if (updateGeneration != _allSongsUpdateGeneration) return;
 

@@ -26,71 +26,6 @@ import android.widget.TextView
 import java.io.File
 import kotlin.math.abs
 
-private class OutlinedLyricTextView(context: Context) : TextView(context) {
-    private var fillColor = Color.WHITE
-    private var outlineEnabled = false
-    private var outlineWidth = resources.displayMetrics.density * 1.15f
-    private var outlineColor = Color.WHITE
-
-    fun setLyricColor(color: Int) {
-        fillColor = color
-        setTextColor(fillColor)
-        invalidate()
-    }
-
-    fun setOutline(enabled: Boolean, width: Float, color: Int, opacity: Float) {
-        outlineEnabled = enabled
-        outlineWidth = resources.displayMetrics.density * width.coerceIn(0.5f, 4f)
-        outlineColor = Color.argb(
-            (Color.alpha(color) * opacity.coerceIn(0.1f, 1f)).toInt(),
-            Color.red(color),
-            Color.green(color),
-            Color.blue(color),
-        )
-        invalidate()
-    }
-
-    fun setStableText(value: String) {
-        if (text.toString() == value) return
-        scrollTo(0, 0)
-        text = value
-        scrollTo(0, 0)
-    }
-
-    override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
-        super.onLayout(changed, left, top, right, bottom)
-        if (scrollX != 0 || scrollY != 0) scrollTo(0, 0)
-    }
-
-    override fun onDraw(canvas: Canvas) {
-        val textLayout = layout ?: return
-        val saveCount = canvas.save()
-        canvas.clipRect(
-            compoundPaddingLeft.toFloat(),
-            extendedPaddingTop.toFloat(),
-            (width - compoundPaddingRight).toFloat(),
-            (height - extendedPaddingBottom).toFloat(),
-        )
-        canvas.translate(
-            compoundPaddingLeft.toFloat(),
-            extendedPaddingTop.toFloat(),
-        )
-
-        if (outlineEnabled) {
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = outlineWidth
-            paint.strokeJoin = Paint.Join.ROUND
-            paint.color = outlineColor
-            textLayout.draw(canvas)
-        }
-
-        paint.style = Paint.Style.FILL
-        paint.color = fillColor
-        textLayout.draw(canvas)
-        canvas.restoreToCount(saveCount)
-    }
-}
-
 class DesktopLyricsOverlayManager(
     private val context: Context,
     private val onEvent: (String, Map<String, Any?>) -> Unit,
@@ -129,6 +64,11 @@ class DesktopLyricsOverlayManager(
     private var outlineWidth = 1.15f
     private var outlineColor = Color.WHITE
     private var outlineOpacity = 1f
+    private var autoSize = false
+    private var alignment = "center"
+    private var cachedWeightedTypeface: Typeface? = null
+    private var cachedWeight = -1
+    private var cachedBaseTypeface: Typeface? = null
     private var visibilityGeneration = 0
     private var closing = false
 
@@ -154,14 +94,11 @@ class DesktopLyricsOverlayManager(
 
     fun update(values: Map<String, Any?>) {
         val wasLocked = locked
-        values["lyric"]?.let {
-            (lyricView as? OutlinedLyricTextView)?.setStableText(it.toString())
-        }
         values["isPlaying"]?.let { playing = it as? Boolean ?: playing }
         values["isLocked"]?.let { locked = it as? Boolean ?: locked }
         if (locked) collapseToLyricsOnly()
         (values["color"] as? Number)?.let { lyricColor = it.toInt() }
-        (values["fontSize"] as? Number)?.let { lyricSize = it.toFloat().coerceIn(16f, 36f) }
+        (values["fontSize"] as? Number)?.let { lyricSize = it.toFloat().coerceIn(16f, 40f) }
         (values["opacity"] as? Number)?.let { lyricOpacity = it.toFloat().coerceIn(0.2f, 1f) }
         (values["fontWeight"] as? Number)?.let {
             lyricFontWeight = ((it.toInt().coerceIn(300, 900) + 50) / 100) * 100
@@ -179,7 +116,10 @@ class DesktopLyricsOverlayManager(
         (values["outlineWidth"] as? Number)?.let { outlineWidth = it.toFloat() }
         (values["outlineColor"] as? Number)?.let { outlineColor = it.toInt() }
         (values["outlineOpacity"] as? Number)?.let { outlineOpacity = it.toFloat() }
+        (values["autoSize"] as? Boolean)?.let { autoSize = it }
+        values["alignment"]?.toString()?.let { alignment = it }
         applyVisualState(refreshWindow = wasLocked != locked)
+        (lyricView as? OutlinedLyricTextView)?.updatePlayback(values)
     }
 
     fun hide(onHidden: (() -> Unit)? = null) {
@@ -397,7 +337,7 @@ class DesktopLyricsOverlayManager(
                 })
             }
             addView(textButton("T+") {
-                lyricSize = (lyricSize + 2f).coerceAtMost(36f)
+                lyricSize = (lyricSize + 2f).coerceAtMost(40f)
                 onEvent("style", mapOf("color" to lyricColor, "fontSize" to lyricSize.toDouble()))
                 applyVisualState()
             })
@@ -457,19 +397,16 @@ class DesktopLyricsOverlayManager(
     }
 
     private fun applyVisualState(refreshWindow: Boolean = false) {
-        (lyricView as? OutlinedLyricTextView)?.setLyricColor(lyricColor)
-        (lyricView as? OutlinedLyricTextView)?.setOutline(
-            outlineEnabled,
-            outlineWidth,
-            outlineColor,
-            outlineOpacity,
-        )
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            lyricView?.setAutoSizeTextTypeWithDefaults(TextView.AUTO_SIZE_TEXT_TYPE_NONE)
+        if (cachedBaseTypeface != lyricTypeface || cachedWeight != lyricFontWeight) {
+            cachedBaseTypeface = lyricTypeface
+            cachedWeight = lyricFontWeight
+            cachedWeightedTypeface = weightedTypeface(lyricTypeface, lyricFontWeight)
         }
-        lyricView?.setTextSize(TypedValue.COMPLEX_UNIT_SP, lyricSize)
+        (lyricView as? OutlinedLyricTextView)?.configure(
+            lyricColor, lyricSize, cachedWeightedTypeface ?: lyricTypeface, autoSize, alignment,
+            outlineEnabled, outlineWidth, outlineColor, outlineOpacity,
+        )
         lyricView?.alpha = lyricOpacity
-        lyricView?.typeface = weightedTypeface(lyricTypeface, lyricFontWeight)
         playButton?.setImageResource(
             if (playing) R.drawable.ic_desktop_lyrics_pause else R.drawable.ic_desktop_lyrics_play,
         )

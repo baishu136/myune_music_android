@@ -12,6 +12,7 @@ import '../page/playlist/playlist_models.dart';
 import '../page/setting/settings_provider.dart';
 import 'custom_theme_background.dart';
 import '../services/artist_names.dart';
+import '../services/playback_picker_memory.dart';
 
 class PlayingQueueDrawer extends StatefulWidget {
   const PlayingQueueDrawer({
@@ -29,7 +30,7 @@ class PlayingQueueDrawer extends StatefulWidget {
 
 class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
     with SingleTickerProviderStateMixin {
-  late final ScrollController scrollController = ScrollController();
+  late final ScrollController scrollController;
   late final AnimationController _scopeEntranceController = AnimationController(
     vsync: this,
     duration: const Duration(milliseconds: 720),
@@ -39,6 +40,7 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
   _QueueScope? _lastSelectionScope;
   Playlist? _selectedPlaylist;
   PlaylistContentNotifier? _notifier;
+  SettingsProvider? _settings;
   PlaybackSourceSnapshot? _originalSource;
   final _searchController = TextEditingController();
 
@@ -48,11 +50,28 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
     if (_notifier != null) return;
     final notifier = context.read<PlaylistContentNotifier>();
     _notifier = notifier;
+    final settings = _settings = context.read<SettingsProvider>();
+    final memory = settings.playbackPickerMemory;
+    _scope = _QueueScope.values.byName(memory.page.name);
+    _searchController.text = memory.query;
+    _selectedPlaylist = memory.playlistId == null
+        ? null
+        : notifier.playlists
+              .where((p) => p.id == memory.playlistId)
+              .firstOrNull;
+    scrollController = ScrollController(initialScrollOffset: memory.offset);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !scrollController.hasClients) return;
+      scrollController.jumpTo(
+        memory.offset.clamp(0, scrollController.position.maxScrollExtent),
+      );
+    });
     _originalSource = notifier.capturePlaybackSource();
   }
 
   @override
   void dispose() {
+    _remember();
     final notifier = _notifier;
     final originalSource = _originalSource;
     if (notifier != null &&
@@ -71,6 +90,12 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
   Widget build(BuildContext context) {
     return Consumer2<PlaylistContentNotifier, SettingsProvider>(
       builder: (context, notifier, settings, child) {
+        if (_selectedPlaylist != null) {
+          final id = _selectedPlaylist!.id;
+          _selectedPlaylist = notifier.playlists
+              .where((playlist) => playlist.id == id)
+              .firstOrNull;
+        }
         final currentSong = notifier.currentSong;
         final librarySongs = notifier.allSongs;
         // Resolve live metadata on every notifier update, not only on entry.
@@ -183,10 +208,16 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
                         : IconButton(
                             tooltip: '清除搜索',
                             icon: const Icon(Icons.clear),
-                            onPressed: () => setState(_searchController.clear),
+                            onPressed: () {
+                              setState(_searchController.clear);
+                              _remember();
+                            },
                           ),
                   ),
-                  onChanged: (_) => setState(() {}),
+                  onChanged: (_) {
+                    setState(() {});
+                    _remember();
+                  },
                 ),
               ),
 
@@ -204,6 +235,7 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
                         title: Text(_selectedPlaylist?.name ?? '歌单'),
                         onTap: () {
                           setState(() => _selectedPlaylist = null);
+                          _remember(offset: 0);
                           _restartEntrance();
                         },
                       ),
@@ -349,6 +381,7 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
           trailing: const Icon(Icons.chevron_right),
           onTap: () {
             setState(() => _selectedPlaylist = playlist);
+            _remember(offset: 0);
             _restartEntrance();
           },
         );
@@ -398,6 +431,28 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
       _scopeEntranceController.value = 0;
     });
     _scopeEntranceController.forward();
+    _remember(offset: 0);
+  }
+
+  void _remember({double? offset}) {
+    final settings = _settings;
+    if (settings == null) return;
+    unawaited(
+      settings.rememberPlaybackPicker(
+        PlaybackPickerMemory(
+          page: PlaybackPickerPage.values.byName(_scope.name),
+          playlistId: _scope == _QueueScope.playlists
+              ? _selectedPlaylist?.id
+              : null,
+          query: _searchController.text,
+          offset:
+              offset ??
+              (scrollController.hasClients
+                  ? scrollController.offset.clamp(0, double.infinity)
+                  : 0),
+        ),
+      ),
+    );
   }
 
   void _restartEntrance() {

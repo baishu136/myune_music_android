@@ -4,12 +4,12 @@ import 'package:myune_music/app_version.dart';
 void main() {
   test('1.0.0 Android display version uses the current release build', () {
     expect(
-      AppVersion.format(version: '1.0.0', buildNumber: '401', android: true),
-      '1.0.0-android.401',
+      AppVersion.format(version: '1.0.0', buildNumber: '406', android: true),
+      '1.0.0-android.406',
     );
     expect(
-      AppVersion.format(version: '1.0.0', buildNumber: '2401', android: true),
-      '1.0.0-android.401',
+      AppVersion.format(version: '1.0.0', buildNumber: '2406', android: true),
+      '1.0.0-android.406',
     );
   });
 

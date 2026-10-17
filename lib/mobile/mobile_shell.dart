@@ -30,6 +30,13 @@ import '../page/setting/tabs/info_icon.dart';
 import '../page/statistics_page/statistics_manager.dart';
 import '../widgets/playing_queue_drawer.dart';
 import '../widgets/copyable_song_detail_row.dart';
+import '../widgets/transport_skip_button.dart';
+import '../widgets/playback_mode_page.dart';
+import '../widgets/song_playlist_sheet.dart';
+import '../widgets/long_press_icon_button.dart';
+import '../widgets/playback_mode_glyph.dart';
+import '../widgets/home_header_page_transition.dart';
+import '../widgets/playback_control_sheet_surface.dart';
 import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/now_playing_cover_hero.dart';
 import '../widgets/now_playing_immersive_layout.dart';
@@ -280,6 +287,7 @@ class _MobileShellState extends State<MobileShell>
   int? _programmaticTabTarget;
   int _homeNavigationRevision = 0;
   String _query = '';
+  Uint8List? _retainedHomeBackgroundArtwork;
   StreamSubscription<String>? _errorSubscription;
   StreamSubscription<String>? _infoSubscription;
   bool _noticeStreamsBound = false;
@@ -509,9 +517,14 @@ class _MobileShellState extends State<MobileShell>
   }
 
   Widget _buildHome(BuildContext context) {
-    final currentSong = context.select<PlaylistContentNotifier, Song?>(
-      (notifier) => notifier.currentSong,
+    final homePlayback = context.select<PlaylistContentNotifier, (Song?, bool)>(
+      (notifier) => (notifier.currentSong, notifier.isContinuousSkipping),
     );
+    final currentSong = homePlayback.$1;
+    final libraryPlaylistSelected = context
+        .select<PlaylistContentNotifier, bool>(
+          (n) => n.isLibraryPlaylistSelected,
+        );
     final notifier = context.read<PlaylistContentNotifier>();
     final homeCoverListenable = currentSong == null
         ? null
@@ -619,15 +632,10 @@ class _MobileShellState extends State<MobileShell>
             transitionBuilder: (child, animation) {
               final isIncoming =
                   child.key == ValueKey<String>(headerTransitionKey);
-              final slideAnimation = Tween<Offset>(
-                begin: isIncoming
-                    ? const Offset(1.1, 0)
-                    : const Offset(-1.1, 0),
-                end: Offset.zero,
-              ).animate(animation);
-              return FadeTransition(
-                opacity: animation,
-                child: SlideTransition(position: slideAnimation, child: child),
+              return HomeHeaderPageTransition(
+                animation: animation,
+                incoming: isIncoming,
+                child: child,
               );
             },
             child: Text(
@@ -656,18 +664,10 @@ class _MobileShellState extends State<MobileShell>
                 transitionBuilder: (child, animation) {
                   final isIncoming =
                       child.key == ValueKey<String>(actionsTransitionKey);
-                  final slideAnimation = Tween<Offset>(
-                    begin: isIncoming
-                        ? const Offset(1.1, 0)
-                        : const Offset(-1.1, 0),
-                    end: Offset.zero,
-                  ).animate(animation);
-                  return FadeTransition(
-                    opacity: animation,
-                    child: SlideTransition(
-                      position: slideAnimation,
-                      child: child,
-                    ),
+                  return HomeHeaderPageTransition(
+                    animation: animation,
+                    incoming: isIncoming,
+                    child: child,
                   );
                 },
                 child: selecting
@@ -779,7 +779,10 @@ class _MobileShellState extends State<MobileShell>
                                 ),
                               ),
                             ),
-                          if (_tab == 0 && hiddenSongs.$1)
+                          if ((_tab == 0 ||
+                                  (_tab == 1 &&
+                                      notifier.isLibraryPlaylistSelected)) &&
+                              hiddenSongs.$1)
                             IconButton(
                               tooltip: hiddenSongs.$2 ? '隐藏已隐藏歌曲' : '显示已隐藏歌曲',
                               icon: Icon(
@@ -890,6 +893,7 @@ class _MobileShellState extends State<MobileShell>
               label: Text(_pendingPlaylistId == null ? '创建歌单' : '添加到歌单'),
             )
           : _tab == 1 &&
+                libraryPlaylistSelected &&
                 !playlistSelecting &&
                 settings.playlistViewMode != PlaylistViewMode.split
           ? HomeGlassControls(
@@ -906,7 +910,7 @@ class _MobileShellState extends State<MobileShell>
                 ).colorScheme.onSurface.withValues(alpha: 1),
                 icon: const Icon(Icons.add),
                 label: Text(
-                  '添加歌曲',
+                  '导入歌曲',
                   style: TextStyle(
                     color: Theme.of(
                       context,
@@ -962,9 +966,13 @@ class _MobileShellState extends State<MobileShell>
             ),
     );
     Widget buildHomeBackground(Widget child) {
-      final currentAlbumArt = currentSong == null
+      final nextArtwork = currentSong == null
           ? null
           : notifier.displayCoverForSong(currentSong);
+      if (!homePlayback.$2) _retainedHomeBackgroundArtwork = nextArtwork;
+      final currentAlbumArt = homePlayback.$2
+          ? _retainedHomeBackgroundArtwork
+          : nextArtwork;
       return CustomThemeBackground(
         path: settings.homeThemeImagePath,
         enabled: useCustomHomeTheme,
@@ -1418,6 +1426,12 @@ class _MobileShellState extends State<MobileShell>
   }
 
   Future<void> _showImportOptions() async {
+    final source = context.read<PlaylistContentNotifier>();
+    if (!source.isLibraryPlaylistSelected) {
+      final rootIndex = source.playlists.indexWhere((p) => p.isLibrary);
+      if (rootIndex < 0) return;
+      source.setSelectedIndex(rootIndex);
+    }
     await _requestAudioAccess();
     if (!mounted) return;
     final action = await showModalBottomSheet<String>(
@@ -1593,7 +1607,7 @@ class _PlaylistsTab extends StatelessWidget {
             pinScope: pinScope,
             onPlay: (index) =>
                 notifier.playCurrentPlaylistSearchResult(displayedSongs[index]),
-            showRemove: true,
+            showRemove: !selectedPlaylist.isLibrary,
             selectionMode: view.selecting,
             selectedPaths: view.selectedPaths
                 .map((path) => path.toLowerCase())
@@ -1651,7 +1665,9 @@ class _PlaylistsTab extends StatelessWidget {
                           ),
                           const SizedBox(width: 6),
                           railAction(
-                            label: '导入文件',
+                            label: selectedPlaylist?.isLibrary == true
+                                ? '导入文件'
+                                : '添加歌曲',
                             icon: Icons.audio_file_outlined,
                             onTap: () {
                               if (selectedPlaylist == null) {
@@ -1660,7 +1676,11 @@ class _PlaylistsTab extends StatelessWidget {
                                 );
                                 return;
                               }
-                              unawaited(onImportSongs());
+                              if (selectedPlaylist.isLibrary) {
+                                unawaited(onImportSongs());
+                              } else {
+                                onAddFromLibrary(selectedPlaylist);
+                              }
                             },
                           ),
                         ],
@@ -1694,6 +1714,11 @@ class _PlaylistsTab extends StatelessWidget {
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                       children: [
+                                        if (playlist.isLibrary)
+                                          const Icon(
+                                            Icons.library_music_outlined,
+                                            size: 18,
+                                          ),
                                         Text(
                                           playlist.name,
                                           maxLines: 2,
@@ -1714,7 +1739,7 @@ class _PlaylistsTab extends StatelessWidget {
                                         ),
                                         const SizedBox(height: 2),
                                         Text(
-                                          '${playlist.songFilePaths.length} 首',
+                                          '${playlist.isLibrary ? notifier.allSongs.length : playlist.songFilePaths.length} 首',
                                           style: Theme.of(
                                             context,
                                           ).textTheme.labelSmall,
@@ -1763,8 +1788,12 @@ class _PlaylistsTab extends StatelessWidget {
               final playlist = notifier.playlists[index];
               return _PlaylistCard(
                 name: playlist.name,
+                icon: playlist.isLibrary
+                    ? Icons.library_music_outlined
+                    : Icons.queue_music,
                 selected: index == view.selectedIndex,
-                subtitle: '${playlist.songFilePaths.length} 首',
+                subtitle:
+                    '${playlist.isLibrary ? notifier.allSongs.length : playlist.songFilePaths.length} 首',
                 onTap: () => notifier.setSelectedIndex(index),
                 onLongPress: () => _showPlaylistActions(
                   context,
@@ -1820,8 +1849,8 @@ class _PlaylistsTab extends StatelessWidget {
               subtitle: playlist.isFolderBased
                   ? const Text('文件夹歌单由所选文件夹自动维护')
                   : null,
-              enabled: !playlist.isFolderBased,
-              onTap: playlist.isFolderBased
+              enabled: !playlist.isFolderBased && !playlist.isLibrary,
+              onTap: playlist.isFolderBased || playlist.isLibrary
                   ? null
                   : () => Navigator.pop(sheetContext, 'add_library'),
             ),
@@ -1958,7 +1987,7 @@ class _PlaylistsTab extends StatelessWidget {
               ListTile(
                 leading: const Icon(Icons.playlist_add),
                 title: const Text('创建空歌单'),
-                subtitle: const Text('创建后再导入单曲或文件夹'),
+                subtitle: const Text('创建后从音乐库添加歌曲'),
                 onTap: () => Navigator.pop(sheetContext, 'empty'),
               ),
               ListTile(
@@ -1966,12 +1995,6 @@ class _PlaylistsTab extends StatelessWidget {
                 title: const Text('在乐库中选取'),
                 subtitle: const Text('前往首页音乐库，多选已有歌曲组成歌单'),
                 onTap: () => Navigator.pop(sheetContext, 'library'),
-              ),
-              ListTile(
-                leading: const Icon(Icons.folder_copy_outlined),
-                title: const Text('文件夹歌单'),
-                subtitle: const Text('扫描并持续同步所选文件夹'),
-                onTap: () => Navigator.pop(sheetContext, 'folder'),
               ),
               const SizedBox(height: 8),
             ],
@@ -1986,15 +2009,6 @@ class _PlaylistsTab extends StatelessWidget {
       if (type == 'library') {
         onCreateFromLibrary(name);
         return;
-      }
-      final path = await FilePicker.platform.getDirectoryPath(
-        dialogTitle: '选择音乐文件夹',
-      );
-      if (path != null && context.mounted) {
-        context.read<PlaylistContentNotifier>().addPlaylist(
-          name,
-          folderPaths: [path],
-        );
       }
     }
   }
@@ -4051,6 +4065,7 @@ class _PlaybackArtworkPreparationCoordinatorState
   ValueListenable<String?>? _targetListenable;
   ValueListenable<int>? _artworkRecoveryListenable;
   ValueListenable<int>? _prewarmTargetListenable;
+  ValueListenable<bool>? _continuousSkipSignal;
   Listenable? _coverListenable;
   final Map<String, ({Listenable listenable, VoidCallback callback})>
   _prewarmCoverListeners = {};
@@ -4086,6 +4101,9 @@ class _PlaybackArtworkPreparationCoordinatorState
       _targetListenable?.removeListener(_handleTargetChanged);
       _artworkRecoveryListenable?.removeListener(_handleArtworkRecovery);
       _prewarmTargetListenable?.removeListener(_handlePrewarmTargetsChanged);
+      _continuousSkipSignal?.removeListener(
+        _handleContinuousPreparationChanged,
+      );
       _detachPrewarmCoverListeners();
       _notifier = notifier;
       _observedImageCacheGeneration = notifier.artworkImageCacheGeneration;
@@ -4095,6 +4113,8 @@ class _PlaybackArtworkPreparationCoordinatorState
         ..addListener(_handleArtworkRecovery);
       _prewarmTargetListenable = notifier.playbackArtworkPrewarmListenable
         ..addListener(_handlePrewarmTargetsChanged);
+      _continuousSkipSignal = notifier.continuousSkipListenable
+        ..addListener(_handleContinuousPreparationChanged);
     }
     _syncTarget();
     _syncPrewarmCoverListeners();
@@ -4103,6 +4123,13 @@ class _PlaybackArtworkPreparationCoordinatorState
   void _handleTargetChanged() {
     _generation++;
     _syncTarget();
+  }
+
+  void _handleContinuousPreparationChanged() {
+    if (_continuousSkipSignal?.value == false) {
+      _schedulePreparation();
+      _schedulePrewarmPreparation();
+    }
   }
 
   void _syncTarget() {
@@ -4260,6 +4287,7 @@ class _PlaybackArtworkPreparationCoordinatorState
         notifier == null ||
         path == null ||
         !notifier.isAppForeground ||
+        notifier.isContinuousSkipping ||
         _backgroundPreparing) {
       return;
     }
@@ -4322,6 +4350,7 @@ class _PlaybackArtworkPreparationCoordinatorState
               },
               isStillNeeded: () =>
                   mounted &&
+                  !notifier.isContinuousSkipping &&
                   notifier.isAppForeground &&
                   path == _observedPath &&
                   cacheGeneration == notifier.artworkImageCacheGeneration,
@@ -4486,7 +4515,11 @@ class _PlaybackArtworkPreparationCoordinatorState
 
   void _schedulePrewarmPreparation() {
     final notifier = _notifier;
-    if (notifier == null || !notifier.isAppForeground) return;
+    if (notifier == null ||
+        !notifier.isAppForeground ||
+        notifier.isContinuousSkipping) {
+      return;
+    }
     if (_decodeInFlight || _prewarmDecodeInFlight) {
       _retryPrewarmDecode = true;
       return;
@@ -4586,6 +4619,7 @@ class _PlaybackArtworkPreparationCoordinatorState
     _targetListenable?.removeListener(_handleTargetChanged);
     _artworkRecoveryListenable?.removeListener(_handleArtworkRecovery);
     _prewarmTargetListenable?.removeListener(_handlePrewarmTargetsChanged);
+    _continuousSkipSignal?.removeListener(_handleContinuousPreparationChanged);
     _coverListenable?.removeListener(_handleCoverChanged);
     _detachPrewarmCoverListeners();
     super.dispose();
@@ -4706,6 +4740,20 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   int _playbackGlassGeneration = 0;
   _PlaybackBackgroundFrame? _renderedPlaybackBackground;
   _PlaybackBackgroundFrame? _pendingPlaybackBackground;
+  Song? _heldLyricSong;
+  Duration _heldLyricPosition = Duration.zero;
+
+  VoidCallback _beginContinuousSkip(
+    PlaylistContentNotifier notifier,
+    Song song,
+  ) {
+    if (!notifier.isContinuousSkipping) {
+      _heldLyricSong = song;
+      _heldLyricPosition = notifier.currentPosition;
+      _frozenLyricLineIndex.value = notifier.lyricLineIndexListenable.value;
+    }
+    return notifier.beginContinuousSkip();
+  }
 
   @override
   void initState() {
@@ -4760,7 +4808,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _PlaybackBackgroundFrame candidate,
   ) {
     _pendingPlaybackBackground = candidate;
-    if (_renderedPlaybackBackground == null || !_routeTransitionActive) {
+    if (_renderedPlaybackBackground == null ||
+        (!_routeTransitionActive &&
+            !context.read<PlaylistContentNotifier>().isContinuousSkipping)) {
       _renderedPlaybackBackground = candidate;
     }
     return _renderedPlaybackBackground!;
@@ -5358,6 +5408,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             List<LyricLine> lyrics,
             Duration totalDuration,
             Uint8List? cover,
+            bool continuousSkip,
           })
         >((notifier) {
           final song = notifier.currentSong;
@@ -5366,6 +5417,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             lyrics: notifier.currentLyrics,
             totalDuration: notifier.totalDuration,
             cover: song == null ? null : notifier.displayCoverForSong(song),
+            continuousSkip: notifier.isContinuousSkipping,
           );
         });
     final notifier = context.read<PlaylistContentNotifier>();
@@ -5552,6 +5604,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       ),
     );
     return PlaybackBackground(
+      suspended: playback.continuousSkip,
       style: playbackBackground.artworkStyle,
       artworkIdentity: song.normalizedPath,
       artworkCacheGeneration: notifier.artworkImageCacheGeneration,
@@ -5630,17 +5683,30 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       controller: _lyricsListController,
       lines: lyrics,
       active: activeLyric,
-      contentIdentity: song.normalizedPath,
+      contentIdentity: notifier.isContinuousSkipping
+          ? (_heldLyricSong ?? song).normalizedPath
+          : song.normalizedPath,
       activeColor: activeLyricColor,
-      position: notifier.currentPosition,
-      positionListenable: _lyricsRealtimeVisualsEnabled
+      position: notifier.isContinuousSkipping
+          ? _heldLyricPosition
+          : notifier.currentPosition,
+      positionListenable:
+          _lyricsRealtimeVisualsEnabled && !notifier.isContinuousSkipping
           ? notifier.positionListenable
           : null,
       playbackRate: notifier.currentPlaybackRate,
-      playbackRateListenable: notifier.actualPlaybackRateListenable,
-      actualPlaybackListenable: notifier.actualPlaybackListenable,
-      seekPositionListenable: notifier.lyricSeekListenable,
-      seekIntentListenable: notifier.lyricSeekIntentListenable,
+      playbackRateListenable: notifier.isContinuousSkipping
+          ? null
+          : notifier.actualPlaybackRateListenable,
+      actualPlaybackListenable: notifier.isContinuousSkipping
+          ? null
+          : notifier.actualPlaybackListenable,
+      seekPositionListenable: notifier.isContinuousSkipping
+          ? null
+          : notifier.lyricSeekListenable,
+      seekIntentListenable: notifier.isContinuousSkipping
+          ? null
+          : notifier.lyricSeekIntentListenable,
       fontSize: settings.fontSize,
       fontFamily: lyricFontFamily,
       fontWeight: settings.lyricFontWeight,
@@ -5650,7 +5716,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       karaokeLyricsMode: settings.karaokeLyricsMode,
       lineBlurEnabled: settings.enableLyricBlur,
       highlightActiveLine: settings.highlightActiveLyric,
-      isPlaying: _lyricsRealtimeVisualsEnabled && notifier.isPlaying,
+      isPlaying:
+          _lyricsRealtimeVisualsEnabled &&
+          !notifier.isContinuousSkipping &&
+          notifier.isPlaying,
       entryPreparing: _lyricsEntryPreparing,
       edgeFadeEnabled: true,
       glowEnabled: settings.playbackLyricGlowEnabled,
@@ -5839,7 +5908,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                       child: LyricsSongSwipeTransition(
                         enabled:
                             settings.playbackImmersiveEnabled && _showLyrics,
-                        songIdentity: song.normalizedPath,
+                        songIdentity: notifier.isContinuousSkipping
+                            ? (_heldLyricSong ?? song).normalizedPath
+                            : song.normalizedPath,
                         onSwitchStart: (next) =>
                             _fullscreenSwipeSong.beginSwitch(next: next),
                         onSwitchCompleted: (previousIdentity) {
@@ -5872,6 +5943,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                           builder: (context, routeTransitionActive, _) {
                             final realtime =
                                 _lyricsRealtimeVisualsEnabled &&
+                                !notifier.isContinuousSkipping &&
                                 !routeTransitionActive;
                             return TickerMode(
                               enabled: realtime,
@@ -6072,7 +6144,11 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             child: Center(
               child: Selector<PlaylistContentNotifier, bool>(
                 selector: (_, value) => value.isFavorite(song),
-                builder: (context, favorite, _) => IconButton(
+                builder: (context, favorite, _) => LongPressIconButton(
+                  onLongPress: () => _showPlaybackControlSheet<void>(
+                    context,
+                    builder: (_) => SongPlaylistSheet(song: song),
+                  ),
                   tooltip: favorite ? '取消收藏' : '收藏',
                   icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
                   color: favorite ? colorScheme.primary : null,
@@ -6083,12 +6159,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           ),
           Expanded(
             child: Center(
-              child: IconButton(
+              child: TransportSkipButton(
                 tooltip: '上一首',
-                icon: const Icon(Icons.skip_previous, size: 38),
-                onPressed: () {
+                onHoldStart: () => _beginContinuousSkip(notifier, song),
+                icon: Icons.skip_previous,
+                onSkip: () async {
                   _resetSeekTracking();
-                  notifier.playPrevious();
+                  await notifier.playPrevious();
                 },
               ),
             ),
@@ -6117,12 +6194,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           ),
           Expanded(
             child: Center(
-              child: IconButton(
+              child: TransportSkipButton(
                 tooltip: '下一首',
-                icon: const Icon(Icons.skip_next, size: 38),
-                onPressed: () {
+                onHoldStart: () => _beginContinuousSkip(notifier, song),
+                icon: Icons.skip_next,
+                onSkip: () async {
                   _resetSeekTracking();
-                  notifier.playNext();
+                  await notifier.playNext();
                 },
               ),
             ),
@@ -6131,9 +6209,16 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             child: Center(
               child: Selector<PlaylistContentNotifier, PlayMode>(
                 selector: (_, value) => value.playMode,
-                builder: (context, mode, _) => IconButton(
+                builder: (context, mode, _) => LongPressIconButton(
+                  onLongPress: () => _showPlaybackControlSheet<void>(
+                    context,
+                    builder: (_) => const FractionallySizedBox(
+                      heightFactor: .82,
+                      child: PlaybackModePage(asSheet: true),
+                    ),
+                  ),
                   tooltip: _modeLabel(mode),
-                  icon: Icon(_modeIcon(mode), size: 28),
+                  icon: PlaybackModeGlyph(mode: mode, size: 28),
                   onPressed: notifier.togglePlayMode,
                 ),
               ),
@@ -6837,48 +6922,59 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     );
   }
 
+  Future<T?> _showPlaybackControlSheet<T>(
+    BuildContext context, {
+    required WidgetBuilder builder,
+  }) {
+    final themed = _hasResolvedPlaybackTheme(
+      context.read<SettingsProvider>(),
+      context.read<PlaylistContentNotifier>(),
+    );
+    return showModalBottomSheet<T>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: !themed,
+      backgroundColor: themed ? Colors.transparent : null,
+      shape: themed
+          ? _playbackSheetShape(context)
+          : const RoundedRectangleBorder(
+              borderRadius: BorderRadius.vertical(top: Radius.circular(28)),
+            ),
+      clipBehavior: Clip.antiAlias,
+      sheetAnimationStyle: const AnimationStyle(
+        duration: Duration(milliseconds: 260),
+        reverseDuration: Duration(milliseconds: 220),
+      ),
+      builder: (sheetContext) {
+        final content = Padding(
+          key: const ValueKey('playback-control-sheet-body'),
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.viewInsetsOf(sheetContext).bottom,
+          ),
+          child: builder(sheetContext),
+        );
+        return themed
+            ? _playbackThemeSheetSurface(sheetContext, child: content)
+            : content;
+      },
+    );
+  }
+
   Widget _playbackThemeSheetSurface(
     BuildContext context, {
     required Widget child,
   }) {
-    final scheme = Theme.of(context).colorScheme;
-    final useFluidBackground = _hasResolvedFluidPlaybackBackground(
-      context.read<SettingsProvider>(),
-      context.read<PlaylistContentNotifier>(),
-    );
     final brightForeground = Theme.of(context).brightness == Brightness.light;
-    final borderColor = brightForeground
-        ? Colors.white.withValues(alpha: _playbackGlassBorderAlpha)
-        : scheme.outlineVariant.withValues(alpha: _playbackGlassBorderAlpha);
-    final themedChild = _playbackForegroundTheme(
-      context,
-      enabled: brightForeground,
-      child: child,
-    );
-    const radius = BorderRadius.vertical(top: Radius.circular(28));
-    final surface = DecoratedBox(
-      decoration: BoxDecoration(
-        color: scheme.surface.withValues(
-          alpha: useFluidBackground ? .28 : _playbackGlassFillAlpha,
-        ),
-        borderRadius: radius,
-        border: Border.all(color: borderColor),
+    return PlaybackControlSheetSurface(
+      fluid: _hasResolvedFluidPlaybackBackground(
+        context.read<SettingsProvider>(),
+        context.read<PlaylistContentNotifier>(),
       ),
-      child: Material(
-        color: Colors.transparent,
-        shape: const RoundedRectangleBorder(borderRadius: radius),
-        clipBehavior: Clip.antiAlias,
-        child: themedChild,
-      ),
-    );
-    return ClipRRect(
-      borderRadius: radius,
-      child: BackdropFilter(
-        key: const ValueKey('playback-feature-backdrop-filter'),
-        filter: useFluidBackground
-            ? _fluidPlaybackFeatureBlurFilter
-            : _playbackFeatureBlurFilter,
-        child: surface,
+      child: _playbackForegroundTheme(
+        context,
+        enabled: brightForeground,
+        child: child,
       ),
     );
   }
@@ -6958,10 +7054,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   ) async {
     final overrides = context.read<CoverOverrideService>();
     final currentArtwork = notifier.displayCoverForSong(song);
-    final action = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      showDragHandle: true,
+    final action = await _showPlaybackControlSheet<String>(
+      context,
       builder: (sheetContext) => SafeArea(
         child: SingleChildScrollView(
           child: Column(
@@ -7713,10 +7807,20 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
         ),
         SwitchListTile(
           contentPadding: EdgeInsets.zero,
-          title: const Text('歌词源自动回退'),
+          title: const Text('所选歌词源未匹配到对应歌词时自动更换其他歌词源'),
           value: settings.enableLyricSourceFallback,
           onChanged: (value) async {
             await settings.setEnableLyricSourceFallback(value);
+            if (!context.mounted || !settings.enableOnlineLyrics) return;
+            await context.read<PlaylistContentNotifier>().reloadCurrentLyrics();
+          },
+        ),
+        SwitchListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('所选源未匹配到逐字歌词时自动更换其余平台歌词源'),
+          value: settings.enableTimedLyricSourceFallback,
+          onChanged: (value) async {
+            await settings.setEnableTimedLyricSourceFallback(value);
             if (!context.mounted || !settings.enableOnlineLyrics) return;
             await context.read<PlaylistContentNotifier>().reloadCurrentLyrics();
           },
@@ -7745,6 +7849,11 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
             settings.setSecondaryLyricSource(
               networkLyricSourceOrder(primary)[1],
             );
+            if (settings.enableOnlineLyrics) {
+              unawaited(
+                context.read<PlaylistContentNotifier>().reloadCurrentLyrics(),
+              );
+            }
           },
         ),
       ],
@@ -8740,11 +8849,6 @@ String _dateTime(DateTime value) {
 String _modeLabel(PlayMode mode) => switch (mode) {
   PlayMode.shuffle => '随机播放',
   PlayMode.repeatOne => '单曲循环',
+  PlayMode.repeatShuffle => '循环播放后随机播放',
   _ => '列表循环',
-};
-
-IconData _modeIcon(PlayMode mode) => switch (mode) {
-  PlayMode.shuffle => Icons.shuffle,
-  PlayMode.repeatOne => Icons.repeat_one,
-  _ => Icons.repeat,
 };
