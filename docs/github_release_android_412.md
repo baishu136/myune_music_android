@@ -29,3 +29,18 @@ ADB无设备，本轮没有安装、实际启动、手机Profile、录屏或Laun
 交付文件为 `dist/Myune-Music-1.0.0-android.412-arm64-v8a.apk`、`dist/Myune-Music-1.0.0-android.412-source-20261018.zip`；标准备份 `F:/临时文件夹/备份/Myune-Music-1.0.0+412-20261018/`。Release附件另提供 `SHA256SUMS.txt`。外部证据：`F:/AGENT/1/test-artifacts/github-release-412/`，发布说明为 `docs/github_release_notes_android_412.md`。
 
 发布顺序：验证并冻结源码和发布输入，构建/校验APK和源码ZIP；按实际文件审查并暂存源码，正常提交及推送main和新标签；先创建草稿、上传附件并核对服务器大小及SHA256，再公开为Latest。提交SHA、远端附件和公开结果在发布完成后补充记录；构建时ZIP保持不可变，后续发布状态文档可单独提交。
+
+
+## 发布完成（2026-10-18）
+
+- [Android 412正式Release](https://github.com/baishu136/myune_music_android/releases/tag/v1.0.0-android.412)已公开并设为Latest，id `416487254`，非预发布。
+- [源码提交fd62f58](https://github.com/baishu136/myune_music_android/commit/fd62f5841ec0cb27b0275c60a4f6924276d28165)已正常推送main；38项源码/测试/文档变更，构建产物、外部证据及本机材料未进入Git。注释标签对象 `c2271af3744c149b594c8663af4fa3cfd8b05827` 指向该源码提交。
+- 三个附件先在草稿中逐一核对uploaded状态、名称、大小和GitHub服务器SHA256，全部匹配后公开；公开后再次确认Latest、目标提交与三个附件。另下载远端SHA256SUMS并逐字节比对本地通过。
+- 重新获取全部Release，原19个Release的标题、说明、标签、预发布状态和附件标识/大小/SHA均未改变。
+- 首次临时HTTPS推送遇到Empty reply，远端确认未收到后改用origin SSH正常原子推送分支和标签成功，无强制推送或历史改写。
+
+- `Myune-Music-1.0.0-android.412-arm64-v8a.apk`：32,327,412 bytes，服务器SHA256 `0DCC59FCDE8DA4D13E366D7DBD001519983A010F385814D69DB075B2E087F2BF`。
+- `Myune-Music-1.0.0-android.412-source-20261018.zip`：44,341,340 bytes，服务器SHA256 `7515A8450DB46A5B22A87EA5EB91919FB24A0ABFEC9A5553DC599FA8BE4D0079`。
+- `SHA256SUMS.txt`：228 bytes，服务器SHA256 `5E1828159F46BBD97F013941974970CA38B56966E5068CFF818777E8C600D7EB`。
+
+本节为发布后的文档补充，单独提交；发布标签、安装包和构建时完整源码ZIP仍固定在已验证源码提交，原852项ZIP/标准备份不覆盖。后续公开证明及交接文档另存发布留档 `F:/临时文件夹/备份/Myune-Music-GitHub-412-publication-20261018/`。

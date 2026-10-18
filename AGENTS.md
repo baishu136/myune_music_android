@@ -15,6 +15,8 @@
 - ARM64 Release94秒/32,327,412 bytes/SHA `0DCC59FCDE8DA4D13E366D7DBD001519983A010F385814D69DB075B2E087F2BF`，2412/v2原证书/16KiB ELF和ZIP/压缩原生/CRC通过，6非libapp原生及全部资源同411。852完整源码较411改5/增3/删0（含本交接），dist及标准412备份CRC/逐字节/副本SHA以artifact-manifest为准；411及旧档不可变。
 - 记录docs/github_release_android_412.md，证据F:/AGENT/1/test-artifacts/github-release-412/。源码按实际文件审查和暂存，排除dist/构建/本机配置/敏感材料/外部证据；先草稿上传APK/完整源码ZIP/SHA256SUMS，服务器大小/digest全部一致后公开Latest。沿用本地已登录GitHub CLI凭据通道，不输出令牌；不自动发布到其他平台。
 
+- 412发布已完成：[正式Release](https://github.com/baishu136/myune_music_android/releases/tag/v1.0.0-android.412)/Latest/非预发布，id416487254；源码提交fd62f5841ec0cb27b0275c60a4f6924276d28165与注释标签正常推送。APK/完整源码ZIP/SHA256SUMS三附件服务器大小及digest匹配，公开后复查和远端校验文件下载比对通过，原19个Release及附件未改。源码ZIP SHA `7515A8450DB46A5B22A87EA5EB91919FB24A0ABFEC9A5553DC599FA8BE4D0079`。发布后仅补本文及发布doc，构建时ZIP/标准412备份不可变；公开证据和后续文档另存Myune-Music-GitHub-412-publication-20261018。
+
 ## 411恢复409运动与歌单选择（2026-10-18，优先于410）
 
 - 用户要求回退409并修改收藏浮窗；当前1.0.0+411/正式ARM642411，用递增版本覆盖升级，不降级安装、不清数据，不提交/推送/tag/Release。main仍e50435baadbe515157b822e9d7ea1640a7de2d01，保留407～410未提交成果及所有历史档案。两个歌词文件从409完整ZIP逐字节恢复；410专属测试移至本轮外部证据，410原档不改。409共享时钟/整行弹簧/原缓存、半秒长按与浮窗260ms放大淡入保持，410曲线及避让已撤销。
