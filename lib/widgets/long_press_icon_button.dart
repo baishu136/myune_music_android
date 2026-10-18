@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart';
 
 class LongPressIconButton extends StatelessWidget {
   const LongPressIconButton({
@@ -18,8 +19,16 @@ class LongPressIconButton extends StatelessWidget {
   Widget build(BuildContext context) => Tooltip(
     message: tooltip,
     triggerMode: TooltipTriggerMode.manual,
-    child: GestureDetector(
-      onLongPress: onLongPress,
+    child: RawGestureDetector(
+      gestures: {
+        LongPressGestureRecognizer:
+            GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+              () => LongPressGestureRecognizer(
+                duration: const Duration(milliseconds: 500),
+              ),
+              (recognizer) => recognizer.onLongPress = onLongPress,
+            ),
+      },
       child: IconButton(icon: icon, color: color, onPressed: onPressed),
     ),
   );

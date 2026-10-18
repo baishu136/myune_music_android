@@ -33,6 +33,7 @@ import '../widgets/copyable_song_detail_row.dart';
 import '../widgets/transport_skip_button.dart';
 import '../widgets/playback_mode_page.dart';
 import '../widgets/song_playlist_sheet.dart';
+import '../widgets/playlist_created_label.dart';
 import '../widgets/long_press_icon_button.dart';
 import '../widgets/playback_mode_glyph.dart';
 import '../widgets/home_header_page_transition.dart';
@@ -1719,6 +1720,9 @@ class _PlaylistsTab extends StatelessWidget {
                                             Icons.library_music_outlined,
                                             size: 18,
                                           ),
+                                        PlaylistCreatedLabel(
+                                          date: playlist.createdAt,
+                                        ),
                                         Text(
                                           playlist.name,
                                           maxLines: 2,
@@ -1788,6 +1792,7 @@ class _PlaylistsTab extends StatelessWidget {
               final playlist = notifier.playlists[index];
               return _PlaylistCard(
                 name: playlist.name,
+                createdAt: playlist.createdAt,
                 icon: playlist.isLibrary
                     ? Icons.library_music_outlined
                     : Icons.queue_music,
@@ -6145,9 +6150,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
               child: Selector<PlaylistContentNotifier, bool>(
                 selector: (_, value) => value.isFavorite(song),
                 builder: (context, favorite, _) => LongPressIconButton(
-                  onLongPress: () => _showPlaybackControlSheet<void>(
+                  onLongPress: () => showSongPlaylistWindow(
                     context,
-                    builder: (_) => SongPlaylistSheet(song: song),
+                    song,
+                    fluid: _hasResolvedFluidPlaybackBackground(
+                      context.read<SettingsProvider>(),
+                      notifier,
+                    ),
                   ),
                   tooltip: favorite ? '取消收藏' : '收藏',
                   icon: Icon(favorite ? Icons.favorite : Icons.favorite_border),
@@ -8622,6 +8631,7 @@ class _PlaylistCard extends StatelessWidget {
     this.selected = false,
     this.icon = Icons.queue_music,
     this.onLongPress,
+    this.createdAt,
   });
   final String name;
   final String? subtitle;
@@ -8629,6 +8639,7 @@ class _PlaylistCard extends StatelessWidget {
   final IconData icon;
   final VoidCallback onTap;
   final VoidCallback? onLongPress;
+  final DateTime? createdAt;
   @override
   Widget build(BuildContext context) {
     return Padding(
@@ -8646,7 +8657,13 @@ class _PlaylistCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(icon),
+                  Row(
+                    children: [
+                      Icon(icon, size: 20),
+                      const SizedBox(width: 4),
+                      Expanded(child: PlaylistCreatedLabel(date: createdAt)),
+                    ],
+                  ),
                   const Spacer(),
                   Text(name, maxLines: 1, overflow: TextOverflow.ellipsis),
                   if (subtitle != null)

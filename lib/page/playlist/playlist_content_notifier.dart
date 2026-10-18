@@ -1494,6 +1494,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   int _currentLyricLineIndex = -1; // 当前歌词行索引
   int _lyricRequestGeneration = 0;
   int _lyricPrefetchGeneration = 0;
+  String? _visibleLyricsKey;
   final LinkedHashMap<String, List<LyricLine>> _lyricCache = LinkedHashMap();
   final Map<String, Future<List<LyricLine>>> _lyricRequests = {};
   static const int _maximumLyricCacheEntries = 16;
@@ -1521,9 +1522,8 @@ class PlaylistContentNotifier extends ChangeNotifier
     await _loadLyricsForSong(song.filePath);
   }
 
-  /// When local lyrics are not preferred, retries the selected network source
-  /// without clearing the currently visible lyric. A successful response
-  /// replaces local/embedded content; a failed response leaves it untouched.
+  /// Resolve missing/newly configured lyrics. A completed current result is
+  /// retained across page entry, lifecycle changes and cache eviction.
   Future<void> refreshCurrentNetworkLyrics() async {
     final song = _currentSong;
     if (song == null ||
@@ -1532,24 +1532,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       return;
     }
 
-    final requestGeneration = ++_lyricRequestGeneration;
-    ++_lyricPrefetchGeneration;
-    final lyrics = await _fetchOnlineLyrics(song);
-    if (lyrics.isEmpty ||
-        requestGeneration != _lyricRequestGeneration ||
-        _currentSong?.normalizedPath != song.normalizedPath) {
-      return;
-    }
-
-    _cacheLyrics(_lyricCacheKey(song), lyrics);
-    if (sameLyricContent(_currentLyrics, lyrics)) return;
-    _currentLyrics = lyrics;
-    // Replacing lyrics while the playback page is already visible must not
-    // publish a transient -1 index. The lyric list clamps -1 to its first
-    // row, so emitting it here produces a visible first-row flash before the
-    // next position tick restores the actual playing line.
-    updateLyricLine(_currentPosition);
-    notifyListeners();
+    await _loadLyricsForSong(song.filePath);
   }
 
   /// Reloads the current song using the normal external/embedded/network
@@ -6810,6 +6793,13 @@ class PlaylistContentNotifier extends ChangeNotifier
   // 加载指定歌曲的歌词
   Future<void> _loadLyricsForSong(String songFilePath) async {
     if (isContinuousSkipping) return;
+    final current = _currentSong;
+    if (current != null &&
+        current.normalizedPath == _normalizePath(songFilePath) &&
+        _currentLyrics.isNotEmpty &&
+        _visibleLyricsKey == _lyricCacheKey(current)) {
+      return;
+    }
     final requestGeneration = ++_lyricRequestGeneration;
     final prefetchGeneration = ++_lyricPrefetchGeneration;
     final song = _currentSong?.normalizedPath == _normalizePath(songFilePath)
@@ -6821,6 +6811,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     final hadVisibleLyrics = _currentLyrics.isNotEmpty;
     final cached = _takeCachedLyrics(cacheKey);
     if (cached != null) {
+      _visibleLyricsKey = cacheKey;
       if (!sameLyricContent(_currentLyrics, cached)) _currentLyrics = cached;
       if (hadVisibleLyrics) {
         updateLyricLine(_currentPosition);
@@ -6850,6 +6841,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       return;
     }
     final hadProvisionalLyrics = _currentLyrics.isNotEmpty;
+    _visibleLyricsKey = lyrics.isNotEmpty ? cacheKey : null;
     if (!sameLyricContent(_currentLyrics, lyrics)) _currentLyrics = lyrics;
     if (hadVisibleLyrics || hadProvisionalLyrics) {
       updateLyricLine(_currentPosition);
@@ -8230,6 +8222,66 @@ class PlaylistContentNotifier extends ChangeNotifier
     notifyListeners();
 
     return newPaths.length;
+  }
+
+  Future<int> removeSongsFromPlaylistById(
+    String playlistId,
+    List<String> songPaths,
+  ) async {
+    final index = _playlists.indexWhere((item) => item.id == playlistId);
+    if (index < 0 || _playlists[index].isLibrary) return 0;
+    final playlist = _playlists[index];
+    if (!songPaths.any(playlist.containsSongPath)) return 0;
+    final previousPaths = List<String>.of(playlist.songFilePaths);
+    final previousSongs = playlist.songs;
+    final previousPlaying = _playingPlaylist;
+    Playlist? detachedPlaying;
+    if (identical(previousPlaying, playlist)) {
+      // Editing membership must not remove the current song from the live
+      // playback source or shift its next-song index.
+      detachedPlaying = Playlist(
+        id: playlist.id,
+        name: playlist.name,
+        isDefault: playlist.isDefault,
+        songFilePaths: previousPaths,
+        songs: previousSongs,
+        currentPlayingIndex: playlist.currentPlayingIndex,
+        isFolderBased: playlist.isFolderBased,
+        folderPaths: playlist.folderPaths,
+        createdAt: playlist.createdAt,
+        restored: true,
+      );
+      _playingPlaylist = detachedPlaying;
+    }
+    final removed = playlist.removeSongPaths(songPaths);
+    try {
+      await _savePlaylists();
+    } catch (_) {
+      playlist.songFilePaths = previousPaths;
+      playlist.songs = previousSongs;
+      if (detachedPlaying != null &&
+          identical(_playingPlaylist, detachedPlaying)) {
+        _playingPlaylist = previousPlaying;
+      }
+      rethrow;
+    }
+    if (_selectedIndex >= 0 &&
+        _selectedIndex < _playlists.length &&
+        identical(_playlists[_selectedIndex], playlist)) {
+      final targets = songPaths
+          .map((path) => p.normalize(path).toLowerCase())
+          .toSet();
+      _currentPlaylistSongs =
+          playlist.songs ??
+          _currentPlaylistSongs
+              .where(
+                (song) => !targets.contains(song.normalizedPath.toLowerCase()),
+              )
+              .toList();
+    }
+    await _updateAllSongsList();
+    notifyListeners();
+    return removed;
   }
 
   /// 批量为多个歌单添加歌曲，仅执行一次保存和更新

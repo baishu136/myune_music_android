@@ -6,9 +6,11 @@ import 'package:flutter/widgets.dart';
 
 import '../services/interaction_performance_controller.dart';
 import 'lyric_raster_pool.dart';
+import 'lyric_plain_prewarm.dart';
 
 int debugLyricPlainRasterPreparations = 0;
 int debugLyricPlainRasterPaints = 0;
+int debugLyricPlainNativePaints = 0;
 
 /// Retain the native paragraph for layout, fallback and semantics. Only paint
 /// uses a ready native-RGB image; alpha stays outside this render boundary.
@@ -18,19 +20,39 @@ class LyricPlainRaster extends SingleChildRenderObjectWidget {
     required this.identity,
     required this.pixelRatio,
     required this.rank,
+    this.prepared,
+    this.managed = false,
+    this.inkColor = const Color(0xFFFFFFFF),
     required super.child,
   });
   final Object identity;
   final double pixelRatio;
   final int rank;
+  final LyricPlainPrepared? prepared;
+  final bool managed;
+  final Color inkColor;
   @override
   RenderLyricPlainRaster createRenderObject(BuildContext context) =>
-      RenderLyricPlainRaster(identity, pixelRatio, rank);
+      RenderLyricPlainRaster(identity, pixelRatio, rank)..configure(
+        identity,
+        pixelRatio,
+        rank,
+        prepared: prepared,
+        managed: managed,
+        color: inkColor,
+      );
   @override
   void updateRenderObject(
     BuildContext context,
     RenderLyricPlainRaster renderObject,
-  ) => renderObject.configure(identity, pixelRatio, rank);
+  ) => renderObject.configure(
+    identity,
+    pixelRatio,
+    rank,
+    prepared: prepared,
+    managed: managed,
+    color: inkColor,
+  );
 }
 
 class RenderLyricPlainRaster extends RenderProxyBox
@@ -45,8 +67,17 @@ class RenderLyricPlainRaster extends RenderProxyBox
   _InkJob? _job;
   static const _padding = 32.0;
   final _paint = Paint()..filterQuality = FilterQuality.low;
+  LyricPlainPrepared? _prepared;
+  bool _managed = false;
+  Color _color = const Color(0xFFFFFFFF);
+  int debugLayoutCount = 0;
 
-  ui.Image? get debugImage => _image;
+  ui.Image? get debugImage => _managed
+      ? hasSize && _prepared?.sourceFor(_color, size) != null
+            ? _prepared?.imageFor(_color)
+            : null
+      : _image;
+  ui.Image? get debugRetainedImage => _prepared?.image ?? _image;
   @override
   int get rasterDemand => _failed ? 0 : _pixels;
   @override
@@ -56,13 +87,34 @@ class RenderLyricPlainRaster extends RenderProxyBox
   @override
   bool get rasterReserved => _job != null;
 
-  void configure(Object identity, double dpr, int rank) {
+  void configure(
+    Object identity,
+    double dpr,
+    int rank, {
+    LyricPlainPrepared? prepared,
+    bool managed = false,
+    Color color = const Color(0xFFFFFFFF),
+  }) {
+    if (_prepared != prepared) {
+      _prepared?.removeListener(markNeedsPaint);
+      _prepared = prepared;
+      if (attached) _prepared?.addListener(markNeedsPaint);
+      markNeedsPaint();
+    }
+    if (_managed != managed || _color != color) {
+      _managed = managed;
+      _color = color;
+      markNeedsPaint();
+    }
     if (_identity != identity || _dpr != dpr) {
       _discard();
       _identity = identity;
       _dpr = dpr;
       _failed = false;
-      markNeedsLayout();
+      // Paragraph metric changes propagate layout themselves. A paint-only
+      // colour change must never force the wrapper to lay out the row again.
+      markNeedsPaint();
+      _updateDemand();
     }
     if (_rank != rank) {
       _rank = rank;
@@ -74,6 +126,7 @@ class RenderLyricPlainRaster extends RenderProxyBox
   @override
   void attach(PipelineOwner owner) {
     super.attach(owner);
+    _prepared?.addListener(markNeedsPaint);
     _sequence = LyricRasterPool.register(this);
     _updateDemand();
   }
@@ -81,12 +134,17 @@ class RenderLyricPlainRaster extends RenderProxyBox
   @override
   void detach() {
     LyricRasterPool.unregister(this);
+    _prepared?.removeListener(markNeedsPaint);
     _discard();
     super.detach();
   }
 
   @override
   void performLayout() {
+    assert(() {
+      debugLayoutCount++;
+      return true;
+    }());
     final previous = hasSize ? size : null;
     super.performLayout();
     if (previous != size) {
@@ -101,6 +159,7 @@ class RenderLyricPlainRaster extends RenderProxyBox
     final height = hasSize ? ((size.height + 2 * _padding) * _dpr).ceil() : 0;
     // No downsampling, no full-song cache. Far rows retain native painting.
     final eligible =
+        !_managed &&
         attached &&
         _rank % 10000 <= 2 &&
         _dpr >= 1 &&
@@ -197,8 +256,32 @@ class RenderLyricPlainRaster extends RenderProxyBox
 
   @override
   void paint(PaintingContext context, Offset offset) {
+    if (_managed) {
+      final prepared = _prepared;
+      final image = prepared?.imageFor(_color);
+      final source = prepared?.sourceFor(_color, size);
+      if (image != null && source != null) {
+        debugLyricPlainRasterPaints++;
+        context.canvas.drawImageRect(
+          image,
+          source,
+          Rect.fromLTWH(
+            offset.dx - _padding,
+            offset.dy - _padding,
+            source.width / _dpr,
+            source.height / _dpr,
+          ),
+          _paint,
+        );
+      } else {
+        debugLyricPlainNativePaints++;
+        super.paint(context, offset);
+      }
+      return;
+    }
     final image = _image;
     if (image == null) {
+      debugLyricPlainNativePaints++;
       super.paint(context, offset);
       return;
     }
@@ -218,6 +301,8 @@ class RenderLyricPlainRaster extends RenderProxyBox
 
   @override
   void dispose() {
+    _prepared?.removeListener(markNeedsPaint);
+    _prepared = null;
     _discard();
     super.dispose();
   }

@@ -8,7 +8,7 @@ String playbackModeLabel(PlayMode mode) => switch (mode) {
   PlayMode.sequence => '列表循环',
   PlayMode.shuffle => '随机播放',
   PlayMode.repeatOne => '单曲循环',
-  PlayMode.repeatShuffle => '循环播放后随机播放',
+  PlayMode.repeatShuffle => '循环播放，随机切歌',
 };
 
 class PlaybackModePage extends StatefulWidget {

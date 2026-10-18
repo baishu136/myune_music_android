@@ -3564,20 +3564,12 @@ void main() {
     final transform = tester.widget<Transform>(
       find.byKey(const ValueKey('mobile_lyric_elastic_transform_5')),
     );
-    expect(transform.transform.storage[13], 0);
+    expect(transform.transform.storage[13].abs(), greaterThan(.2));
     await tester.pump(const Duration(milliseconds: 320));
-    final dynamic moving = tester
-        .widgetList<CustomPaint>(
-          find.descendant(
-            of: find.byKey(const ValueKey('mobile_lyric_5')),
-            matching: find.byType(CustomPaint),
-          ),
-        )
-        .map((w) => w.painter)
-        .firstWhere(
-          (p) => p.runtimeType.toString() == '_ElasticPhysicalPainter',
-        );
-    expect(moving.frame.offset(0).abs(), greaterThan(.2));
+    final moving = tester.widget<Transform>(
+      find.byKey(const ValueKey('mobile_lyric_elastic_transform_5')),
+    );
+    expect(moving.transform.storage[13].abs(), greaterThan(.2));
 
     await tester.pumpAndSettle();
     final settled = tester.widget<Transform>(

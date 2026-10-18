@@ -91,6 +91,7 @@ class Playlist {
   final String id;
   String name;
   final bool isDefault;
+  final DateTime? createdAt;
   // Playlists are edited after restoration (import, refresh, reorder, remove).
   // Own growable copies at every assignment boundary: a cached/fixed-length
   // or unmodifiable input must not silently make those operations invalid.
@@ -124,16 +125,44 @@ class Playlist {
     List<Song>? songs,
     this.isFolderBased = false,
     List<String>? folderPaths,
+    DateTime? createdAt,
+    bool restored = false,
   }) : id = id ?? const Uuid().v4(),
+       createdAt = createdAt ?? (restored ? null : DateTime.now()),
        _songFilePaths = List<String>.of(songFilePaths ?? const []),
        _songs = songs == null ? null : List<Song>.of(songs),
        _folderPaths = List<String>.of(folderPaths ?? const []);
+
+  bool containsSongPath(String path) {
+    final target = p.normalize(path).toLowerCase();
+    return _songFilePaths.any(
+      (item) => p.normalize(item).toLowerCase() == target,
+    );
+  }
+
+  int removeSongPaths(Iterable<String> paths) {
+    if (isLibrary) return 0;
+    final targets = paths
+        .map((path) => p.normalize(path).toLowerCase())
+        .toSet();
+    final before = _songFilePaths.length;
+    _songFilePaths = _songFilePaths
+        .where((path) => !targets.contains(p.normalize(path).toLowerCase()))
+        .toList();
+    if (_songs != null) {
+      _songs = _songs!
+          .where((song) => !targets.contains(song.normalizedPath.toLowerCase()))
+          .toList();
+    }
+    return before - _songFilePaths.length;
+  }
 
   Map<String, dynamic> toJson() {
     return {
       'id': id,
       'name': name,
       'isDefault': isDefault,
+      if (createdAt != null) 'createdAt': createdAt!.toUtc().toIso8601String(),
       'currentPlayingIndex': currentPlayingIndex,
       'isFolderBased': isFolderBased,
       'folderPaths': folderPaths,
@@ -145,6 +174,8 @@ class Playlist {
       id: json['id'],
       name: json['name'],
       isDefault: json['isDefault'] ?? false,
+      createdAt: DateTime.tryParse(json['createdAt']?.toString() ?? ''),
+      restored: true,
       currentPlayingIndex: json['currentPlayingIndex'],
       isFolderBased: json['isFolderBased'] ?? false,
       folderPaths: json['folderPaths'] != null

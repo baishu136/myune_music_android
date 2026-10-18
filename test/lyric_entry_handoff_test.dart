@@ -189,24 +189,11 @@ void main() {
             .value
             .dy;
         double elastic(int i) => tester
-            .widgetList<CustomPaint>(
-              find.descendant(of: row(i), matching: find.byType(CustomPaint)),
+            .widget<Transform>(
+              find.byKey(ValueKey('mobile_lyric_elastic_transform_$i')),
             )
-            .map((w) => w.painter)
-            .where(
-              (p) =>
-                  p.runtimeType.toString() == '_ElasticPhysicalPainter' ||
-                  p.runtimeType.toString() == '_SinglePassKaraokePainter',
-            )
-            .map((p) {
-              final dynamic painter = p;
-              return (p.runtimeType.toString() == '_ElasticPhysicalPainter'
-                          ? painter.frame
-                          : painter.rowMotion)
-                      .offset(0)
-                  as double;
-            })
-            .first;
+            .transform
+            .storage[13];
         expect(scale(5), 1.1, reason: 'no delayed focus growth after reveal');
         expect(scale(4), 1);
         if (effect == LyricScrollEffect.dynamic) {
@@ -232,13 +219,14 @@ void main() {
         await tester.pump(const Duration(milliseconds: 90));
         expect(scale(6), inExclusiveRange(1, 1.1));
         if (effect == LyricScrollEffect.elastic) {
+          final initial = elastic(6).abs();
           expect(
-            elastic(6),
-            0,
-            reason: 'default entry starts before the mild rebound',
+            initial,
+            greaterThan(.1),
+            reason: 'whole-line spring carries the initial displacement',
           );
           await tester.pump(const Duration(milliseconds: 300));
-          expect(elastic(6).abs(), greaterThan(.1));
+          expect(elastic(6).abs(), lessThan(initial));
         }
         await tester.pumpWidget(const SizedBox.shrink());
         expect(tester.binding.transientCallbackCount, 0);

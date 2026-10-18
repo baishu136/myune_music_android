@@ -18,7 +18,7 @@ import 'karaoke_motion.dart';
 import 'lyric_seek_guide.dart';
 import 'lyric_scroll_motion.dart';
 import 'lyric_follow_scroll_controller.dart';
-import 'lyric_elastic_motion.dart';
+import 'lyric_staggered_spring.dart';
 import 'lyric_normalized_motion.dart';
 import 'lyric_phase_transition.dart';
 import 'lyric_frame_clock.dart';
@@ -29,6 +29,7 @@ import 'lyric_viewport_blur.dart';
 import 'lyric_plain_foreground.dart';
 import 'lyric_raster_pool.dart';
 import 'lyric_shared_focus.dart';
+import 'lyric_plain_prewarm.dart';
 
 export 'synthetic_karaoke_timing.dart';
 
@@ -244,11 +245,14 @@ class _LyricElasticPulse {
     this.lineDurationSeconds = 1.5,
     this.departingIndex,
     this.startedAt = Duration.zero,
+    this.topIndex = 0,
+    this.bottomIndex = 0,
   });
 
   final int id;
   final double displacement;
   final int anchorIndex;
+  final int topIndex, bottomIndex;
   final int? departingIndex;
   final Duration startedAt;
   final double lineDurationSeconds;
@@ -843,6 +847,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     duration: mobileLyricsDefaultScrollTransitionDuration,
   );
   final _sharedFocus = LyricSharedFocus();
+  final _plainPrewarm = LyricPlainPrewarm();
   LyricScrollDriver get _motion =>
       _usesRowElastic ? _springMotion : _normalizedMotion;
   final ValueNotifier<_LyricDebugSnapshot> _debugSnapshot = ValueNotifier(
@@ -1016,6 +1021,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   @override
   void didUpdateWidget(covariant MobileLyricsList oldWidget) {
+    if (widget.lines.isEmpty) _plainPrewarm.clear();
     super.didUpdateWidget(oldWidget);
     _karaokePresentationEnabled = _resolveKaraokePresentation();
     if (oldWidget.fontSize != widget.fontSize) {
@@ -1091,6 +1097,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
         oldWidget.textAlign != widget.textAlign;
     if (linesChanged) {
       _lyricContentRevision++;
+      _elasticPulse.value = _LyricElasticPulse(id: _elasticPulse.value.id + 1);
     }
     if (linesChanged || fontChanged || contentChanged) {
       _layoutInvalid = true;
@@ -1456,6 +1463,31 @@ class _MobileLyricsListState extends State<MobileLyricsList>
               );
         final isLongJump = visualDisplacement.abs() + .5 < displacement.abs();
         final lineDuration = _lineDurationSeconds(anchorIndex ?? widget.active);
+        final anchor = (anchorIndex ?? widget.active).clamp(
+          0,
+          _itemOffsets.length - 1,
+        );
+        var top = anchor, bottom = anchor;
+        final anchorY = _viewportHeight * _focusAnchor;
+        while (top > 0 &&
+            _itemOffsets[top - 1] -
+                    clampedTarget +
+                    anchorY +
+                    _itemHeights[top - 1] / 2 >=
+                0) {
+          top--;
+        }
+        while (bottom + 1 < _itemOffsets.length &&
+            _itemOffsets[bottom + 1] -
+                    clampedTarget +
+                    anchorY -
+                    _itemHeights[bottom + 1] / 2 <=
+                _viewportHeight) {
+          bottom++;
+        }
+        _stopMotion();
+        _scrollController.jumpTo(clampedTarget);
+        _motion.sync(clampedTarget, viewportExtent: _viewportHeight);
         _elasticPulse.value = _LyricElasticPulse(
           id: previous.id + 1,
           displacement: visualDisplacement,
@@ -1465,8 +1497,11 @@ class _MobileLyricsListState extends State<MobileLyricsList>
           lineDurationSeconds: isLongJump
               ? lineDuration.clamp(.35, .75).toDouble()
               : lineDuration,
+          topIndex: top,
+          bottomIndex: bottom,
         );
       }
+      return true;
     }
 
     var animationStart = _scrollController.offset;
@@ -2139,6 +2174,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     widget.controller?._detach(this);
     _frameClock.dispose();
     _sharedFocus.dispose();
+    _plainPrewarm.clear();
     _prewarmGeneration++;
     _prewarm.clear();
     _scrollControllerState?.dispose();
@@ -2154,12 +2190,58 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     super.dispose();
   }
 
+  void _updatePlainPrewarm(BuildContext context) {
+    final style = _prewarmStyle;
+    if (style == null) return;
+    final bright =
+        widget.brightForeground ||
+        Theme.of(context).brightness == Brightness.dark;
+    final inactive = bright ? Colors.white : const Color(0xFF757575);
+    final activeColor = widget.highlightActiveLine
+        ? Colors.white
+        : widget.activeColor ?? Theme.of(context).colorScheme.primary;
+    _plainPrewarm.update(
+      lines: widget.lines,
+      active: _seekTargetIndex ?? widget.active,
+      rate: widget.playbackRate,
+      visible: _motionVisible && !_isManuallyBrowsing,
+      eligible: (line) =>
+          !line.isInterlude &&
+          !canAnimateLyricLine(
+            line,
+            _karaokePresentationEnabled,
+            widget.karaokeLyricsMode,
+          ),
+      width: mobileLyricScaleSafeContentWidth(
+        (_layoutWidth - mobileLyricsHorizontalInset(widget.textAlign) * 2)
+            .clamp(1.0, double.infinity),
+      ),
+      dpr: _prewarmPixelRatio,
+      style: style,
+      align: widget.textAlign,
+      direction: _layoutDirection!,
+      scaler: _prewarmScaler,
+      locale: _prewarmLocale,
+      inactive: inactive,
+      activeColor: activeColor,
+    );
+    for (final index in _plainPrewarm.indices) {
+      _plainPrewarm
+          .at(index)
+          ?.measureHeight(
+            _itemHeights[index] / mobileLyricsActiveScale -
+                mobileLyricsVerticalPadding * 2,
+          );
+    }
+  }
+
   @override
   Widget build(BuildContext context) => widget.lines.isEmpty
       ? const Center(child: Text('暂无歌词'))
       : LayoutBuilder(
           builder: (context, constraints) {
             _ensureLayoutMetrics(context, constraints);
+            _updatePlainPrewarm(context);
             final displayedActive = (_seekTargetIndex ?? widget.active).clamp(
               -1,
               widget.lines.length - 1,
@@ -2309,9 +2391,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                                   'mobile_lyric_elastic_${_lyricContentRevision}_$index',
                                 ),
                                 index: index,
-                                splitPhysicalRows: _hasChineseLyric(
-                                  widget.lines[index].texts.join('\n'),
-                                ),
+                                splitPhysicalRows: false,
                                 fontSize: widget.fontSize,
                                 contentCenter:
                                     _itemOffsets[index] +
@@ -2328,14 +2408,15 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                               phase: _usesRowElastic || _isManuallyBrowsing
                                   ? null
                                   : _sharedFocus,
-                              child: LyricRasterScope(
-                                rank: _usesRowElastic
-                                    ? 9999
-                                    : _normalGlowRank(
-                                        index - displayedActive,
-                                        _motionVisible,
-                                      ),
-                                child: item,
+                              child: LyricPlainPrewarmScope(
+                                entry: _plainPrewarm.at(index),
+                                child: LyricRasterScope(
+                                  rank: _normalGlowRank(
+                                    index - displayedActive,
+                                    _motionVisible,
+                                  ),
+                                  child: item,
+                                ),
                               ),
                             );
                           },
@@ -2570,7 +2651,7 @@ class _ElasticLyricLine extends StatefulWidget {
 }
 
 class _ElasticLyricLineState extends State<_ElasticLyricLine> {
-  final _frame = _LyricElasticFrame();
+  final _frame = LyricStaggeredSpring();
   Duration _origin = Duration.zero;
   bool _following = false;
   int _lastPulseId = 0;
@@ -2601,7 +2682,7 @@ class _ElasticLyricLineState extends State<_ElasticLyricLine> {
       return;
     }
     if (widget.frameClock.elapsed - pulse.startedAt >=
-        const Duration(milliseconds: 860)) {
+        const Duration(milliseconds: 2500)) {
       _frame.clear();
       return;
     }
@@ -2621,18 +2702,14 @@ class _ElasticLyricLineState extends State<_ElasticLyricLine> {
       _frame.clear();
       return;
     }
-    final role = widget.index == pulse.anchorIndex
-        ? LyricElasticRole.arriving
-        : widget.index == pulse.departingIndex
-        ? LyricElasticRole.departing
-        : LyricElasticRole.surrounding;
     _frame.retarget(
       displacement: pulse.displacement,
-      role: role,
-      fontSize: widget.fontSize,
-      viewportHeight: widget.viewportHeight,
-      centre: centre,
-      lineSeconds: pulse.lineDurationSeconds,
+      step: pulse.displacement >= 0
+          ? widget.index - pulse.topIndex
+          : pulse.bottomIndex - widget.index,
+      position:
+          (widget.index - pulse.topIndex) /
+          math.max(1, pulse.bottomIndex - pulse.topIndex),
     );
     _startFrames(pulse.startedAt);
   }
@@ -3119,13 +3196,7 @@ class _LyricLineItem extends StatelessWidget {
               preservePhase: true,
               scale: _scale,
               duration: focusDuration,
-              curve: _LyricElasticScope.of(context) != null
-                  ? normalExit
-                        ? const LyricElasticRetreatCurve()
-                        : active
-                        ? const LyricElasticArrivalCurve()
-                        : focusCurve
-                  : focusCurve,
+              curve: focusCurve,
               alignment: _alignment,
               // Keep the expensive glyph and glow raster below the transform.
               // The scale-safe parent reserves the transformed paint bounds, so
@@ -3491,10 +3562,10 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow>
       final rasterHeight = ((_layout!.height + padding * 2) * pixelRatio)
           .ceil();
       final pixels = rasterWidth * rasterHeight;
-      // Cache only complete native-density glows. Small/hard shadows, elastic
-      // rows and oversized paragraphs retain their original vector painter.
+      // Cache complete native-density glows, including whole-line springs.
+      // Small/hard shadows and oversized paragraphs retain their vector paint.
       final eligible =
-          elastic == null &&
+          elastic?.physical != true &&
           config.blurRadius >= 6 &&
           pixelRatio >= 1 &&
           pixelRatio <= 4 &&

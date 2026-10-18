@@ -1,0 +1,142 @@
+{
+  "capturedOn": "2026-10-18",
+  "targetTag": "v1.0.0-android.412",
+  "targetDate": "2026-10-18",
+  "publishedBeforeThisRelease": [
+    {
+      "tag": "v1.0.0-android.387",
+      "publishedAt": "2026-10-13T10:24:26Z",
+      "date": "2026-10-13",
+      "prerelease": false,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v1.0.0-android.387"
+    },
+    {
+      "tag": "v1.0.0-android.353",
+      "publishedAt": "2026-10-03T11:47:34Z",
+      "date": "2026-10-03",
+      "prerelease": false,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v1.0.0-android.353"
+    },
+    {
+      "tag": "v0.9.9-android.325",
+      "publishedAt": "2026-09-22T11:06:27Z",
+      "date": "2026-09-22",
+      "prerelease": false,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.9-android.325"
+    },
+    {
+      "tag": "v0.9.9-android.244",
+      "publishedAt": "2026-09-04T12:44:21Z",
+      "date": "2026-09-04",
+      "prerelease": false,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.9-android.244"
+    },
+    {
+      "tag": "v0.9.8-android.129",
+      "publishedAt": "2026-08-26T01:04:36Z",
+      "date": "2026-08-26",
+      "prerelease": false,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.8-android.129"
+    },
+    {
+      "tag": "v0.9.8-android.126",
+      "publishedAt": "2026-08-24T07:23:35Z",
+      "date": "2026-08-24",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.8-android.126"
+    },
+    {
+      "tag": "v0.9.8-android.115",
+      "publishedAt": "2026-08-22T09:31:43Z",
+      "date": "2026-08-22",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.8-android.115"
+    },
+    {
+      "tag": "v0.9.8-android.114",
+      "publishedAt": "2026-08-22T07:51:02Z",
+      "date": "2026-08-22",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.8-android.114"
+    },
+    {
+      "tag": "v0.9.7-android.77",
+      "publishedAt": "2026-08-20T11:55:24Z",
+      "date": "2026-08-20",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.7-android.77"
+    },
+    {
+      "tag": "v0.9.4-android.53",
+      "publishedAt": "2026-08-14T08:24:15Z",
+      "date": "2026-08-14",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.4-android.53"
+    },
+    {
+      "tag": "v0.9.3-android.46",
+      "publishedAt": "2026-08-13T11:05:47Z",
+      "date": "2026-08-13",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.3-android.46"
+    },
+    {
+      "tag": "v0.9.3-android.34",
+      "publishedAt": "2026-08-12T02:34:50Z",
+      "date": "2026-08-12",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.3-android.34"
+    },
+    {
+      "tag": "v0.9.3-android.23",
+      "publishedAt": "2026-08-11T03:33:23Z",
+      "date": "2026-08-11",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.3-android.23"
+    },
+    {
+      "tag": "v0.9.3-android.13",
+      "publishedAt": "2026-08-10T02:22:28Z",
+      "date": "2026-08-10",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.3-android.13"
+    },
+    {
+      "tag": "v0.9.3-android.4",
+      "publishedAt": "2026-08-09T04:21:06Z",
+      "date": "2026-08-09",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.3-android.4"
+    },
+    {
+      "tag": "v0.9.3-android.1",
+      "publishedAt": "2026-08-08T11:30:39Z",
+      "date": "2026-08-08",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.3-android.1"
+    },
+    {
+      "tag": "v0.9.2-android.3",
+      "publishedAt": "2026-08-08T07:28:33Z",
+      "date": "2026-08-08",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.2-android.3"
+    },
+    {
+      "tag": "v0.9.2-android.2",
+      "publishedAt": "2026-08-08T07:17:24Z",
+      "date": "2026-08-08",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.2-android.2"
+    },
+    {
+      "tag": "v0.9.2-android.1",
+      "publishedAt": "2026-08-08T03:00:49Z",
+      "date": "2026-08-08",
+      "prerelease": true,
+      "url": "https://github.com/baishu136/myune_music_android/releases/tag/v0.9.2-android.1"
+    }
+  ],
+  "source": "https://api.github.com/repos/baishu136/myune_music_android/releases?per_page=100",
+  "releaseApiSnapshotSha256": "96E65FB3A034486CB6380ECDCDDB05777FBB5DDCD1D594158F45C725E70A6109"
+}

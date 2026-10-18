@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'lyric_plain_raster.dart';
 import 'lyric_raster_pool.dart';
+import 'lyric_plain_prewarm.dart';
 
 final _nativeColorGlyph = RegExp(
   r'[\u00a9\u00ae\u200d\u20e3\u2600-\u27ff\ufe0f\u{1f000}-\u{1faff}]',
@@ -59,6 +60,7 @@ class _LyricPlainForegroundState extends State<LyricPlainForeground> {
       style: inkStyle,
     );
     final rank = LyricRasterScope.rankOf(context);
+    final prewarm = LyricPlainPrewarmScope.of(context);
     if (rank != null) {
       ink = LyricPlainRaster(
         identity: (
@@ -73,6 +75,9 @@ class _LyricPlainForegroundState extends State<LyricPlainForeground> {
         ),
         pixelRatio: MediaQuery.devicePixelRatioOf(context),
         rank: rank,
+        prepared: prewarm?.entry,
+        managed: prewarm != null,
+        inkColor: _opaqueColor!,
         child: ink,
       );
     }

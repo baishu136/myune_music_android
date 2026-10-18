@@ -35,7 +35,7 @@ class _PlayModeButtonState extends State<PlayModeButton> {
       iconColor = widget.activeColor;
     } else if (widget.playMode == PlayMode.repeatShuffle) {
       icon = Icons.repeat;
-      tooltip = '循环播放后随机播放';
+      tooltip = '循环播放，随机切歌';
       iconColor = widget.activeColor;
     } else if (widget.playMode == PlayMode.repeatOne) {
       icon = Icons.repeat_one;

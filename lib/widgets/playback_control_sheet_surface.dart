@@ -6,9 +6,11 @@ class PlaybackControlSheetSurface extends StatelessWidget {
     super.key,
     required this.fluid,
     required this.child,
+    this.borderRadius = radius,
   });
   final bool fluid;
   final Widget child;
+  final BorderRadius borderRadius;
   static const radius = BorderRadius.vertical(top: Radius.circular(28));
   static final _blur = ui.ImageFilter.blur(sigmaX: 7, sigmaY: 7);
   static final _fluidBlur = ui.ImageFilter.blur(sigmaX: 5, sigmaY: 5);
@@ -20,7 +22,7 @@ class PlaybackControlSheetSurface extends StatelessWidget {
         ? Colors.white
         : theme.colorScheme.outlineVariant;
     return ClipRRect(
-      borderRadius: radius,
+      borderRadius: borderRadius,
       child: BackdropFilter(
         key: const ValueKey('playback-feature-backdrop-filter'),
         filter: fluid ? _fluidBlur : _blur,
@@ -29,12 +31,12 @@ class PlaybackControlSheetSurface extends StatelessWidget {
             color: theme.colorScheme.surface.withValues(
               alpha: fluid ? .28 : .10,
             ),
-            borderRadius: radius,
+            borderRadius: borderRadius,
             border: Border.all(color: border.withValues(alpha: .72)),
           ),
           child: Material(
             color: Colors.transparent,
-            shape: const RoundedRectangleBorder(borderRadius: radius),
+            shape: RoundedRectangleBorder(borderRadius: borderRadius),
             clipBehavior: Clip.antiAlias,
             child: child,
           ),

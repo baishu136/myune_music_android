@@ -13,6 +13,11 @@ import 'package:myune_music/widgets/long_press_icon_button.dart';
 import 'package:myune_music/widgets/playback_control_sheet_surface.dart';
 
 class _Library extends ChangeNotifier implements PlaylistContentNotifier {
+  @override
+  Future<Uint8List?> ensureSongThumbnail(
+    String filePath, {
+    ArtworkRequestPriority priority = ArtworkRequestPriority.near,
+  }) async => null;
   final items = [
     Playlist(
       id: Playlist.libraryId,
@@ -51,6 +56,15 @@ class _Library extends ChangeNotifier implements PlaylistContentNotifier {
   }
 
   @override
+  Future<int> removeSongsFromPlaylistById(String id, List<String> paths) async {
+    final removed = items
+        .singleWhere((item) => item.id == id)
+        .removeSongPaths(paths);
+    notifyListeners();
+    return removed;
+  }
+
+  @override
   Future<bool> saveQueueAsPlaylist(String name, List<Song> songs) async {
     items.add(
       Playlist(
@@ -65,6 +79,8 @@ class _Library extends ChangeNotifier implements PlaylistContentNotifier {
   @override
   dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
+
+class PlaylistWindowFixture408 extends _Library {}
 
 void main() {
   testWidgets(
@@ -118,7 +134,7 @@ void main() {
         tester.widget<BottomSheet>(find.byType(BottomSheet)).backgroundColor,
         Colors.transparent,
       );
-      await tester.tap(find.text('循环播放后随机播放'));
+      await tester.tap(find.text('循环播放，随机切歌'));
       await tester.pump();
       expect(model.mode, PlayMode.repeatShuffle);
       await tester.tap(find.byTooltip('关闭'));
@@ -180,7 +196,7 @@ void main() {
         ),
       );
       await tester.pumpAndSettle();
-      await tester.tap(find.text('循环播放后随机播放'));
+      await tester.tap(find.text('循环播放，随机切歌'));
       await tester.pump();
       expect(model.mode, PlayMode.repeatShuffle);
       final switches = find.byType(SwitchListTile);
@@ -207,7 +223,7 @@ void main() {
   );
 
   testWidgets(
-    'playlist sheet adds once, excludes the root and creates a named playlist containing the captured song',
+    'playlist sheet toggles membership, excludes the root and creates a named playlist containing the captured song',
     (tester) async {
       final model = _Library();
       await preparePreview(tester);
@@ -234,9 +250,10 @@ void main() {
       expect(find.text('总歌曲'), findsNothing);
       await tester.tap(find.text('收藏'));
       await tester.pumpAndSettle();
+      expect(model.items[1].songFilePaths, ['current.mp3']);
       await tester.tap(find.text('收藏'));
       await tester.pumpAndSettle();
-      expect(model.items[1].songFilePaths, ['current.mp3']);
+      expect(model.items[1].songFilePaths, isEmpty);
       await tester.tap(find.text('新建歌单'));
       await tester.pumpAndSettle();
       await tester.enterText(find.byType(TextField), '新歌单');
@@ -267,13 +284,27 @@ void main() {
           ),
         ),
       );
-      await tester.longPress(find.byType(IconButton));
+      final hold = await tester.startGesture(
+        tester.getCenter(find.byType(IconButton)),
+      );
+      await tester.pump(const Duration(milliseconds: 499));
+      expect(holds, 0);
+      await tester.pump(const Duration(milliseconds: 1));
+      await hold.up();
       await tester.pumpAndSettle();
       expect(holds, 1);
       expect(taps, 0);
       await tester.tap(find.byType(IconButton));
       await tester.pumpAndSettle();
       expect(taps, 1);
+      final cancelled = await tester.startGesture(
+        tester.getCenter(find.byType(IconButton)),
+      );
+      await tester.pump(const Duration(milliseconds: 250));
+      await cancelled.moveBy(const Offset(60, 0));
+      await tester.pump(const Duration(milliseconds: 500));
+      await cancelled.up();
+      expect(holds, 1);
     },
   );
 }

@@ -6,53 +6,55 @@ import 'package:myune_music/widgets/lyric_elastic_motion.dart';
 import 'package:myune_music/widgets/lyric_normalized_motion.dart';
 import 'package:myune_music/widgets/lyric_scroll_motion.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
+import 'package:myune_music/widgets/lyric_raster_pool.dart';
 
 void main() {
-  testWidgets('Chinese glow reuses a bounded raster while physical rows move', (
-    tester,
-  ) async {
-    final key = GlobalKey<_HostState>();
-    await tester.pumpWidget(
-      MaterialApp(
-        home: SizedBox(
-          height: 500,
-          width: 210,
-          child: _Host(key: key, glow: true),
-        ),
-      ),
-    );
-    await tester.pumpAndSettle();
-    dynamic pictureCache() => tester
-        .widgetList<CustomPaint>(
-          find.descendant(
-            of: find.byKey(const ValueKey('mobile_lyric_0')),
-            matching: find.byKey(const ValueKey('mobile_lyric_glow_layer')),
+  testWidgets(
+    'Chinese whole-line springs reuse the shared-budget glow raster',
+    (tester) async {
+      final key = GlobalKey<_HostState>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Material(
+            child: SizedBox(
+              height: 500,
+              width: 210,
+              child: _Host(key: key, glow: true),
+            ),
           ),
-        )
-        .map((w) {
-          final dynamic p = w.painter;
-          return p.pictures;
-        })
-        .first;
-    for (var i = 0; i < 120 && pictureCache().raster == null; i++) {
-      await tester.runAsync(
-        () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        ),
       );
-      await tester.pump(const Duration(milliseconds: 20));
-    }
-    final dynamic cache = pictureCache(), raster = cache.raster;
-    expect(raster, isNotNull);
-    expect(raster.width * raster.height * 4, lessThanOrEqualTo(1048576));
-    key.currentState!.active(1);
-    await tester.pump();
-    for (var i = 0; i < 20; i++) {
-      await tester.pump(const Duration(milliseconds: 16));
-    }
-    expect(identical(pictureCache().raster, raster), true);
-    await tester.pumpWidget(const SizedBox());
-    await tester.pump();
-    expect(tester.takeException(), isNull);
-  });
+      await tester.pumpAndSettle();
+      MobileLyricGlowPainter pictureCache() => tester
+          .widgetList<CustomPaint>(
+            find.descendant(
+              of: find.byKey(const ValueKey('mobile_lyric_0')),
+              matching: find.byKey(const ValueKey('mobile_lyric_glow_layer')),
+            ),
+          )
+          .map((w) => w.painter)
+          .whereType<MobileLyricGlowPainter>()
+          .first;
+      for (var i = 0; i < 120 && pictureCache().preparedRaster == null; i++) {
+        await tester.runAsync(
+          () => Future<void>.delayed(const Duration(milliseconds: 10)),
+        );
+        await tester.pump(const Duration(milliseconds: 20));
+      }
+      final raster = pictureCache().preparedRaster;
+      expect(raster, isNotNull);
+      expect(LyricRasterPool.pixels, lessThanOrEqualTo(LyricRasterPool.limit));
+      key.currentState!.active(1);
+      await tester.pump();
+      for (var i = 0; i < 20; i++) {
+        await tester.pump(const Duration(milliseconds: 16));
+      }
+      expect(pictureCache().preparedRaster, same(raster));
+      await tester.pumpWidget(const SizedBox());
+      await tester.pump();
+      expect(tester.takeException(), isNull);
+    },
+  );
   test(
     'delayed frames follow the analytic wall-time path without lost time',
     () {
@@ -137,41 +139,37 @@ void main() {
       expect(motion.value((hz ~/ 3) / hz), closeTo(motion.value(1 / 3), 1e-12));
     }
   });
-  testWidgets('Chinese physical rows move separately without repeated layout', (
-    tester,
-  ) async {
-    final key = GlobalKey<_HostState>();
-    await tester.pumpWidget(
-      MaterialApp(
-        home: SizedBox(height: 500, width: 210, child: _Host(key: key)),
-      ),
-    );
-    await tester.pumpAndSettle();
-    key.currentState!.active(1);
-    await tester.pump();
-    final row = find.byKey(const ValueKey('mobile_lyric_1'));
-    final paints = find.descendant(of: row, matching: find.byType(CustomPaint));
-    final dynamic painter = tester
-        .widgetList<CustomPaint>(paints)
-        .map((w) => w.painter)
-        .firstWhere(
-          (p) => p.runtimeType.toString() == '_ElasticPhysicalPainter',
-        );
-    final dynamic frame = painter.frame;
-    await tester.pump(const Duration(milliseconds: 340));
-    expect(frame.offset(0).abs(), greaterThan(.05));
-    expect((frame.offset(0) - frame.offset(1)).abs(), greaterThan(.001));
-    final layouts = debugElasticPhysicalLayoutCount;
-    for (var i = 0; i < 10; i++) {
-      await tester.pump(const Duration(milliseconds: 16));
-    }
-    expect(debugElasticPhysicalLayoutCount, layouts);
-    await tester.pumpAndSettle();
-    expect(frame.settled, true);
-    expect(frame.offset(0), 0);
-    expect(tester.binding.hasScheduledFrame, false);
-    expect(tester.takeException(), isNull);
-  });
+  testWidgets(
+    'Chinese wrapped paragraphs move as one line and let the clock sleep',
+    (tester) async {
+      final key = GlobalKey<_HostState>();
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(height: 500, width: 210, child: _Host(key: key)),
+        ),
+      );
+      await tester.pumpAndSettle();
+      final physicalLayouts = debugElasticPhysicalLayoutCount;
+      key.currentState!.active(1);
+      await tester.pump();
+      Transform transform() => tester.widget<Transform>(
+        find.byKey(const ValueKey('mobile_lyric_elastic_transform_1')),
+      );
+      final initial = transform().transform.storage[13];
+      expect(initial.abs(), greaterThan(10));
+      await tester.pump(const Duration(milliseconds: 340));
+      expect(transform().transform.storage[13], isNot(initial));
+      expect(
+        debugElasticPhysicalLayoutCount,
+        physicalLayouts,
+        reason: 'whole rows must not create split-band layouts',
+      );
+      await tester.pumpAndSettle();
+      expect(transform().transform.storage[13], 0);
+      expect(tester.binding.hasScheduledFrame, false);
+      expect(tester.takeException(), isNull);
+    },
+  );
   testWidgets(
     'ordinary and elastic row entries both retain their first-frame position',
     (tester) async {
@@ -235,6 +233,7 @@ class _HostState extends State<_Host> {
         : LyricScrollEffect.standard,
     karaokeLyricsEnabled: false,
     glowEnabled: widget.glow,
+    glowRadius: 12,
     isPlaying: true,
     fontSize: 22,
     lineBlurEnabled: false,

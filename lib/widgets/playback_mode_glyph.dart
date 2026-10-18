@@ -48,32 +48,37 @@ class _RepeatShufflePainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round;
     canvas.drawPath(
       Path()
-        ..moveTo(5, 6)
-        ..lineTo(8, 6)
-        ..cubicTo(12, 6, 13, 18, 18, 18)
-        ..lineTo(21, 18)
-        ..moveTo(18, 15)
-        ..lineTo(21, 18)
-        ..lineTo(18, 21)
-        ..moveTo(5, 18)
-        ..lineTo(8, 18)
-        ..cubicTo(12, 18, 13, 6, 18, 6)
-        ..lineTo(21, 6)
-        ..moveTo(18, 3)
-        ..lineTo(21, 6)
-        ..lineTo(18, 9)
-        ..moveTo(5, 6)
-        ..cubicTo(.5, 6, .5, 18, 5, 18),
+        ..moveTo(3, 10)
+        ..lineTo(3, 7)
+        ..quadraticBezierTo(3, 5, 5, 5)
+        ..lineTo(20, 5)
+        ..moveTo(17, 2)
+        ..lineTo(20, 5)
+        ..lineTo(17, 8)
+        ..moveTo(21, 14)
+        ..lineTo(21, 17)
+        ..quadraticBezierTo(21, 19, 19, 19)
+        ..lineTo(4, 19)
+        ..moveTo(7, 16)
+        ..lineTo(4, 19)
+        ..lineTo(7, 22),
       pen,
     );
-    pen.strokeWidth = 1.5;
+    pen.strokeWidth = 1.35;
     canvas.drawPath(
       Path()
-        ..moveTo(5.2, 10)
-        ..lineTo(6.6, 9.2)
-        ..lineTo(6.6, 14.8)
-        ..moveTo(5.4, 14.8)
-        ..lineTo(7.8, 14.8),
+        ..moveTo(8, 9)
+        ..lineTo(9, 9)
+        ..cubicTo(11.5, 9, 12.5, 15, 15.5, 15)
+        ..moveTo(14, 13.5)
+        ..lineTo(15.5, 15)
+        ..lineTo(14, 16.5)
+        ..moveTo(8, 15)
+        ..lineTo(9, 15)
+        ..cubicTo(11.5, 15, 12.5, 9, 15.5, 9)
+        ..moveTo(14, 7.5)
+        ..lineTo(15.5, 9)
+        ..lineTo(14, 10.5),
       pen,
     );
     canvas.restore();

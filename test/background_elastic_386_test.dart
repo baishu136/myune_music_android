@@ -78,71 +78,70 @@ void main() {
       });
     },
   );
-  testWidgets(
-    'coincident equal pigments diffuse without a circular rim',
-    (tester) async {
-      await tester.runAsync(() async {
-        final shader = (await ui.FragmentProgram.fromAsset(
-          'shaders/fluid_background.frag',
-        )).fragmentShader();
-        const palette = FluidPalette(
-          Colors.red,
-          Colors.red,
-          Colors.red,
-          Colors.red,
-          baseColor: Colors.black,
+  testWidgets('coincident equal pigments diffuse without a circular rim', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final shader = (await ui.FragmentProgram.fromAsset(
+        'shaders/fluid_background.frag',
+      )).fragmentShader();
+      const palette = FluidPalette(
+        Colors.red,
+        Colors.red,
+        Colors.red,
+        Colors.red,
+        baseColor: Colors.black,
+      );
+      final recorder = ui.PictureRecorder();
+      try {
+        FluidFrameUniforms().write(
+          shader,
+          size: const Size(100, 200),
+          time: 4,
+          motion: 1,
+          dim: 0,
+          source: palette,
+          target: palette,
         );
-        final recorder = ui.PictureRecorder();
-        try {
-          FluidFrameUniforms().write(
-            shader,
-            size: const Size(100, 200),
-            time: 4,
-            motion: 1,
-            dim: 0,
-            source: palette,
-            target: palette,
-          );
-          for (var f = 0; f < 4; f++) {
-            shader.setFloat(6 + f * 2, .5);
-            shader.setFloat(7 + f * 2, .5);
-            for (var c = 0; c < 3; c++) {
-              shader.setFloat(14 + f * 3 + c, c == 0 ? 1 : 0);
-            }
+        for (var f = 0; f < 4; f++) {
+          shader.setFloat(6 + f * 2, .5);
+          shader.setFloat(7 + f * 2, .5);
+          for (var c = 0; c < 3; c++) {
+            shader.setFloat(14 + f * 3 + c, c == 0 ? 1 : 0);
           }
-          Canvas(recorder).drawRect(
-            const Rect.fromLTWH(0, 0, 100, 200),
-            Paint()..shader = shader,
+        }
+        Canvas(recorder).drawRect(
+          const Rect.fromLTWH(0, 0, 100, 200),
+          Paint()..shader = shader,
+        );
+        final picture = recorder.endRecording();
+        final image = await picture.toImage(100, 200);
+        try {
+          final rgba = (await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          ))!.buffer.asUint8List();
+          final samples = [
+            for (final y in [5, 50, 100, 150, 195]) rgba[(y * 100 + 50) * 4],
+          ];
+          expect(
+            samples.reduce(math.max) - samples.reduce(math.min),
+            lessThanOrEqualTo(6),
           );
-          final picture = recorder.endRecording();
-          final image = await picture.toImage(100, 200);
-          try {
-            final rgba = (await image.toByteData(
-              format: ui.ImageByteFormat.rawRgba,
-            ))!.buffer.asUint8List();
-            final samples = [
-              for (final y in [5, 50, 100, 150, 195]) rgba[(y * 100 + 50) * 4],
-            ];
-            expect(
-              samples.reduce(math.max) - samples.reduce(math.min),
-              lessThanOrEqualTo(6),
-            );
-            expect(samples[2], greaterThan(210));
-            for (var i = 0; i < rgba.length; i += 4) {
-              expect(rgba[i + 1], lessThanOrEqualTo(1));
-              expect(rgba[i + 2], lessThanOrEqualTo(1));
-              expect(rgba[i + 3], 255);
-            }
-          } finally {
-            image.dispose();
-            picture.dispose();
+          expect(samples[2], greaterThan(210));
+          for (var i = 0; i < rgba.length; i += 4) {
+            expect(rgba[i + 1], lessThanOrEqualTo(1));
+            expect(rgba[i + 2], lessThanOrEqualTo(1));
+            expect(rgba[i + 3], 255);
           }
         } finally {
-          shader.dispose();
+          image.dispose();
+          picture.dispose();
         }
-      });
-    },
-  );
+      } finally {
+        shader.dispose();
+      }
+    });
+  });
   testWidgets(
     'large elastic row travel stays continuous on redirect and settles without layout frames',
     (tester) async {
@@ -157,50 +156,32 @@ void main() {
       await tester.pumpAndSettle();
       key.currentState!.active(1);
       await tester.pump();
-      dynamic painter(int index) {
-        final dynamic painter = tester
-            .widgetList<CustomPaint>(
-              find.descendant(
-                of: find.byKey(ValueKey('mobile_lyric_$index')),
-                matching: find.byType(CustomPaint),
-              ),
-            )
-            .map((w) => w.painter)
-            .firstWhere(
-              (p) => p.runtimeType.toString() == '_ElasticPhysicalPainter',
-            );
-        return painter;
-      }
-
-      dynamic frame(int index) => painter(index).frame;
-
-      final moving = frame(1);
-      final layouts = debugElasticPhysicalLayoutCount;
-      var maximum = 0.0;
-      for (var i = 0; i < 42; i++) {
+      double offset(int index) => tester
+          .widget<Transform>(
+            find.byKey(ValueKey('mobile_lyric_elastic_transform_$index')),
+          )
+          .transform
+          .storage[13];
+      final initial = offset(1).abs();
+      expect(initial, greaterThan(4));
+      for (var i = 0; i < 15; i++) {
         await tester.pump(const Duration(milliseconds: 16));
-        maximum = math.max(maximum, moving.offset(0).abs() as double);
       }
-      expect(maximum, greaterThan(4));
-      debugPrint(
-        'Elastic arriving physical row peak: $maximum px at font32; baseline 385: 2.0785474869768943 px',
+      final before = tester.getCenter(
+        find.byKey(const ValueKey('mobile_lyric_1')),
       );
-      final value = moving.offset(0) as double;
       key.currentState!.active(2);
       await tester.pump();
-      expect((moving.offset(0) as double) - value, closeTo(0, .01));
+      final after = tester.getCenter(
+        find.byKey(const ValueKey('mobile_lyric_1')),
+      );
+      expect(after.dy, closeTo(before.dy, .01));
       final layoutsAfterRedirect = debugElasticPhysicalLayoutCount;
-      final cachedPictures = painter(1).pictures;
-      expect(layoutsAfterRedirect, greaterThanOrEqualTo(layouts));
-      for (var i = 0; i < 60; i++) {
+      for (var i = 0; i < 120; i++) {
         await tester.pump(const Duration(milliseconds: 16));
       }
-      expect(
-        debugElasticPhysicalLayoutCount - layoutsAfterRedirect,
-        lessThanOrEqualTo(3),
-      );
-      expect(identical(painter(1).pictures, cachedPictures), isTrue);
-      expect(moving.offset(0), 0);
+      expect(debugElasticPhysicalLayoutCount, layoutsAfterRedirect);
+      expect(offset(1), 0);
       await tester.pumpAndSettle();
       expect(tester.binding.hasScheduledFrame, isFalse);
       expect(tester.takeException(), isNull);
