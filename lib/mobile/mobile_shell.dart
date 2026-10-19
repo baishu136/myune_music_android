@@ -570,8 +570,6 @@ class _MobileShellState extends State<MobileShell>
               ) &&
               notifier.isLibrarySongHidden(song),
         );
-    final screen = MediaQuery.sizeOf(context);
-    final isTablet = screen.shortestSide >= 600;
     final homeBackground = homeBackgroundPolicy(
       settings,
       hasSong: currentSong != null,
@@ -814,75 +812,7 @@ class _MobileShellState extends State<MobileShell>
           ),
         ],
       ),
-      body: isTablet
-          ? Row(
-              children: [
-                SafeArea(
-                  top: false,
-                  right: false,
-                  child: NavigationRail(
-                    backgroundColor: useHomeTheme
-                        ? Theme.of(
-                            context,
-                          ).colorScheme.surface.withValues(alpha: 0.78)
-                        : null,
-                    selectedIndex: _tab,
-                    onDestinationSelected: _selectTab,
-                    extended: screen.width >= 1100,
-                    labelType: screen.width >= 1100
-                        ? NavigationRailLabelType.none
-                        : NavigationRailLabelType.selected,
-                    groupAlignment: -0.75,
-                    destinations: const [
-                      NavigationRailDestination(
-                        icon: Icon(Icons.library_music_outlined),
-                        selectedIcon: Icon(Icons.library_music),
-                        label: Text('音乐库'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.playlist_play_outlined),
-                        selectedIcon: Icon(Icons.playlist_play),
-                        label: Text('歌单'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.person_outline),
-                        selectedIcon: Icon(Icons.person),
-                        label: Text('歌手'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.album_outlined),
-                        selectedIcon: Icon(Icons.album),
-                        label: Text('专辑'),
-                      ),
-                      NavigationRailDestination(
-                        icon: Icon(Icons.settings_outlined),
-                        selectedIcon: Icon(Icons.settings),
-                        label: Text('设置'),
-                      ),
-                    ],
-                  ),
-                ),
-                const VerticalDivider(width: 1),
-                Expanded(
-                  child: SafeArea(
-                    top: false,
-                    child: Align(
-                      alignment: Alignment.topCenter,
-                      child: ConstrainedBox(
-                        constraints: const BoxConstraints(maxWidth: 1200),
-                        child: Column(
-                          children: [
-                            Expanded(child: page),
-                            const _MiniPlayer(),
-                          ],
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            )
-          : page,
+      body: page,
       floatingActionButton:
           librarySelecting &&
               (_pendingPlaylistName != null || _pendingPlaylistId != null)
@@ -921,50 +851,48 @@ class _MobileShellState extends State<MobileShell>
               ),
             )
           : null,
-      bottomNavigationBar: isTablet
-          ? null
-          : Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                const _MiniPlayer(),
-                HomeNavigationSurface(
-                  child: NavigationBar(
-                    backgroundColor: Colors.transparent,
-                    selectedIndex: _tab,
-                    onDestinationSelected: _selectTab,
-                    surfaceTintColor: Colors.transparent,
-                    elevation: 0,
-                    destinations: const [
-                      NavigationDestination(
-                        icon: Icon(Icons.library_music_outlined),
-                        selectedIcon: Icon(Icons.library_music),
-                        label: '音乐库',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.playlist_play_outlined),
-                        selectedIcon: Icon(Icons.playlist_play),
-                        label: '歌单',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.person_outline),
-                        selectedIcon: Icon(Icons.person),
-                        label: '歌手',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.album_outlined),
-                        selectedIcon: Icon(Icons.album),
-                        label: '专辑',
-                      ),
-                      NavigationDestination(
-                        icon: Icon(Icons.settings_outlined),
-                        selectedIcon: Icon(Icons.settings),
-                        label: '设置',
-                      ),
-                    ],
-                  ),
+      bottomNavigationBar: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const _MiniPlayer(),
+          HomeNavigationSurface(
+            child: NavigationBar(
+              backgroundColor: Colors.transparent,
+              selectedIndex: _tab,
+              onDestinationSelected: _selectTab,
+              surfaceTintColor: Colors.transparent,
+              elevation: 0,
+              destinations: const [
+                NavigationDestination(
+                  icon: Icon(Icons.library_music_outlined),
+                  selectedIcon: Icon(Icons.library_music),
+                  label: '音乐库',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.playlist_play_outlined),
+                  selectedIcon: Icon(Icons.playlist_play),
+                  label: '歌单',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.person_outline),
+                  selectedIcon: Icon(Icons.person),
+                  label: '歌手',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.album_outlined),
+                  selectedIcon: Icon(Icons.album),
+                  label: '专辑',
+                ),
+                NavigationDestination(
+                  icon: Icon(Icons.settings_outlined),
+                  selectedIcon: Icon(Icons.settings),
+                  label: '设置',
                 ),
               ],
             ),
+          ),
+        ],
+      ),
     );
     Widget buildHomeBackground(Widget child) {
       final nextArtwork = currentSong == null
@@ -3151,7 +3079,6 @@ class _SongList extends StatelessWidget {
       (notifier) => (notifier.libraryRevision, notifier.playlistRevision),
     );
     final notifier = context.read<PlaylistContentNotifier>();
-    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
 
     Widget withPrefetch(Widget child, {required double itemExtent}) =>
         _ArtworkPrefetchViewport(
@@ -3491,46 +3418,6 @@ class _SongList extends StatelessWidget {
       );
     }
 
-    if (isTablet && !compact) {
-      return LayoutBuilder(
-        builder: (context, constraints) {
-          if (constraints.maxWidth < 500) {
-            return withPrefetch(
-              pinnedIndices.isNotEmpty
-                  ? buildPinnedSongsView(grid: false)
-                  : ListView.builder(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 6,
-                      ),
-                      itemCount: songs.length,
-                      itemBuilder: (context, index) =>
-                          buildSongTile(index, grid: false),
-                    ),
-              itemExtent: mobileSongListRowExtent,
-            );
-          }
-          final columns = (constraints.maxWidth / 360).ceil().clamp(2, 4);
-          const gridDelegate = SliverGridDelegateWithMaxCrossAxisExtent(
-            maxCrossAxisExtent: 420,
-            mainAxisExtent: 92,
-          );
-          return withPrefetch(
-            pinnedIndices.isNotEmpty
-                ? buildPinnedSongsView(grid: true, gridDelegate: gridDelegate)
-                : GridView.builder(
-                    padding: const EdgeInsets.fromLTRB(12, 10, 12, 18),
-                    gridDelegate: gridDelegate,
-                    itemCount: songs.length,
-                    itemBuilder: (context, index) =>
-                        buildSongTile(index, grid: true),
-                  ),
-            itemExtent: 92 / columns,
-          );
-        },
-      );
-    }
-
     return withPrefetch(
       pinnedIndices.isNotEmpty
           ? buildPinnedSongsView(grid: false)
@@ -3842,93 +3729,6 @@ class _MiniPlayer extends StatelessWidget {
     final notifier = context.read<PlaylistContentNotifier>();
     final song = playback.song;
     if (song == null) return const SizedBox.shrink();
-    final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
-    if (isTablet) {
-      final totalMs = playback.totalDuration.inMilliseconds;
-      return _NowPlayingArtworkWarmup(
-        song: song,
-        child: HomeGlassMaterial(
-          child: InkWell(
-            onTap: () => _openNowPlaying(context),
-            child: SizedBox(
-              height: 88,
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 18,
-                  vertical: 10,
-                ),
-                child: Row(
-                  children: [
-                    NowPlayingCoverHero(
-                      normalizedSongPath: song.normalizedPath,
-                      child: _Cover(song: song, size: 58),
-                    ),
-                    const SizedBox(width: 14),
-                    Expanded(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            song.title,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.titleMedium,
-                          ),
-                          Text(
-                            song.artist,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: Theme.of(context).textTheme.bodyMedium,
-                          ),
-                          const SizedBox(height: 5),
-                          ValueListenableBuilder<Duration>(
-                            valueListenable: notifier.positionListenable,
-                            builder: (context, position, _) {
-                              final positionMs = position.inMilliseconds.clamp(
-                                0,
-                                totalMs > 0 ? totalMs : 1,
-                              );
-                              return LinearProgressIndicator(
-                                value: totalMs > 0 ? positionMs / totalMs : 0,
-                                minHeight: 3,
-                                borderRadius: BorderRadius.circular(3),
-                              );
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(width: 22),
-                    IconButton(
-                      tooltip: '上一首',
-                      icon: const Icon(Icons.skip_previous),
-                      onPressed: () => notifier.playPrevious(),
-                    ),
-                    PlayPauseButton(
-                      isPlaying: playback.isPlaying,
-                      tooltip: playback.isPlaying ? '暂停' : '播放',
-                      color: Theme.of(context).colorScheme.onSecondaryContainer,
-                      backgroundColor: Theme.of(
-                        context,
-                      ).colorScheme.secondaryContainer,
-                      onPressed: playback.isPlaying
-                          ? notifier.pause
-                          : notifier.play,
-                    ),
-                    IconButton(
-                      tooltip: '下一首',
-                      icon: const Icon(Icons.skip_next),
-                      onPressed: () => notifier.playNext(),
-                    ),
-                  ],
-                ),
-              ),
-            ),
-          ),
-        ),
-      );
-    }
     return _NowPlayingArtworkWarmup(
       song: song,
       child: HomeGlassMaterial(
@@ -5482,7 +5282,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
 
     final mediaSize = MediaQuery.sizeOf(context);
     final isTablet = mediaSize.shortestSide >= 600;
-    final useSplitLayout = isTablet && mediaSize.width >= 840;
+    final useSplitLayout =
+        isTablet &&
+        mediaSize.width >= 840 &&
+        mediaSize.width > mediaSize.height;
     final visual = _buildNowPlayingVisual(
       context,
       notifier: notifier,
@@ -5505,26 +5308,18 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       settings: settings,
       song: song,
       totalMs: totalMs,
-      tablet: isTablet,
+      tablet: false,
       usePlaybackTheme: renderedPlaybackTheme,
       useFluidBackground: useFluidBackground,
     );
 
     final immersive = settings.playbackImmersiveEnabled && _showLyrics;
-    final framedControls = (useSplitLayout || isTablet)
+    final framedControls = isTablet
         ? Center(
             heightFactor: 1,
             child: ConstrainedBox(
-              constraints: BoxConstraints(maxWidth: useSplitLayout ? 480 : 560),
-              child: Card(
-                elevation: 0,
-                color: Theme.of(context).colorScheme.surfaceContainerLow
-                    .withValues(alpha: renderedPlaybackTheme ? .10 : 1),
-                child: Padding(
-                  padding: EdgeInsets.all(useSplitLayout ? 24 : 20),
-                  child: controls,
-                ),
-              ),
+              constraints: const BoxConstraints(maxWidth: 560),
+              child: controls,
             ),
           )
         : controls;
@@ -5712,7 +5507,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       seekIntentListenable: notifier.isContinuousSkipping
           ? null
           : notifier.lyricSeekIntentListenable,
-      fontSize: settings.fontSize,
+      fontSize: settings.lyricFontSizeFor(MediaQuery.sizeOf(context)),
       fontFamily: lyricFontFamily,
       fontWeight: settings.lyricFontWeight,
       textAlign: settings.lyricAlignment,
@@ -6514,7 +6309,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       settings,
       context.read<PlaylistContentNotifier>(),
     );
-    double currentSize = settings.fontSize;
+    final maximum = SettingsProvider.maxLyricFontSizeFor(
+      MediaQuery.sizeOf(context),
+    );
+    double currentSize = settings.lyricFontSizeFor(MediaQuery.sizeOf(context));
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
@@ -6551,7 +6349,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                           onPressed: () {
                             const value = SettingsProvider.defaultLyricFontSize;
                             setSheetState(() => currentSize = value);
-                            settings.setFontSize(value);
+                            settings.setFontSize(value, maximum: maximum);
                           },
                         ),
                       ],
@@ -6560,12 +6358,12 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                     Slider(
                       value: currentSize,
                       min: SettingsProvider.minLyricFontSize,
-                      max: SettingsProvider.maxLyricFontSize,
+                      max: maximum,
                       divisions: 24,
                       label: currentSize.toStringAsFixed(0),
                       onChanged: (value) {
                         setSheetState(() => currentSize = value);
-                        settings.setFontSize(value);
+                        settings.setFontSize(value, maximum: maximum);
                       },
                     ),
                     Text(
@@ -6595,7 +6393,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     if (_lyricPointers.length == 2) {
       final points = _lyricPointers.values.toList(growable: false);
       _lyricPinchStartDistance = (points[0] - points[1]).distance;
-      _lyricPinchStartFontSize = context.read<SettingsProvider>().fontSize;
+      _lyricPinchStartFontSize = context
+          .read<SettingsProvider>()
+          .lyricFontSizeFor(MediaQuery.sizeOf(context));
       _lyricCopyGestureTriggered = false;
       _lyricCopyHoldTimer?.cancel();
       if (_edgeSeekDirection != 0) return;
@@ -6603,7 +6403,12 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         if (!mounted || !_showLyrics || _lyricPointers.length != 2) return;
         final originalFontSize = _lyricPinchStartFontSize;
         if (originalFontSize != null) {
-          context.read<SettingsProvider>().previewFontSize(originalFontSize);
+          context.read<SettingsProvider>().previewFontSize(
+            originalFontSize,
+            maximum: SettingsProvider.maxLyricFontSizeFor(
+              MediaQuery.sizeOf(context),
+            ),
+          );
         }
         _lyricCopyGestureTriggered = true;
         _lyricPinchStartDistance = null;
@@ -6635,15 +6440,28 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       if ((scale - 1).abs() > .04) _lyricCopyHoldTimer?.cancel();
       final target = SettingsProvider.normalizedLyricFontSize(
         _lyricPinchStartFontSize! * scale,
+        maximum: SettingsProvider.maxLyricFontSizeFor(
+          MediaQuery.sizeOf(context),
+        ),
       );
-      context.read<SettingsProvider>().previewFontSize(target);
+      context.read<SettingsProvider>().previewFontSize(
+        target,
+        maximum: SettingsProvider.maxLyricFontSizeFor(
+          MediaQuery.sizeOf(context),
+        ),
+      );
     }
   }
 
   void _onLyricPointerEnd(PointerEvent event, SettingsProvider settings) {
     _lyricCopyHoldTimer?.cancel();
     if (_lyricPinchStartDistance != null && !_lyricCopyGestureTriggered) {
-      settings.setFontSize(settings.fontSize);
+      settings.setFontSize(
+        settings.lyricFontSizeFor(MediaQuery.sizeOf(context)),
+        maximum: SettingsProvider.maxLyricFontSizeFor(
+          MediaQuery.sizeOf(context),
+        ),
+      );
     }
     _lyricPointers.remove(event.pointer);
     _lyricPointerOrigins.remove(event.pointer);

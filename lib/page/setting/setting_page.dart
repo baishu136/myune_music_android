@@ -184,57 +184,6 @@ class _SettingPageState extends State<SettingPage> {
   @override
   Widget build(BuildContext context) {
     if (Platform.isAndroid) {
-      final isTablet = MediaQuery.sizeOf(context).shortestSide >= 600;
-      if (isTablet) {
-        final wideTablet = MediaQuery.sizeOf(context).width >= 1180;
-        final destinationIndex = _androidDestinations.indexWhere(
-          (section) => section.$1 == _selectedIndex,
-        );
-        return Row(
-          children: [
-            ColoredBox(
-              color: Theme.of(context).colorScheme.surfaceContainerLowest,
-              child: NavigationRail(
-                extended: wideTablet,
-                minExtendedWidth: 180,
-                selectedIndex: destinationIndex < 0 ? 0 : destinationIndex,
-                labelType: wideTablet
-                    ? NavigationRailLabelType.none
-                    : NavigationRailLabelType.selected,
-                groupAlignment: -0.75,
-                onDestinationSelected: (index) {
-                  _animateToAndroidSection(index);
-                },
-                destinations: _androidDestinations
-                    .map(
-                      (section) => NavigationRailDestination(
-                        icon: Icon(section.$3),
-                        selectedIcon: Icon(section.$3, size: 28),
-                        label: Text(section.$2),
-                      ),
-                    )
-                    .toList(),
-              ),
-            ),
-            VerticalDivider(
-              width: 1,
-              color: Theme.of(context).colorScheme.outlineVariant,
-            ),
-            Expanded(
-              child: ColoredBox(
-                color: Theme.of(context).colorScheme.surface,
-                child: Align(
-                  alignment: Alignment.topCenter,
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 920),
-                    child: _androidPager(),
-                  ),
-                ),
-              ),
-            ),
-          ],
-        );
-      }
       return Column(
         children: [
           SizedBox(

@@ -94,9 +94,9 @@ void main() {
         expect(opacity.opacity.value, inExclusiveRange(0, 1));
         await tester.pumpAndSettle();
         final full = tester.getRect(find.byKey(visualKey));
-        expect(full.top, split ? 20 : 8);
-        expect(full.bottom, split ? 778 : 788);
-        if (split) expect(full.width, closeTo(1044, .01));
+        expect(full.top, 8);
+        expect(full.bottom, 788);
+        if (split) expect(full.width, closeTo(1068, .01));
         expect(visualKey.currentContext, same(element));
         await tester.tapAt(normalControls.center);
         expect(taps, 0);

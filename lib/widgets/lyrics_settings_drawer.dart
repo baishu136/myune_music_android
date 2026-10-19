@@ -8,6 +8,9 @@ class LyricsSettingsDrawer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
+    final viewport = MediaQuery.sizeOf(context);
+    final maximum = SettingsProvider.maxLyricFontSizeFor(viewport);
+    final fontSize = settings.lyricFontSizeFor(viewport);
 
     return Drawer(
       child: SafeArea(
@@ -80,17 +83,20 @@ class LyricsSettingsDrawer extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Slider(
-                    value: settings.fontSize,
+                    value: fontSize,
                     min: SettingsProvider.minLyricFontSize,
-                    max: SettingsProvider.maxLyricFontSize,
+                    max: maximum,
                     divisions: 24,
-                    label: settings.fontSize.toStringAsFixed(1),
+                    label: fontSize.toStringAsFixed(1),
                     onChanged: (value) {
-                      context.read<SettingsProvider>().setFontSize(value);
+                      context.read<SettingsProvider>().setFontSize(
+                        value,
+                        maximum: maximum,
+                      );
                     },
                   ),
                   Text(
-                    '当前大小: ${settings.fontSize.toStringAsFixed(1)}',
+                    '当前大小: ${fontSize.toStringAsFixed(1)}',
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                 ],

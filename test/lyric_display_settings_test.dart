@@ -6,12 +6,12 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
   test(
-    'lyric size restores safely and all changes respect the 40 ceiling',
+    'saved tablet size survives restore while phone edits keep the 40 ceiling',
     () async {
       SharedPreferences.setMockInitialValues({'fontSize': 48.0});
       final settings = SettingsProvider();
       await settings.initializationFuture;
-      expect(settings.fontSize, 40);
+      expect(settings.fontSize, 48);
       await settings.setDesktopLyricsFontSize(48);
       expect(settings.desktopLyricsFontSize, 40);
       settings.previewFontSize(34);

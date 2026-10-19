@@ -77,8 +77,18 @@ class SettingsProvider with ChangeNotifier {
   static const double defaultLyricFontSize = 20.0;
   static const double minLyricFontSize = 12.0;
   static const double maxLyricFontSize = 40.0;
-  static double normalizedLyricFontSize(double size) => size.isFinite
-      ? size.clamp(minLyricFontSize, maxLyricFontSize)
+  static const double maxTabletLyricFontSize = 50.0;
+  static double maxLyricFontSizeFor(Size viewport) =>
+      viewport.shortestSide >= 600 ? maxTabletLyricFontSize : maxLyricFontSize;
+  double lyricFontSizeFor(Size viewport) => normalizedLyricFontSize(
+    _fontSize,
+    maximum: maxLyricFontSizeFor(viewport),
+  );
+  static double normalizedLyricFontSize(
+    double size, {
+    double maximum = maxLyricFontSize,
+  }) => size.isFinite
+      ? size.clamp(minLyricFontSize, maximum)
       : defaultLyricFontSize;
   static const _enableGlobalHotkeysKey = 'enableGlobalHotkeys';
   static const _playPauseHotKeyKey = 'playPauseHotKey';
@@ -443,6 +453,7 @@ class SettingsProvider with ChangeNotifier {
     _maxLinesPerLyric = _readPreference<int>(prefs, _prefsKey) ?? 2;
     _fontSize = normalizedLyricFontSize(
       _readDoublePreference(prefs, _fontSizeKey) ?? defaultLyricFontSize,
+      maximum: maxTabletLyricFontSize,
     );
     _useBlurBackground =
         _readPreference<bool>(prefs, _useBlurBackgroundKey) ?? true;
@@ -793,15 +804,15 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setInt(_prefsKey, value);
   }
 
-  void setFontSize(double size) async {
-    previewFontSize(size);
+  void setFontSize(double size, {double maximum = maxLyricFontSize}) async {
+    previewFontSize(size, maximum: maximum);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_fontSizeKey, _fontSize);
   }
 
   /// 更新歌词字号但暂不写入磁盘，供连续缩放手势预览使用。
-  void previewFontSize(double size) {
-    final next = normalizedLyricFontSize(size);
+  void previewFontSize(double size, {double maximum = maxLyricFontSize}) {
+    final next = normalizedLyricFontSize(size, maximum: maximum);
     if ((_fontSize - next).abs() < 0.01) return;
     _fontSize = next;
     notifyListeners();

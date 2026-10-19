@@ -74,12 +74,7 @@ class _ImmersiveLayoutState extends State<NowPlayingImmersiveLayout>
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1280),
             child: Padding(
-              padding: EdgeInsets.fromLTRB(
-                widget.tablet ? 28 : 16,
-                widget.tablet ? 20 : 8,
-                widget.tablet ? 28 : 16,
-                widget.tablet ? 22 : 12,
-              ),
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
               child: widget.split
                   ? LayoutBuilder(
                       builder: (context, constraints) => AnimatedBuilder(
