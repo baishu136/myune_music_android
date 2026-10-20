@@ -776,6 +776,7 @@ class MobileLyricsList extends StatefulWidget {
     this.scrollEffect = LyricScrollEffect.standard,
     this.elasticScrollEnabled = false,
     this.karaokeLyricsEnabled = true,
+    this.smoothKaraokeMotion = false,
     this.karaokeLyricsMode = KaraokeLyricsMode.timedOnly,
     this.lineBlurEnabled = false,
     this.highlightActiveLine = false,
@@ -809,6 +810,7 @@ class MobileLyricsList extends StatefulWidget {
   // Kept for existing callers; the playback page uses [scrollEffect].
   final bool elasticScrollEnabled;
   final bool karaokeLyricsEnabled;
+  final bool smoothKaraokeMotion;
   final KaraokeLyricsMode karaokeLyricsMode;
   final bool lineBlurEnabled;
   final bool highlightActiveLine;
@@ -1080,6 +1082,11 @@ class _MobileLyricsListState extends State<MobileLyricsList>
         );
       }
     }
+    if (oldWidget.smoothKaraokeMotion != widget.smoothKaraokeMotion) {
+      _prewarmGeneration++;
+      _prewarm.clear();
+      _prewarmHandledIndex = -1;
+    }
     final linesChanged = oldWidget.lines != widget.lines;
     final contentChanged = oldWidget.contentIdentity != widget.contentIdentity;
     if (contentChanged) {
@@ -1306,7 +1313,12 @@ class _MobileLyricsListState extends State<MobileLyricsList>
     final effective = timed
         ? line
         : synthesizeKaraokeTiming(line, nextTimestamp: next);
-    final identity = (effective, next, widget.karaokeLyricsMode);
+    final identity = (
+      effective,
+      next,
+      widget.karaokeLyricsMode,
+      widget.smoothKaraokeMotion,
+    );
     if (_prewarm.mounted.contains(identity) || _prewarm.identity == identity) {
       _prewarm.warmers[identity]?.call();
       _prewarm.cache?.prepareImage();
@@ -1342,6 +1354,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
             text: effective.texts.join('\n'),
             ranges: _karaokeRanges(effective),
             synthetic: !timed,
+            smoothMotion: widget.smoothKaraokeMotion,
             width: mobileLyricScaleSafeContentWidth(
               (_layoutWidth - mobileLyricsHorizontalInset(widget.textAlign) * 2)
                   .clamp(1.0, double.infinity),
@@ -2355,6 +2368,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
                                         widget.karaokeLyricsMode,
                                       )),
                               karaokeLyricsMode: widget.karaokeLyricsMode,
+                              smoothKaraokeMotion: widget.smoothKaraokeMotion,
                               nextTimestamp: index + 1 < widget.lines.length
                                   ? widget.lines[index + 1].timestamp
                                   : null,
@@ -2841,6 +2855,7 @@ class _LyricLineItem extends StatelessWidget {
     required this.lineSpreadEnabled,
     required this.highlightActiveLine,
     required this.karaokeLyricsEnabled,
+    required this.smoothKaraokeMotion,
     required this.karaokeLyricsMode,
     required this.nextTimestamp,
     required this.browseHighlighted,
@@ -2886,6 +2901,7 @@ class _LyricLineItem extends StatelessWidget {
   final bool lineSpreadEnabled;
   final bool highlightActiveLine;
   final bool karaokeLyricsEnabled;
+  final bool smoothKaraokeMotion;
   final KaraokeLyricsMode karaokeLyricsMode;
   final Duration? nextTimestamp;
   final bool browseHighlighted;
@@ -3070,7 +3086,13 @@ class _LyricLineItem extends StatelessWidget {
         seekTargetPosition: active ? seekTargetPosition : null,
         frameClock: frameClock,
         prewarm: prewarm,
-        cacheIdentity: (effectiveLine, nextTimestamp, karaokeLyricsMode),
+        cacheIdentity: (
+          effectiveLine,
+          nextTimestamp,
+          karaokeLyricsMode,
+          smoothKaraokeMotion,
+        ),
+        smoothKaraokeMotion: smoothKaraokeMotion,
         line: effectiveLine,
         synthetic: !hasTimedKaraoke,
         active: active,
@@ -3823,6 +3845,7 @@ class _KaraokeLyricText extends StatefulWidget {
     required this.prewarm,
     required this.line,
     required this.synthetic,
+    required this.smoothKaraokeMotion,
     required this.active,
     required this.position,
     required this.positionListenable,
@@ -3845,6 +3868,7 @@ class _KaraokeLyricText extends StatefulWidget {
   final _KaraokePrewarmSlot prewarm;
   final LyricLine line;
   final bool synthetic;
+  final bool smoothKaraokeMotion;
   final bool active;
   final Duration position;
   final ValueListenable<Duration>? positionListenable;
@@ -3890,7 +3914,11 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
         widget.seekTargetPosition ??
         widget.positionListenable?.value ??
         widget.position;
-    _clock = KaraokeMediaClock(initialPosition, rate: _playbackRate);
+    _clock = KaraokeMediaClock(
+      initialPosition,
+      rate: _playbackRate,
+      smoothMotion: widget.smoothKaraokeMotion,
+    );
     _paintClock = KaraokePaintClock(_clock);
     if (widget.seekTargetPosition != null) {
       _clock.seek(initialPosition, protectFromStaleSource: true);
@@ -3928,6 +3956,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
   @override
   void didUpdateWidget(covariant _KaraokeLyricText oldWidget) {
     super.didUpdateWidget(oldWidget);
+    _clock.smoothMotion = widget.smoothKaraokeMotion;
     final sourceChanged =
         oldWidget.positionListenable != widget.positionListenable;
     if (sourceChanged) {
@@ -4193,6 +4222,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
                 text: _text,
                 ranges: _ranges,
                 synthetic: widget.synthetic,
+                smoothMotion: widget.smoothKaraokeMotion,
                 width: width,
                 style: style,
                 textAlign: widget.textAlign,
@@ -4284,6 +4314,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
             text: _text,
             ranges: _ranges,
             synthetic: widget.synthetic,
+            smoothMotion: widget.smoothKaraokeMotion,
             width: maxWidth,
             style: inheritedStyle,
             textAlign: widget.textAlign,

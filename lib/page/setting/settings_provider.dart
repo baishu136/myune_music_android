@@ -78,17 +78,16 @@ class SettingsProvider with ChangeNotifier {
   static const double minLyricFontSize = 12.0;
   static const double maxLyricFontSize = 40.0;
   static const double maxTabletLyricFontSize = 50.0;
-  static double maxLyricFontSizeFor(Size viewport) =>
-      viewport.shortestSide >= 600 ? maxTabletLyricFontSize : maxLyricFontSize;
+  static double maxLyricFontSizeFor(Size viewport) => maxTabletLyricFontSize;
   double lyricFontSizeFor(Size viewport) => normalizedLyricFontSize(
     _fontSize,
     maximum: maxLyricFontSizeFor(viewport),
   );
   static double normalizedLyricFontSize(
     double size, {
-    double maximum = maxLyricFontSize,
+    double maximum = maxTabletLyricFontSize,
   }) => size.isFinite
-      ? size.clamp(minLyricFontSize, maximum)
+      ? size.clamp(minLyricFontSize, maximum).roundToDouble()
       : defaultLyricFontSize;
   static const _enableGlobalHotkeysKey = 'enableGlobalHotkeys';
   static const _playPauseHotKeyKey = 'playPauseHotKey';
@@ -215,6 +214,7 @@ class SettingsProvider with ChangeNotifier {
   bool _enableLyricBlur = false;
   LyricScrollEffect _lyricScrollEffect = LyricScrollEffect.standard;
   bool _enableKaraokeLyrics = false;
+  bool _smoothKaraokeMotion = false;
   bool _playbackImmersiveEnabled = false;
   double _playbackCoverScale = 1;
   KaraokeLyricsMode _karaokeLyricsMode = KaraokeLyricsMode.timedOnly;
@@ -348,6 +348,7 @@ class SettingsProvider with ChangeNotifier {
   bool get enableLyricElasticScroll =>
       _lyricScrollEffect == LyricScrollEffect.elastic;
   bool get enableKaraokeLyrics => _enableKaraokeLyrics;
+  bool get smoothKaraokeMotion => _smoothKaraokeMotion;
   bool get playbackImmersiveEnabled => _playbackImmersiveEnabled;
   double get playbackCoverScale => _playbackCoverScale;
   KaraokeLyricsMode get karaokeLyricsMode => _karaokeLyricsMode;
@@ -493,6 +494,8 @@ class SettingsProvider with ChangeNotifier {
     );
     _enableKaraokeLyrics =
         _readPreference<bool>(prefs, _enableKaraokeLyricsKey) ?? false;
+    _smoothKaraokeMotion =
+        _readPreference<bool>(prefs, 'smoothKaraokeMotion414') ?? false;
     _karaokeLyricsMode = decodeKaraokeLyricsMode(
       _readPreference<String>(prefs, _karaokeLyricsModeKey),
     );
@@ -804,14 +807,17 @@ class SettingsProvider with ChangeNotifier {
     await prefs.setInt(_prefsKey, value);
   }
 
-  void setFontSize(double size, {double maximum = maxLyricFontSize}) async {
+  void setFontSize(
+    double size, {
+    double maximum = maxTabletLyricFontSize,
+  }) async {
     previewFontSize(size, maximum: maximum);
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_fontSizeKey, _fontSize);
   }
 
   /// 更新歌词字号但暂不写入磁盘，供连续缩放手势预览使用。
-  void previewFontSize(double size, {double maximum = maxLyricFontSize}) {
+  void previewFontSize(double size, {double maximum = maxTabletLyricFontSize}) {
     final next = normalizedLyricFontSize(size, maximum: maximum);
     if ((_fontSize - next).abs() < 0.01) return;
     _fontSize = next;
@@ -987,6 +993,14 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     final prefs = await SharedPreferences.getInstance();
     await prefs.setDouble(_playbackCoverScaleKey, value);
+  }
+
+  Future<void> setSmoothKaraokeMotion(bool value) async {
+    if (_smoothKaraokeMotion == value) return;
+    _smoothKaraokeMotion = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('smoothKaraokeMotion414', value);
   }
 
   Future<void> setKaraokeLyricsMode(KaraokeLyricsMode value) async {

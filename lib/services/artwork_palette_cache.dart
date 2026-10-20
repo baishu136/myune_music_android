@@ -512,7 +512,7 @@ List<Color> _buildMotionColors(
     );
     step++;
   }
-  if (!profile.monochrome && pool.toSet().length < 6) {
+  if (!profile.monochrome && pool.toSet().length < fluidMotionColourCount) {
     final pigment = retained.reduce(
       (a, b) =>
           HSLColor.fromColor(a).saturation >= HSLColor.fromColor(b).saturation
@@ -521,12 +521,17 @@ List<Color> _buildMotionColors(
     );
     final hsl = HSLColor.fromColor(pigment);
     var attempt = 0;
-    for (var i = 1; i < pool.length && pool.toSet().length < 6; i++) {
+    for (
+      var i = 1;
+      i < pool.length && pool.toSet().length < fluidMotionColourCount;
+      i++
+    ) {
       if (!pool.take(i).contains(pool[i])) continue;
       Color candidate;
       do {
         attempt++;
         candidate = hsl
+            .withHue((hsl.hue + (attempt % 7 - 3) * 1.5) % 360)
             .withLightness(
               (hsl.lightness + attempt * .0125).clamp(
                 profile.bright ? .28 : 0.0,
@@ -540,12 +545,25 @@ List<Color> _buildMotionColors(
   }
   // Each field starts from its assigned pigment and visits the same cover pool
   // in a different order. No spatial rainbow or per-frame colour extraction.
-  const path = [0, 4, 1, 5, 2, 6, 3, 7];
+  final path = <int>[0];
+  final remaining = <int>{for (var i = 1; i < pool.length; i++) i};
+  while (remaining.isNotEmpty) {
+    final previous = pool[path.last];
+    final next = remaining.reduce(
+      (a, b) =>
+          _colorDistance(previous, pool[a]) <= _colorDistance(previous, pool[b])
+          ? a
+          : b,
+    );
+    path.add(next);
+    remaining.remove(next);
+  }
   return List<Color>.unmodifiable(
     List.generate(4 * fluidMotionColourCount, (i) {
       final field = i ~/ fluidMotionColourCount,
           variant = i % fluidMotionColourCount;
-      return pool[path[(variant + field * 2) % fluidMotionColourCount]];
+      final origin = path.indexOf(field);
+      return pool[path[(variant + origin) % fluidMotionColourCount]];
     }),
   );
 }

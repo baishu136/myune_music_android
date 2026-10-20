@@ -58,7 +58,7 @@ void main() {
         try {
           sample(0);
           final first = frame.values.toList();
-          expect(first, hasLength(45));
+          expect(first, hasLength(49));
           sample(5);
           final later = frame.values.toList();
           expect(later.sublist(29), isNot(first.sublist(29)));

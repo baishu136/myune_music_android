@@ -210,6 +210,7 @@ class _KaraokePaintCache extends ChangeNotifier {
     required this.text,
     required this.ranges,
     required this.synthetic,
+    this.smoothMotion = false,
     required this.width,
     required this.style,
     required this.textAlign,
@@ -513,7 +514,7 @@ class _KaraokePaintCache extends ChangeNotifier {
       _prepareNativeToken(token);
       drawable.add(range);
     }
-    if (synthetic) _buildSyntheticRelays();
+    if (synthetic || smoothMotion) _buildSyntheticRelays();
     _buildFollowerTimeline();
     final untouched = <_KaraokePaintRange>[];
     var cursor = 0;
@@ -653,7 +654,8 @@ class _KaraokePaintCache extends ChangeNotifier {
           math.max(
             timing.highlightEndUs,
             timing.liftStartUs +
-                (karaokeDefaultMotion.liftDuration.inMicroseconds * 1.35)
+                (karaokeDefaultMotion.liftDuration.inMicroseconds *
+                        (smoothMotion ? 1 : 1.35))
                     .ceil(),
           ),
         );
@@ -666,6 +668,7 @@ class _KaraokePaintCache extends ChangeNotifier {
   final String text;
   final List<_KaraokeTokenRange> ranges;
   final bool synthetic;
+  final bool smoothMotion;
   final List<_KaraokeSweepRelay> sweepRelays = [];
   late final List<double> rowCentres;
   late final List<Rect> _rowClips;
@@ -788,7 +791,10 @@ class _KaraokePaintCache extends ChangeNotifier {
         previousWord = word;
       }
     }
-    followerTimeline = KaraokeFollowerTimeline(glyphs, karaokeDefaultMotion);
+    followerTimeline = KaraokeFollowerTimeline(
+      glyphs,
+      smoothMotion ? karaokeSmoothMotion : karaokeDefaultMotion,
+    );
   }
 
   void _buildSyntheticRelays() {
@@ -1028,7 +1034,9 @@ class _KaraokePaintCache extends ChangeNotifier {
       }
       _image = image;
       _coverageImage = coverage;
-      if (!synthetic) await _calibrateInkPaths(image, coverage);
+      if (!synthetic && !smoothMotion) {
+        await _calibrateInkPaths(image, coverage);
+      }
       if (_disposed) return;
       if (!await _prepareShaders(program, image)) return;
       if (_originalNative && drawOriginal) {
@@ -1421,7 +1429,7 @@ class _KaraokePaintCache extends ChangeNotifier {
         final timing = token.units[u].timing;
         highlights[index] = karaokeGlyphHighlightAt(mediaUs, timing);
       }
-      if (synthetic || !_ready || token.nativeShaping) {
+      if (synthetic || smoothMotion || !_ready || token.nativeShaping) {
         for (var f = 0; f < token.fragments.length; f++) {
           final fragment = token.fragments[f];
           final phase =
@@ -1523,7 +1531,7 @@ class _KaraokePaintCache extends ChangeNotifier {
         final feather = unit.fragment.feather;
         var phase = highlights[index];
         var front = unit.sweep.frontAt(phase, feather, rtl: rtl);
-        if (synthetic) {
+        if (synthetic || smoothMotion) {
           phase = fragmentPhases[unit.fragment.index];
           front = fragmentFronts[unit.fragment.index];
           if (phase > 0 && phase < 1) {

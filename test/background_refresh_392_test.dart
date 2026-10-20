@@ -220,13 +220,13 @@ void main() {
     ], fallbackSeed: Colors.blue);
     expect(palette.motionColors, hasLength(32));
     final pool = palette.motionColors.take(8).toSet();
-    expect(pool.length, inInclusiveRange(6, 8));
+    expect(pool.length, 8);
     for (var field = 0; field < 4; field++) {
       expect(palette.motionColors.skip(field * 8).take(8).toSet(), pool);
     }
   });
 
-  test('colour speed doubles with coordinated smooth ramps', () {
+  test('colour speed slows with coordinated smooth ramps', () {
     for (var step = 0; step < 200; step++) {
       final orbit = step * math.pi / 40;
       var total = 0.0;
@@ -240,7 +240,7 @@ void main() {
         expect(measured, closeTo(rate, .000001));
         total += rate;
       }
-      expect(total, closeTo(8, .000001));
+      expect(total, closeTo(3.2, .000001));
     }
   });
 

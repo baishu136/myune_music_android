@@ -5314,7 +5314,6 @@ class PlaylistContentNotifier extends ChangeNotifier
     final transitionRevision = _playbackRequestRevision;
     final previousVisualPath = _currentSong?.filePath;
     _isGaplessTransitioning = true;
-    unawaited(_audioService.fadeInCurrentTrack());
 
     try {
       final nextIndex = _peekNextIndex();

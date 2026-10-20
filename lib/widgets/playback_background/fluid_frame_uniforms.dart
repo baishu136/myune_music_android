@@ -42,16 +42,18 @@ double fluidOrbitAngle(double orbit, int field, double amplitude) {
 }
 
 /// Matches the shader: size(2), motion/dim(2), phases(2), centres(8),
-/// pigments(12), base(3), shape matrices(16). Reuses all buffers.
+/// pigments(12), base(3), shape matrices(16), edge relays(4). Reuses buffers.
 class FluidFrameUniforms {
-  final values = Float32List(45);
-  final _written = Float32List(45)..fillRange(0, 45, double.nan);
+  final values = Float32List(49);
+  final _written = Float32List(49)..fillRange(0, 49, double.nan);
   final _source = Float64List(15);
   final _target = Float64List(15);
   final _mixed = Float64List(15);
   final _sourceVariants = Float64List(4 * fluidMotionColourCount * 3);
   final _targetVariants = Float64List(4 * fluidMotionColourCount * 3);
   final _stagedFields = List<bool>.filled(4, false);
+  final _relay = FluidColourRelayFrame();
+  final _pigments = Float64List(12);
   FluidPalette? _sourcePalette, _targetPalette;
   ui.FragmentShader? _lastShader;
 
@@ -103,10 +105,13 @@ class FluidFrameUniforms {
     final phase2 =
         orbit + .26 * math.sin(orbit + 2.1) + .04 * math.sin(2 * orbit + .8);
     final amplitude = motion.clamp(0.0, 1.0);
-    final hubX = .5 + amplitude * .11 * math.sin(orbit + .9);
-    final hubY = .5 + amplitude * .10 * math.cos(orbit - .4);
+    final hubX =
+        .5 + amplitude * (.11 * math.sin(orbit + .9) + .22 * math.sin(orbit));
+    final hubY =
+        .5 +
+        amplitude * (.10 * math.cos(orbit - .4) + .15 * math.sin(2 * orbit));
     final shortSide = math.min(size.width, size.height);
-    final radiusBase = math.min(.52, size.longestSide / shortSide / (3 * 1.16));
+    final radiusBase = math.min(.52, size.longestSide / shortSide / (3 * 1.24));
     values[0] = size.width;
     values[1] = size.height;
     values[2] = amplitude;
@@ -120,16 +125,26 @@ class FluidFrameUniforms {
           .46 +
           amplitude *
               (.26 * math.sin(orbit + offset + .7) +
-                  .06 * math.sin(2 * orbit - offset));
+                  .06 * math.sin(2 * orbit - offset) +
+                  .20 * math.sin(orbit) * math.sin(orbit + offset));
       values[6 + field * 2] = hubX + radius * math.cos(angle);
       values[7 + field * 2] = hubY + radius * math.sin(angle) * 1.08;
       final radiusX =
           radiusBase *
-          (1 + .16 * amplitude * math.sin(shapePhase + offset + .8));
+          (1 +
+              amplitude *
+                  (.14 * math.sin(shapePhase + .8) +
+                      .02 * math.sin(shapePhase + offset)));
       final radiusY =
           radiusBase *
-          (1 + .16 * amplitude * math.sin(2 * shapePhase - offset + 1.2));
-      final rotation = .35 * amplitude * math.sin(shapePhase - offset + .4);
+          (1 +
+              amplitude *
+                  (.14 * math.sin(2 * shapePhase + 1.2) +
+                      .02 * math.sin(shapePhase - offset)));
+      final rotation =
+          amplitude *
+          (.31 * math.sin(shapePhase + .4) +
+              .04 * math.sin(shapePhase - offset));
       final cosine = math.cos(rotation), sine = math.sin(rotation);
       final shape = 29 + field * 4;
       values[shape] = cosine / radiusX;
@@ -139,8 +154,7 @@ class FluidFrameUniforms {
       final colourPosition = fluidColourPosition(time, field);
       final variant = colourPosition.floor();
       final nextVariant = (variant + 1) % fluidMotionColourCount;
-      // Quintic smoothstep gives zero endpoint velocity with continuously varying
-      // phase speed; the four doubled rates share a constant budget of eight.
+      // Slower continuous colour clocks keep the independent cover pool alive.
       final part = colourPosition - variant;
       final colourBlend = fluidPaletteBlend(part);
       final fieldBlend = fluidColourTransitionBlend(
@@ -159,6 +173,27 @@ class FluidFrameUniforms {
             (_targetVariants[end] - _targetVariants[start]) * colourBlend;
         values[14 + field * 3 + channel] = from + (to - from) * fieldBlend;
       }
+    }
+    _relay.update(time, values);
+    for (var i = 0; i < 12; i++) {
+      _pigments[i] = values[14 + i];
+    }
+    for (var field = 0; field < 4; field++) {
+      final amount = _relay.strengths[field] * amplitude;
+      final donor = _relay.donors[field];
+      values[45 + field] = donor == (field + 1) % 4 ? -amount : amount;
+      for (var channel = 0; channel < 3; channel++) {
+        final own = _pigments[field * 3 + channel];
+        values[14 + field * 3 + channel] =
+            own + (_pigments[donor * 3 + channel] - own) * amount * .25;
+      }
+      // Area-preserving, small irregular stretch follows the passing colour.
+      final stretch = 1 + amount * .18 * math.sin(3 * orbit + field * 1.7);
+      final shape = 29 + field * 4;
+      values[shape] /= stretch;
+      values[shape + 1] /= stretch;
+      values[shape + 2] *= stretch;
+      values[shape + 3] *= stretch;
     }
     for (var channel = 0; channel < 3; channel++) {
       values[26 + channel] = _mixed[12 + channel];

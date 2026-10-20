@@ -114,7 +114,7 @@ void main() {
   }
 
   test(
-    'both load paths stay paused until prepared and wait for actual audio',
+    'both load paths preserve original tone while actual audio starts',
     () async {
       for (final gapless in [false, true]) {
         final player = _Player();
@@ -122,42 +122,43 @@ void main() {
         await load(service, gapless: gapless);
         expect(player.opens, [false]);
         expect(player.gains, [0]);
-        expect(player.dsp.entryDb, -6);
+        expect(player.dsp.entryDb, 0);
         await Future<void>.delayed(const Duration(milliseconds: 520));
         expect(player.gains, [0]);
-        expect(player.dsp.entryDb, -6);
+        expect(player.dsp.entryDb, 0);
         player.actual(true);
         await Future<void>.delayed(const Duration(milliseconds: 560));
         expect(player.gains.last, 0);
         expect(player.dsp.entryDb, 0);
+        expect(
+          player.dspWrites.every((dsp) => !dsp.entrySofteningEnabled),
+          isTrue,
+        );
         expect(player.current.volume, 72);
         expect(player.dsp.gains, List.filled(10, 0));
         await service.dispose();
       }
     },
   );
-  test(
-    'old pause reply cannot restore unity during a newer resume fade',
-    () async {
-      final player = _Player();
-      final audio = AudioService(player: player);
-      await audio.init();
-      player.pauseReply = Completer<void>();
-      final paused = audio.pause();
-      await Future<void>.delayed(const Duration(milliseconds: 5));
-      await audio.play();
-      expect(player.gains, [0]);
-      expect(player.dsp.entryDb, -6);
-      player.pauseReply!.complete();
-      await paused;
-      expect(player.gains, [0]);
-      expect(player.dsp.entryDb, -6);
-      player.actual(true);
-      await Future<void>.delayed(const Duration(milliseconds: 540));
-      expect(player.gains.last, 0);
-      await audio.dispose();
-    },
-  );
+  test('old pause reply cannot alter tone during newer resume', () async {
+    final player = _Player();
+    final audio = AudioService(player: player);
+    await audio.init();
+    player.pauseReply = Completer<void>();
+    final paused = audio.pause();
+    await Future<void>.delayed(const Duration(milliseconds: 5));
+    await audio.play();
+    expect(player.gains, [0]);
+    expect(player.dsp.entryDb, 0);
+    player.pauseReply!.complete();
+    await paused;
+    expect(player.gains, [0]);
+    expect(player.dsp.entryDb, 0);
+    player.actual(true);
+    await Future<void>.delayed(const Duration(milliseconds: 540));
+    expect(player.gains.last, 0);
+    await audio.dispose();
+  });
   test(
     'play failure and paused load restore unity; disposal leaves no gain writes',
     () async {
@@ -174,20 +175,17 @@ void main() {
       expect(player.dspWrites.length, count);
     },
   );
+  test('playback never requests the removed tone filter', () async {
+    final player = _Player()..rejectEntry = true;
+    final audio = AudioService(player: player);
+    await load(audio);
+    expect(player.dsp.entrySofteningEnabled, isFalse);
+    expect(player.dsp.entryDb, 0);
+    expect(player.gains, [0]);
+    await audio.dispose();
+  });
   test(
-    'unsupported tone filter falls back without keeping muffling or lowering volume',
-    () async {
-      final player = _Player()..rejectEntry = true;
-      final audio = AudioService(player: player);
-      await load(audio);
-      expect(player.dsp.entrySofteningEnabled, isFalse);
-      expect(player.dsp.entryDb, 0);
-      expect(player.gains, [0]);
-      await audio.dispose();
-    },
-  );
-  test(
-    'EQ and normalization updates during recovery keep both user settings',
+    'playback keeps EQ and normalization without entry coloration',
     () async {
       final player = _Player();
       final audio = AudioService(player: player);

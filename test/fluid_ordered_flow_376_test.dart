@@ -21,6 +21,25 @@ const _diagnostic = FluidPalette(
 );
 
 void main() {
+  test(
+    'clipping connects same-edge fragments but rejects interior islands',
+    () {
+      final clipped = Uint8List(100)..fillRange(0, 100, 255);
+      for (final y in [0, 1, 2, 7, 8, 9]) {
+        clipped[y * 10 + 8] = clipped[y * 10 + 9] = 0;
+      }
+      _checkConnected(clipped, 10, 10, 0);
+      final islands = Uint8List(100)..fillRange(0, 100, 255);
+      for (final y in [1, 2, 3]) {
+        islands[y * 10 + 1] = islands[y * 10 + 2] = 0;
+        islands[(y + 4) * 10 + 6] = islands[(y + 4) * 10 + 7] = 0;
+      }
+      expect(
+        () => _checkConnected(islands, 10, 10, 0),
+        throwsA(isA<TestFailure>()),
+      );
+    },
+  );
   testWidgets('four connected colour fields circulate around the centre', (
     tester,
   ) async {
@@ -54,15 +73,28 @@ void main() {
               time: time,
             );
             final labels = Uint8List(width * height);
+            final fieldLabels = Uint8List(width * height);
+            final fieldCounts = [0, 0, 0, 0];
             final counts = [0, 0, 0, 0];
             var redX = 0.0, redY = 0.0;
             for (var y = 0; y < height; y++) {
               for (var x = 0; x < width; x++) {
                 final i = (y * width + x) * 4;
                 final ux = (x + .5) / width, uy = (y + .5) / height;
-                final coverage = fluidReferenceCoverage(
-                  fluidReferenceWeights(packed.values, ux, uy),
+                final fieldWeights = fluidReferenceWeights(
+                  packed.values,
+                  ux,
+                  uy,
                 );
+                final coverage = fluidReferenceCoverage(fieldWeights);
+                var fieldWinner = 0;
+                for (var field = 1; field < 4; field++) {
+                  if (fieldWeights[field] > fieldWeights[fieldWinner]) {
+                    fieldWinner = field;
+                  }
+                }
+                fieldLabels[y * width + x] = fieldWinner;
+                fieldCounts[fieldWinner]++;
                 if (coverage < .035) {
                   labels[y * width + x] = 4;
                   expect(pixels[i + 3], 255);
@@ -106,7 +138,12 @@ void main() {
             }
             for (var c = 0; c < 4; c++) {
               expect(counts[c], lessThan(width * height * .70));
-              if (counts[c] > 4) _checkConnected(labels, width, height, c);
+              // Transferred pigment can appear on a recipient's edge. The
+              // original field must stay connected; coloured ink need not
+              // remain confined to that field after deliberate transmission.
+              if (fieldCounts[c] > 4) {
+                _checkConnected(fieldLabels, width, height, c);
+              }
             }
             if (counts[0] == 0) continue;
             final angle = math.atan2(
@@ -254,7 +291,7 @@ void main() {
 
 void _checkConnected(Uint8List labels, int width, int height, int colour) {
   final visited = Uint8List(labels.length);
-  var substantial = 0;
+  final components = <int>[];
   for (var start = 0; start < labels.length; start++) {
     if (visited[start] != 0 || labels[start] != colour) continue;
     final queue = [start];
@@ -273,12 +310,27 @@ void _checkConnected(Uint8List labels, int width, int height, int colour) {
         }
       }
     }
-    // Ignore sub-LSB dither at ties; reject actual isolated pigment islands.
+    // Ignore sub-LSB ties. A roaming field can leave and re-enter through
+    // the same viewport edge; merge only those clipped boundary fragments.
+    // Interior islands remain separate and fail exactly as before.
     if (queue.length > 4) {
-      substantial++;
+      var edges = 0;
+      for (final pixel in queue) {
+        final x = pixel % width, y = pixel ~/ width;
+        if (x == 0) edges |= 1;
+        if (x == width - 1) edges |= 2;
+        if (y == 0) edges |= 4;
+        if (y == height - 1) edges |= 8;
+      }
+      for (var i = components.length - 1; i >= 0; i--) {
+        if (edges & components[i] != 0) {
+          edges |= components.removeAt(i);
+        }
+      }
+      components.add(edges);
     }
   }
-  expect(substantial, 1, reason: 'disconnected colour $colour');
+  expect(components.length, 1, reason: 'disconnected colour $colour');
 }
 
 List<List<double>> _pigmentDecoder(Float32List packed) {

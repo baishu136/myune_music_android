@@ -86,8 +86,9 @@ class LyricsSettingsDrawer extends StatelessWidget {
                     value: fontSize,
                     min: SettingsProvider.minLyricFontSize,
                     max: maximum,
-                    divisions: 24,
-                    label: fontSize.toStringAsFixed(1),
+                    divisions: (maximum - SettingsProvider.minLyricFontSize)
+                        .round(),
+                    label: fontSize.toStringAsFixed(0),
                     onChanged: (value) {
                       context.read<SettingsProvider>().setFontSize(
                         value,
@@ -96,7 +97,7 @@ class LyricsSettingsDrawer extends StatelessWidget {
                     },
                   ),
                   Text(
-                    '当前大小: ${fontSize.toStringAsFixed(1)}',
+                    '当前大小: ${fontSize.toStringAsFixed(0)}',
                     style: Theme.of(context).textTheme.bodyMedium,
                   ),
                 ],

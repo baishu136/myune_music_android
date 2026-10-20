@@ -121,6 +121,10 @@ class KaraokeMotionConfig {
 }
 
 final karaokeDefaultMotion = KaraokeMotionConfig();
+final karaokeSmoothMotion = KaraokeMotionConfig(
+  curve: KaraokeLiftCurve.smoothTop,
+  fastOvershootFraction: 0,
+);
 
 final _compactFollowerScript = RegExp(
   r'^[\u3040-\u30FF\u31F0-\u31FF\u3400-\u4DBF\u4E00-\u9FFF\uF900-\uFAFF\u{20000}-\u{3134F}\uFE00-\uFE0F\u{E0100}-\u{E01EF}]+$',

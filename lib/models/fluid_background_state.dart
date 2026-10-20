@@ -8,7 +8,7 @@ enum PlaybackArtworkBackgroundStyle { blurred, fluid }
 enum FluidBackgroundQuality { automatic, powerSaving, smooth }
 
 // Visible wall-clock seconds; frame uniforms convert to orbital radians.
-// Orbit, doubled colour and 1.6x shape clocks share a five-orbit wrap.
+// Orbit, slower colour and 1.6x shape clocks share a five-orbit wrap.
 const fluidShaderTimeScale = .15;
 const fluidOrbitPeriod = math.pi * 2 / fluidShaderTimeScale;
 // Five orbits keep the 1.6x shape clock continuous when visible time wraps.

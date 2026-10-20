@@ -96,6 +96,7 @@ Object _nowPlayingSettingsSignature(SettingsProvider s) => (
   s.lyricAlignment,
   s.lyricScrollEffect,
   s.enableKaraokeLyrics,
+  s.smoothKaraokeMotion,
   s.karaokeLyricsMode,
   s.enableLyricBlur,
   s.highlightActiveLyric,
@@ -5513,6 +5514,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       textAlign: settings.lyricAlignment,
       scrollEffect: settings.lyricScrollEffect,
       karaokeLyricsEnabled: settings.enableKaraokeLyrics,
+      smoothKaraokeMotion: settings.smoothKaraokeMotion,
       karaokeLyricsMode: settings.karaokeLyricsMode,
       lineBlurEnabled: settings.enableLyricBlur,
       highlightActiveLine: settings.highlightActiveLyric,
@@ -6348,7 +6350,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                           icon: const Icon(Icons.restart_alt),
                           onPressed: () {
                             const value = SettingsProvider.defaultLyricFontSize;
-                            setSheetState(() => currentSize = value);
+                            setSheetState(
+                              () => currentSize = value.roundToDouble(),
+                            );
                             settings.setFontSize(value, maximum: maximum);
                           },
                         ),
@@ -6359,15 +6363,18 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                       value: currentSize,
                       min: SettingsProvider.minLyricFontSize,
                       max: maximum,
-                      divisions: 24,
+                      divisions: (maximum - SettingsProvider.minLyricFontSize)
+                          .round(),
                       label: currentSize.toStringAsFixed(0),
                       onChanged: (value) {
-                        setSheetState(() => currentSize = value);
+                        setSheetState(
+                          () => currentSize = value.roundToDouble(),
+                        );
                         settings.setFontSize(value, maximum: maximum);
                       },
                     ),
                     Text(
-                      '当前大小: ${currentSize.toStringAsFixed(1)}',
+                      '当前大小: ${currentSize.toStringAsFixed(0)}',
                       style: Theme.of(context).textTheme.titleMedium,
                     ),
                     const Divider(height: 32),
@@ -7527,6 +7534,12 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
           onChanged: settings.setEnableKaraokeLyrics,
         ),
         if (settings.enableKaraokeLyrics) ...[
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            title: const Text('逐字平滑运动'),
+            value: settings.smoothKaraokeMotion,
+            onChanged: settings.setSmoothKaraokeMotion,
+          ),
           const ListTile(
             contentPadding: EdgeInsets.zero,
             title: Text('逐字歌词范围'),

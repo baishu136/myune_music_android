@@ -726,7 +726,10 @@ class _LyricsWidgetState extends State<LyricsWidget>
       (s) => s.lyricAlignment,
     );
     final fontSize = context.select<SettingsProvider, double>(
-      (s) => SettingsProvider.normalizedLyricFontSize(s.fontSize),
+      (s) => SettingsProvider.normalizedLyricFontSize(
+        s.fontSize,
+        maximum: SettingsProvider.maxLyricFontSize,
+      ),
     );
     final lyricVerticalSpacing = context.select<SettingsProvider, double>(
       (s) => s.lyricVerticalSpacing,

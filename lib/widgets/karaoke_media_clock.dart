@@ -82,12 +82,14 @@ class KaraokePositionSampleTracker {
 /// elapsed time; a frame never integrates glyph displacement. Native position
 /// updates correct small drift, while explicit seeks replace the anchor.
 class KaraokeMediaClock extends ValueNotifier<Duration> {
-  KaraokeMediaClock(super.value, {double rate = 1})
+  KaraokeMediaClock(super.value, {double rate = 1, this.smoothMotion = false})
     : _rate = rate,
       _anchor = value {
     _samples.reset(value, Duration.zero);
   }
 
+  bool smoothMotion;
+  double _velocityBias = 0;
   double _rate;
   bool _running = false;
   Duration _anchor;
@@ -153,6 +155,7 @@ class KaraokeMediaClock extends ValueNotifier<Duration> {
 
   void changeRate(double rate, Duration source) {
     if (!rate.isFinite || rate <= 0 || _rate == rate) return;
+    _velocityBias = 0;
     _rate = rate;
     _anchor = value;
     _anchorElapsed = _lastElapsed;
@@ -160,6 +163,7 @@ class KaraokeMediaClock extends ValueNotifier<Duration> {
   }
 
   void seek(Duration target, {bool protectFromStaleSource = false}) {
+    _velocityBias = 0;
     _anchor = target;
     _anchorElapsed = _lastElapsed;
     _samples.reset(target, _lastElapsed);
@@ -187,6 +191,7 @@ class KaraokeMediaClock extends ValueNotifier<Duration> {
     final update = _samples.observe(source, _lastElapsed, _rate);
     if (update == KaraokeSourceUpdate.stale) return;
     if (update == KaraokeSourceUpdate.discontinuity) {
+      _velocityBias = 0;
       value = source;
     }
     _anchor = source;
@@ -209,11 +214,30 @@ class KaraokeMediaClock extends ValueNotifier<Duration> {
     );
     // Wall-time gaps still advance media time. A delayed ordinary anchor must
     // never rewind the pose just because one frame took longer than 120ms.
-    value = karaokeAdvanceVisualClock(
-      value,
-      target,
-      delta,
-      playbackRate: _rate,
-    );
+    if (smoothMotion) {
+      final step = math.max(0, delta.inMicroseconds * _rate);
+      final predicted = value.inMicroseconds + step;
+      final desired = ((target.inMicroseconds - predicted) / (500000 * _rate))
+          .clamp(-.08, .08);
+      final seconds = delta.inMicroseconds / 1000000;
+      if (seconds <= 0) return;
+      // Analytic first-order velocity response: integrate the correction, not
+      // the glyph pose. Normal time never stalls, and 60/90/120Hz agree.
+      final decay = math.exp(-seconds / .12);
+      final integratedBias =
+          desired * seconds + (_velocityBias - desired) * .12 * (1 - decay);
+      _velocityBias = desired + (_velocityBias - desired) * decay;
+      value = Duration(
+        microseconds: (predicted + integratedBias * 1000000 * _rate).round(),
+      );
+    } else {
+      _velocityBias = 0;
+      value = karaokeAdvanceVisualClock(
+        value,
+        target,
+        delta,
+        playbackRate: _rate,
+      );
+    }
   }
 }

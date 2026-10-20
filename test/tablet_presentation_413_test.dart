@@ -232,14 +232,14 @@ void main() {
   }
 
   test(
-    'viewport limits and tablet size survive phone preview without mutation',
+    'viewport limits and size survives phone preview without mutation',
     () async {
       SharedPreferences.setMockInitialValues({'fontSize': 50.0});
       final settings = SettingsProvider();
       await settings.initializationFuture;
       expect(settings.lyricFontSizeFor(const Size(800, 1280)), 50);
       expect(settings.lyricFontSizeFor(const Size(1280, 800)), 50);
-      expect(settings.lyricFontSizeFor(const Size(599, 1000)), 40);
+      expect(settings.lyricFontSizeFor(const Size(599, 1000)), 50);
       expect(settings.fontSize, 50);
       settings.previewFontSize(90, maximum: 50);
       expect(settings.fontSize, 50);
@@ -269,12 +269,12 @@ void main() {
     slider.onChanged!(50);
     await tester.pump();
     expect(settings.fontSize, 50);
-    // A smaller app window clamps presentation without rewriting the tablet preference.
+    // All mobile viewports now share the same integer 50-point ceiling.
     tester.view.physicalSize = const Size(390, 1400);
     await tester.pump();
     final phone = tester.widget<Slider>(find.byType(Slider).first);
-    expect(phone.max, 40);
-    expect(phone.value, 40);
+    expect(phone.max, 50);
+    expect(phone.value, 50);
     expect(settings.fontSize, 50);
     tester.view.physicalSize = const Size(800, 1400);
     await tester.pump();
