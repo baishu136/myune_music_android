@@ -36,6 +36,7 @@ mpv_audio_kit.md
 .pub-cache/
 .pub/
 /build/
+/android/build/
 /release/
 /dist/
 **/.cxx/

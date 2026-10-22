@@ -10,6 +10,10 @@ add_library(mpv_audio_kit_jni SHARED
   mpv_audio_kit_jni.c
 )
 
+add_library(myune SHARED aaudio_probe.c)
+target_link_libraries(myune PRIVATE android log dl)
+target_link_options(myune PRIVATE "-Wl,-z,max-page-size=16384")
+
 # ── Find prebuilt libmpv ───────────────────────────────────────────────────
 # Search first in the project's jniLibs directory
 set(MPV_LIB_DIR "${CMAKE_SOURCE_DIR}/../jniLibs/${ANDROID_ABI}")

@@ -22,6 +22,7 @@ val agpMajor = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.substringBefore
 if (agpMajor < 9) {
     apply(plugin = "org.jetbrains.kotlin.android")
 }
+val myuneMpvJni = layout.buildDirectory.dir("generated/myuneMpvJni")
 
 android {
     namespace = "com.alesdrnz.mpv_audio_kit"
@@ -37,6 +38,7 @@ android {
     sourceSets {
         getByName("main") {
             java.srcDirs("src/main/kotlin")
+            jniLibs.setSrcDirs(listOf(myuneMpvJni.get().asFile))
         }
         getByName("test") {
             java.srcDirs("src/test/kotlin")
@@ -51,7 +53,14 @@ android {
         // The shared libraries are automatically downloaded from GitHub
         // Releases and placed into src/main/jniLibs during the build.
         ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+            val requested = project.findProperty("target-platform")?.toString()?.split(",")
+            val selected = requested?.mapNotNull { when (it.trim()) {
+                "android-arm64" -> "arm64-v8a"
+                "android-arm" -> "armeabi-v7a"
+                "android-x64" -> "x86_64"
+                else -> null
+            } }.orEmpty()
+            abiFilters += selected.ifEmpty { listOf("arm64-v8a", "armeabi-v7a", "x86_64") }
         }
 
         // Link CMakeLists for the JNI/NDK wrapper
@@ -142,6 +151,21 @@ val downloadMpvTask = tasks.register("downloadMpvLibraries") {
             val targetFile = file("${abiDir}/libmpv.so")
             var isValid = false
 
+            // This pinned backend resolves AAudio dynamically. Redirect only
+            // that loader name to our transparent, app-owned reporting bridge.
+            // Reversing the fixed-size substitution must recover the exact
+            // upstream SHA, so unknown binaries are never patched or accepted.
+            val upstreamName = "libaaudio.so\u0000".toByteArray()
+            val bridgeName = "libmyune.so\u0000\u0000".toByteArray()
+            fun replaceLoader(bytes: ByteArray, from: ByteArray, to: ByteArray): ByteArray {
+                require(from.size == to.size)
+                val locations = (0..bytes.size - from.size).filter { offset ->
+                    from.indices.all { bytes[offset + it] == from[it] }
+                }
+                if (locations.size != 1) throw GradleException("Unexpected AAudio loader count for $abi")
+                return bytes.copyOf().also { to.copyInto(it, locations.single()) }
+            }
+
             if (targetFile.exists()) {
                 val bytes = targetFile.readBytes()
                 val digest = MessageDigest.getInstance("SHA-256").digest(bytes)
@@ -149,8 +173,7 @@ val downloadMpvTask = tasks.register("downloadMpvLibraries") {
                 if (calculatedHash == expectedHash) {
                     isValid = true
                 } else {
-                    println("SHA-256 mismatch for ${abi}. Expected: ${expectedHash}, Got: ${calculatedHash}")
-                    targetFile.delete()
+                    throw GradleException("Unknown source libmpv for $abi; expected upstream SHA $expectedHash")
                 }
             }
 
@@ -174,7 +197,18 @@ val downloadMpvTask = tasks.register("downloadMpvLibraries") {
                 } catch (e: Exception) {
                     println("Failed to download libmpv.so for ${abi}: ${e.message}")
                     if (targetFile.exists()) targetFile.delete()
+                    throw GradleException("Required libmpv is unavailable for $abi", e)
                 }
+            }
+
+            if (targetFile.exists()) {
+                val bytes = targetFile.readBytes()
+                val hash = MessageDigest.getInstance("SHA-256").digest(bytes).joinToString("") { "%02x".format(it) }
+                if (hash != expectedHash) throw GradleException("Invalid libmpv input for $abi")
+                val output = File(myuneMpvJni.get().asFile, "$abi/libmpv.so")
+                output.parentFile.mkdirs()
+                val patched = replaceLoader(bytes, upstreamName, bridgeName)
+                if (!output.exists() || !output.readBytes().contentEquals(patched)) output.writeBytes(patched)
             }
         }
     }

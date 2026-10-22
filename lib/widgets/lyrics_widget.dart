@@ -204,7 +204,7 @@ class _LyricsWidgetState extends State<LyricsWidget>
       context,
       listen: false,
     );
-    final currentPosition = playlistNotifier.currentPosition;
+    final currentPosition = playlistNotifier.lyricVisualPosition;
     final isPlaying = playlistNotifier.isPlaying;
 
     final List<Widget> lines = [];
@@ -595,7 +595,7 @@ class _LyricsWidgetState extends State<LyricsWidget>
                     highlightColor: colorScheme.primary.withValues(alpha: 0.88),
                     startTime: line.timestamp,
                     interludeDuration: line.interludeDuration ?? Duration.zero,
-                    currentTime: playlistNotifier.currentPosition,
+                    currentTime: playlistNotifier.lyricVisualPosition,
                     isPlaying: playlistNotifier.isPlaying,
                   ),
                 ),
@@ -1154,7 +1154,7 @@ class _LyricsWidgetState extends State<LyricsWidget>
                           startTime: line.timestamp,
                           interludeDuration:
                               line.interludeDuration ?? Duration.zero,
-                          currentTime: playlistNotifier.currentPosition,
+                          currentTime: playlistNotifier.lyricVisualPosition,
                           isPlaying: playlistNotifier.isPlaying,
                         ),
                       );

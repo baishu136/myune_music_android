@@ -402,6 +402,12 @@ abstract interface class PlayerApi {
   /// rejected because they would desync the typed state.
   Future<void> setRawProperty(String name, String value);
 
+  /// Temporarily bypass modifying DSP/soft volume while retaining user choices.
+  /// Requested output format is still subject to actual device negotiation.
+  Future<void> setTransparentOutput(bool enabled, {
+    String format = 'auto', int sampleRate = 0, String channels = 'auto',
+  });
+
   /// Sends an arbitrary mpv command with its argument list. Escape hatch
   /// for commands without a typed wrapper.
   Future<void> sendRawCommand(List<String> args);

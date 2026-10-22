@@ -65,53 +65,6 @@ class MusicDspSettings {
           outputDb.abs() > .001 ||
           List.generate(bandCount, gain).any((g) => g.abs() >= .05));
 
-  /// RBJ peaking filters, Q=1: predict the cascade rather than summing boosts.
-  /// A half-dB reserve covers the log-grid interpolation. The final limiter
-  /// also catches transients and peaks introduced by nonlinear effects.
-  double get preampDb {
-    if (!List.generate(bandCount, gain).any((g) => g > .01)) return 0;
-    var peak = 0.0;
-    final points = [
-      0.0,
-      rate / 2,
-      for (var i = 0; i <= 192; i++) 10 * math.pow(rate / 20, i / 192),
-      for (var i = 0; i < bandCount; i++) frequency(i)
-    ];
-    final coefficients = [
-      for (var i = 0; i < bandCount; i++)
-        _coefficients(frequency(i), gain(i), rate)
-    ];
-    for (final f in points) {
-      final w = 2 * math.pi * f / rate;
-      final c = math.cos(w),
-          s = math.sin(w),
-          c2 = math.cos(2 * w),
-          s2 = math.sin(2 * w);
-      var db = 0.0;
-      for (final v in coefficients) {
-        final nr = v[0] + v[1] * c + v[2] * c2, ni = v[1] * s + v[2] * s2;
-        final dr = v[3] + v[4] * c + v[5] * c2, di = v[4] * s + v[5] * s2;
-        final ratio = (nr * nr + ni * ni) / math.max(dr * dr + di * di, 1e-30);
-        db += 10 * math.log(math.max(ratio, 1e-30)) / math.ln10;
-      }
-      peak = math.max(peak, db);
-    }
-    return peak > .01 ? -(peak + .5) : 0;
-  }
-
-  static List<double> _coefficients(double f, double g, int rate) {
-    final a = math.pow(10, g / 40).toDouble(), w = 2 * math.pi * f / rate;
-    final alpha = math.sin(w) / 2, c = math.cos(w);
-    return [
-      1 + alpha * a,
-      -2 * c,
-      1 - alpha * a,
-      1 + alpha / a,
-      -2 * c,
-      1 - alpha / a
-    ];
-  }
-
   static String wire(double value) => value.toStringAsFixed(9);
 
   String afChain(String effects) {
@@ -169,9 +122,6 @@ class MusicDspSettings {
     }
     return [
       'aformat=sample_fmts=fltp',
-      // The bundled minimal FFmpeg omits volume. A zero-state biquad is a
-      // channel-preserving multiply, with b0 adjustable in the live graph.
-      'biquad@myune_pre=b0=${wire(math.pow(10, preampDb / 20).toDouble())}:b1=0:b2=0:a0=1:a1=0:a2=0:r=f32',
       for (var i = 0; i < bandCount; i++)
         'equalizer@myune_eq_$i=f=${wire(frequency(i))}:t=q:w=1:g=${wire(gain(i))}:r=f32',
       ...tone,
@@ -180,7 +130,7 @@ class MusicDspSettings {
       ...limit,
       if (entrySofteningEnabled) entry,
       'biquad@myune_output=b0=${wire(math.pow(10, outputDb / 20).toDouble())}:b1=0:b2=0:a0=1:a1=0:a2=0:r=f32',
-      'alimiter@myune_guard=limit=0.891250938:level=false:attack=5:release=100:latency=true',
+      'alimiter@myune_guard=limit=1:level=false:attack=5:release=100:latency=true',
     ].join(',');
   }
 
@@ -249,17 +199,8 @@ class MusicDspSettings {
         !processingActive(effects)) {
       return entryCommands;
     }
-    final before = previous.preampDb, after = preampDb;
-    final pre = (
-      label: label,
-      option: 'b0',
-      value: wire(math.pow(10, after / 20).toDouble()),
-      filterName: 'biquad@myune_pre'
-    );
     final out =
         <({String label, String option, String value, String filterName})>[];
-    // Attenuate before increasing a band; restore gain after reducing boosts.
-    if (after < before - .00001) out.add(pre);
     for (var i = 0; i < bandCount; i++) {
       if (frequency(i) != previous.frequency(i)) {
         out.add((
@@ -278,7 +219,6 @@ class MusicDspSettings {
         ));
       }
     }
-    if (after > before + .00001) out.add(pre);
     if (outputDb != previous.outputDb) {
       out.add((
         label: label,

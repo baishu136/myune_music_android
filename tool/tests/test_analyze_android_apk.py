@@ -43,7 +43,7 @@ class ApkAuditTest(unittest.TestCase):
             current, new_hashes = inspect_apk(current_path, require_compressed=True)
             comparison = compare(current, baseline, new_hashes, old_hashes)
             self.assertGreater(comparison["saved_percent"], 80)
-            self.assertEqual(comparison["identical_protected_entries"], 8)
+            self.assertEqual(comparison["identical_protected_entries"], 9)
             self.assertTrue(all(n["compression_method"] == 8 for n in current["native"]))
 
     def test_changed_font_or_shader_fails_baseline_comparison(self):
@@ -71,7 +71,7 @@ class ApkAuditTest(unittest.TestCase):
     def test_missing_decoder_or_wrong_abi_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "bad.apk"
-            for options in ({"omit": "libmpv.so"}, {"abi": "x86_64"}):
+            for options in ({"omit": "libmpv.so"}, {"omit": "libmyune.so"}, {"abi": "x86_64"}):
                 apk(path, **options)
                 with self.assertRaisesRegex(ValueError, "only ARM64"):
                     inspect_apk(path)

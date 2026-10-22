@@ -144,12 +144,18 @@ class HomeGlassControls extends StatelessWidget {
 /// Keep the ink/touch behaviour of the original Material surface, but let the
 /// translucent fill show through in every theme.
 class HomeGlassMaterial extends StatelessWidget {
-  const HomeGlassMaterial({super.key, required this.child});
+  const HomeGlassMaterial({
+    super.key,
+    required this.child,
+    this.enabled = true,
+  });
   final Widget child;
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) => HomeGlassSurface(
     role: HomeGlassRole.playback,
+    enabled: enabled,
     child: Material(color: Colors.transparent, child: child),
   );
 }

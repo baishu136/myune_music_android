@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 import '../settings_provider.dart';
 import '../../playlist/playlist_content_notifier.dart';
 import '../audio_device_selector.dart';
+import '../audio_output_page.dart';
 import 'info_icon.dart';
 
 class PlaybackSettingsTab extends StatelessWidget {
@@ -18,6 +19,15 @@ class PlaybackSettingsTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('playback_settings'),
       children: [
+        if (Platform.isAndroid)
+          ListTile(
+            leading: const Icon(Icons.speaker_group_outlined),
+            title: const Text('音频输出设备与歌词同步'),
+            trailing: const Icon(Icons.chevron_right),
+            onTap: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(builder: (_) => const AudioOutputPage()),
+            ),
+          ),
         if (Platform.isAndroid)
           SwitchListTile(
             title: const Text('播放被占用时自动暂停'),

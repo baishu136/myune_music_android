@@ -15,6 +15,7 @@ import zipfile
 REQUIRED_LIBS = frozenset({
     "libapp.so", "libflutter.so", "libmpv.so", "libc++_shared.so",
     "libdartjni.so", "libdatastore_shared_counter.so", "libmpv_audio_kit_jni.so",
+    "libmyune.so",
 })
 FONT = "assets/flutter_assets/assets/fonts/MiSansVF.ttf"
 

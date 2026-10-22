@@ -44,5 +44,6 @@ internal class MpvMediaSessionService : MediaSessionService() {
         // service only drops its reference by being destroyed; it must not
         // double-release.
         super.onDestroy()
+        MediaSessionManager.onServiceDestroyed()
     }
 }

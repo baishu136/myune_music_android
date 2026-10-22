@@ -26,20 +26,22 @@ const effects = [
   'declip',
 ];
 void main() {
-  test('overlapping EQ boosts reserve cascade headroom, cuts need none', () {
+  test('EQ boosts retain input gain and cuts keep validated frequencies', () {
     final dsp = MusicDspSettings(
       enabled: true,
       gains: List.filled(10, 6),
       frequencies: frequencies,
     );
-    expect(dsp.preampDb, lessThan(-10));
-    expect(dsp.preampDb, greaterThan(-30));
-    expect(dsp.copyWith(gains: List.filled(10, -12)).preampDb, 0);
+    expect(dsp.filterGraph(''), isNot(contains('myune_pre')));
+    expect(
+      dsp.copyWith(gains: List.filled(10, -12)).filterGraph(''),
+      isNot(contains('myune_pre')),
+    );
     expect(dsp.copyWith(gains: List.filled(10, 0)).afChain(''), '');
     expect(dsp.copyWith(sampleRate: 22050).frequency(9), 9922.5);
-    expect(dsp.copyWith(gains: List.filled(10, double.nan)).preampDb, 0);
+    expect(dsp.copyWith(gains: List.filled(10, double.nan)).afChain(''), '');
   });
-  test('live commands attenuate before boosts and restore after cuts', () {
+  test('live commands adjust EQ without automatic input attenuation', () {
     final a = MusicDspSettings(
       enabled: true,
       keepAlive: true,
@@ -48,8 +50,8 @@ void main() {
     );
     final b = a.copyWith(gains: List.filled(10, 6));
     final up = b.diff(a, '')!, down = a.diff(b, '')!;
-    expect(up.first.filterName, 'biquad@myune_pre');
-    expect(down.last.filterName, 'biquad@myune_pre');
+    expect(up.every((c) => c.filterName.startsWith('equalizer@')), isTrue);
+    expect(down.every((c) => c.filterName.startsWith('equalizer@')), isTrue);
     expect(up.where((c) => c.option == 'gain'), hasLength(10));
     expect(up.every((c) => c.label == 'myune_music'), isTrue);
     expect(

@@ -25,6 +25,7 @@ import '../page/lyric_copy_page.dart';
 import '../page/pages/statistics_page.dart';
 import '../page/pages/audio_analysis_page.dart';
 import '../page/setting/setting_page.dart';
+import '../page/setting/audio_output_page.dart';
 import '../page/setting/settings_provider.dart';
 import '../page/setting/tabs/info_icon.dart';
 import '../page/statistics_page/statistics_manager.dart';
@@ -44,6 +45,7 @@ import '../widgets/now_playing_immersive_layout.dart';
 import '../widgets/fullscreen_lyrics_double_tap.dart';
 import '../widgets/fullscreen_swipe_song_hint.dart';
 import '../widgets/song_selection_actions.dart';
+import '../widgets/song_collection_header.dart';
 import '../widgets/playback_jump_feedback.dart';
 import '../widgets/home_tab_viewport.dart';
 import '../widgets/optional_shader_mask.dart';
@@ -496,8 +498,8 @@ class _MobileShellState extends State<MobileShell>
         onAddFromLibrary: _startExistingPlaylistSelection,
         onImportSongs: _showImportOptions,
       ),
-      2 => _GroupTab(kind: '歌手', useHomeTheme: useHomeTheme),
-      3 => _GroupTab(kind: '专辑', useHomeTheme: useHomeTheme),
+      2 => SongGroupTab(kind: '歌手', useHomeTheme: useHomeTheme),
+      3 => SongGroupTab(kind: '专辑', useHomeTheme: useHomeTheme),
       _ => _SettingsTab(
         onSwipeBack: () => _selectTab(3),
         onSectionChanged: (title) {
@@ -1948,16 +1950,20 @@ class _PlaylistsTab extends StatelessWidget {
   }
 }
 
-class _GroupTab extends StatefulWidget {
-  const _GroupTab({required this.kind, required this.useHomeTheme});
+class SongGroupTab extends StatefulWidget {
+  const SongGroupTab({
+    super.key,
+    required this.kind,
+    required this.useHomeTheme,
+  });
   final String kind;
   final bool useHomeTheme;
 
   @override
-  State<_GroupTab> createState() => _GroupTabState();
+  State<SongGroupTab> createState() => _GroupTabState();
 }
 
-class _GroupTabState extends State<_GroupTab> {
+class _GroupTabState extends State<SongGroupTab> {
   Widget? _lastView;
   bool _retryScheduled = false;
   String get kind => widget.kind;
@@ -2024,14 +2030,12 @@ class _GroupTabState extends State<_GroupTab> {
         : GroupCollectionSortMode.name;
     final effectiveDescending =
         viewMode == GroupViewMode.list && sortDescending;
-    final groupPlayCounts =
-        effectiveSortMode == GroupCollectionSortMode.playCount
+    final groupPlayCounts = viewMode == GroupViewMode.list
         ? <String, int>{
             for (final entry in groups.entries)
-              entry.key: entry.value.fold(
-                0,
-                (sum, song) =>
-                    sum + SongGroupPresentation.playCount(song, playCounts),
+              entry.key: SongGroupPresentation.totalPlayCount(
+                entry.value,
+                playCounts,
               ),
           }
         : const <String, int>{};
@@ -2062,9 +2066,16 @@ class _GroupTabState extends State<_GroupTab> {
       sortedEntries.map((entry) => entry.key),
     );
     final entriesByName = {for (final entry in sortedEntries) entry.key: entry};
-    final entries = orderedNames
-        .map((name) => entriesByName[name]!)
-        .toList(growable: false);
+    final entries = orderedNames.map((name) => entriesByName[name]!).toList();
+    final featuredName = viewMode == GroupViewMode.list
+        ? SongGroupPresentation.mostPlayedGroup(groupPlayCounts)
+        : null;
+    if (featuredName != null) {
+      final featuredIndex = entries.indexWhere(
+        (entry) => entry.key == featuredName,
+      );
+      entries.insert(0, entries.removeAt(featuredIndex));
+    }
     final pinScope = kind == '歌手'
         ? PlaylistContentNotifier.artistsPinScope
         : PlaylistContentNotifier.albumsPinScope;
@@ -2224,6 +2235,35 @@ class _GroupTabState extends State<_GroupTab> {
         itemBuilder: (context, index) {
           final item = entries[index];
           final isPinned = notifier.isPinned(pinScope, item.key);
+          if (item.key == featuredName) {
+            return Material(
+              key: ValueKey('$kind-featured-group'),
+              color: Colors.transparent,
+              child: InkWell(
+                onTap: () => _openCollection(context, item),
+                onLongPress: () => _showGroupActions(
+                  context,
+                  notifier,
+                  settings,
+                  item,
+                  playCounts,
+                ),
+                child: SongCollectionHeader(
+                  featured: true,
+                  title: item.key,
+                  songCount: item.value.length,
+                  playCount: groupPlayCounts[item.key] ?? 0,
+                  artwork: _groupArtworkWidget(
+                    settings,
+                    coverOverrides,
+                    item,
+                    playCounts,
+                    highResolution: true,
+                  ),
+                ),
+              ),
+            );
+          }
           final artwork = _groupArtworkWidget(
             settings,
             coverOverrides,
@@ -2295,7 +2335,7 @@ class _GroupTabState extends State<_GroupTab> {
   ) {
     Navigator.of(context).push(
       CupertinoPageRoute<void>(
-        builder: (_) => _SongCollectionPage(
+        builder: (_) => SongCollectionPage(
           title: item.key,
           songs: item.value,
           pinScope: kind == '歌手'
@@ -2804,8 +2844,9 @@ class _GroupPinBadge extends StatelessWidget {
   }
 }
 
-class _SongCollectionPage extends StatefulWidget {
-  const _SongCollectionPage({
+class SongCollectionPage extends StatefulWidget {
+  const SongCollectionPage({
+    super.key,
     required this.title,
     required this.songs,
     required this.pinScope,
@@ -2815,10 +2856,10 @@ class _SongCollectionPage extends StatefulWidget {
   final String pinScope;
 
   @override
-  State<_SongCollectionPage> createState() => _SongCollectionPageState();
+  State<SongCollectionPage> createState() => _SongCollectionPageState();
 }
 
-class _SongCollectionPageState extends State<_SongCollectionPage> {
+class _SongCollectionPageState extends State<SongCollectionPage> {
   final _selectedPaths = <String>{};
   bool _selecting = false;
   String get title => widget.title;
@@ -2860,101 +2901,176 @@ class _SongCollectionPageState extends State<_SongCollectionPage> {
         settings.followAlbumArtOnHome && backgroundAlbumArt != null;
     final useBackground = customBackgroundEnabled || albumArtBackgroundEnabled;
 
-    final scaffold = Scaffold(
-      backgroundColor: useBackground ? Colors.transparent : null,
-      appBar: AppBar(
-        title: Text(title),
-        backgroundColor: useBackground ? Colors.transparent : null,
-        scrolledUnderElevation: useBackground ? 0 : null,
-        actions: [
-          if (_selecting) ...[
-            IconButton(
-              tooltip: '退出多选',
-              icon: const Icon(Icons.close),
-              onPressed: () => setState(() {
+    final isArtist = pinScope.startsWith('artistSongs:');
+    final overridePath = isArtist
+        ? settings.artistGroupCoverPaths[title]
+        : settings.albumGroupCoverPaths[title];
+    Song? representative;
+    for (final song in sortedSongs) {
+      if (song.normalizedPath.toLowerCase() == overridePath?.toLowerCase()) {
+        representative = song;
+        break;
+      }
+    }
+    representative ??= SongGroupPresentation.representativeSong(
+      sortedSongs,
+      playCounts,
+    );
+    final coverOverrides = context.watch<CoverOverrideService>();
+    final actions = <Widget>[
+      if (_selecting) ...[
+        IconButton(
+          tooltip: '退出多选',
+          icon: const Icon(Icons.close),
+          onPressed: () => setState(() {
+            _selecting = false;
+            _selectedPaths.clear();
+          }),
+        ),
+        IconButton(
+          tooltip: '收藏',
+          icon: const Icon(Icons.favorite_border),
+          onPressed: () async {
+            await notifier.addSongsToFavorites(
+              sortedSongs.where(
+                (song) =>
+                    _selectedPaths.contains(song.normalizedPath.toLowerCase()),
+              ),
+            );
+            if (mounted) {
+              setState(() {
                 _selecting = false;
                 _selectedPaths.clear();
-              }),
-            ),
-            IconButton(
-              tooltip: '收藏',
-              icon: const Icon(Icons.favorite_border),
-              onPressed: () async {
-                await notifier.addSongsToFavorites(
-                  sortedSongs.where(
-                    (song) => _selectedPaths.contains(
-                      song.normalizedPath.toLowerCase(),
-                    ),
-                  ),
-                );
-                if (mounted) {
-                  setState(() {
-                    _selecting = false;
-                    _selectedPaths.clear();
-                  });
-                }
-              },
-            ),
-            IconButton(
-              tooltip: '隐藏歌曲',
-              icon: const Icon(Icons.visibility_off_outlined),
-              onPressed: () async {
-                await notifier.hideSongsFromLibrary(
-                  sortedSongs.where(
-                    (song) => _selectedPaths.contains(
-                      song.normalizedPath.toLowerCase(),
-                    ),
-                  ),
-                );
-                if (mounted) {
-                  setState(() {
-                    _selecting = false;
-                    _selectedPaths.clear();
-                  });
-                }
-              },
-            ),
-          ],
-          IconButton(
-            tooltip: '在$title中搜索',
-            icon: const Icon(Icons.search),
-            onPressed: () => showSearch<void>(
-              context: context,
-              delegate: _SongSearchDelegate(
-                initialQuery: '',
-                scope: _SongSearchScope.collection,
-                sourceSongs: sortedSongs,
-                onChanged: (_) {},
-                onPlay: (results, index) =>
-                    notifier.playFromDynamicList(results, index),
+              });
+            }
+          },
+        ),
+        IconButton(
+          tooltip: '隐藏歌曲',
+          icon: const Icon(Icons.visibility_off_outlined),
+          onPressed: () async {
+            await notifier.hideSongsFromLibrary(
+              sortedSongs.where(
+                (song) =>
+                    _selectedPaths.contains(song.normalizedPath.toLowerCase()),
               ),
-            ),
+            );
+            if (mounted) {
+              setState(() {
+                _selecting = false;
+                _selectedPaths.clear();
+              });
+            }
+          },
+        ),
+      ],
+      IconButton(
+        tooltip: '在$title中搜索',
+        icon: const Icon(Icons.search),
+        onPressed: () => showSearch<void>(
+          context: context,
+          delegate: _SongSearchDelegate(
+            initialQuery: '',
+            scope: _SongSearchScope.collection,
+            sourceSongs: sortedSongs,
+            onChanged: (_) {},
+            onPlay: (results, index) =>
+                notifier.playFromDynamicList(results, index),
           ),
-          IconButton(
-            tooltip: '全选',
-            icon: const Icon(Icons.select_all),
-            onPressed: () => setState(() {
-              _selecting = true;
-              _selectedPaths
-                ..clear()
-                ..addAll(
-                  sortedSongs.map((song) => song.normalizedPath.toLowerCase()),
-                );
-            }),
-          ),
-        ],
+        ),
       ),
-      body: _SongList(
-        songs: sortedSongs,
-        pinScope: pinScope,
-        selectionMode: _selecting,
-        selectedPaths: _selectedPaths,
-        onToggleSelection: (song) => setState(() {
-          _selecting = true;
-          final key = song.normalizedPath.toLowerCase();
-          if (!_selectedPaths.add(key)) _selectedPaths.remove(key);
+      IconButton(
+        tooltip: _selecting ? '全选' : '多选',
+        icon: Icon(_selecting ? Icons.select_all : Icons.checklist),
+        onPressed: () => setState(() {
+          if (_selecting) {
+            _selectedPaths
+              ..clear()
+              ..addAll(
+                sortedSongs.map((song) => song.normalizedPath.toLowerCase()),
+              );
+          } else {
+            _selectedPaths.clear();
+            _selecting = true;
+          }
         }),
-        onPlay: (index) => notifier.playFromDynamicList(sortedSongs, index),
+      ),
+
+      if (_selecting)
+        IconButton(
+          tooltip: '取消全选',
+          icon: const Icon(Icons.deselect),
+          onPressed: () => setState(_selectedPaths.clear),
+        ),
+    ];
+    final scaffold = Scaffold(
+      backgroundColor: useBackground ? Colors.transparent : null,
+      body: SafeArea(
+        bottom: false,
+        child: _SongList(
+          header: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              SongCollectionHeader(
+                key: const ValueKey('collection-detail-header'),
+                title: title,
+                songCount: sortedSongs.length,
+                playCount: SongGroupPresentation.totalPlayCount(
+                  sortedSongs,
+                  playCounts,
+                ),
+                artwork: _RequestedGroupArtwork(
+                  song: representative,
+                  overrideArtwork: coverOverrides.groupCover(
+                    artist: isArtist,
+                    group: title,
+                  ),
+                  fallbackIcon: isArtist ? Icons.person : Icons.album,
+                  highResolution: true,
+                  displaySize: ArtworkSize.groupLarge,
+                ),
+                onPlayAll: sortedSongs.isEmpty
+                    ? null
+                    : () => notifier.playFromDynamicList(sortedSongs, 0),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                child: Wrap(alignment: WrapAlignment.end, children: actions),
+              ),
+              const Divider(height: 1),
+            ],
+          ),
+          songs: sortedSongs,
+          pinScope: pinScope,
+          selectionMode: _selecting,
+          selectedPaths: _selectedPaths,
+          onToggleSelection: (song) => setState(() {
+            _selecting = true;
+            final key = song.normalizedPath.toLowerCase();
+            if (!_selectedPaths.add(key)) _selectedPaths.remove(key);
+          }),
+          onPlay: (index) => notifier.playFromDynamicList(sortedSongs, index),
+        ),
+      ),
+      bottomNavigationBar: HomeGlassSurface(
+        role: HomeGlassRole.playback,
+        child: SafeArea(
+          top: false,
+          child: Row(
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: IconButton.outlined(
+                  tooltip: '返回主页',
+                  onPressed: () =>
+                      Navigator.of(context).popUntil((route) => route.isFirst),
+                  icon: const Icon(Icons.arrow_back_rounded),
+                ),
+              ),
+              const Expanded(child: _MiniPlayer(surfaceEnabled: false)),
+            ],
+          ),
+        ),
       ),
     );
 
@@ -3060,6 +3176,7 @@ class _SongList extends StatelessWidget {
     this.pinScope,
     this.groupByInitial = false,
     this.compact = false,
+    this.header,
   });
   final List<Song> songs;
   final Future<void> Function(int index) onPlay;
@@ -3072,10 +3189,23 @@ class _SongList extends StatelessWidget {
   final bool groupByInitial;
   // Only the playlist split pane uses this density; other views stay unchanged.
   final bool compact;
+  final Widget? header;
 
   @override
   Widget build(BuildContext context) {
-    if (songs.isEmpty) return const Center(child: Text('没有歌曲'));
+    if (songs.isEmpty) {
+      return header == null
+          ? const Center(child: Text('没有歌曲'))
+          : ListView(
+              children: [
+                header!,
+                const Padding(
+                  padding: EdgeInsets.all(24),
+                  child: Center(child: Text('没有歌曲')),
+                ),
+              ],
+            );
+    }
     context.select<PlaylistContentNotifier, (int, int)>(
       (notifier) => (notifier.libraryRevision, notifier.playlistRevision),
     );
@@ -3230,6 +3360,7 @@ class _SongList extends StatelessWidget {
 
       return CustomScrollView(
         slivers: [
+          if (header != null) SliverToBoxAdapter(child: header),
           // Pinned songs already occupy their own leading section and expose
           // their state through the row action. Start the content immediately
           // so a redundant marker does not leave a large empty header above it.
@@ -3368,6 +3499,7 @@ class _SongList extends StatelessWidget {
       return CustomScrollView(
         key: const ValueKey('library-indexed-song-list'),
         slivers: [
+          if (header != null) SliverToBoxAdapter(child: header),
           if (pinnedIndices.isNotEmpty) ...[
             const SliverToBoxAdapter(child: SizedBox(height: 8)),
             buildItems(pinnedIndices, startOrder: 0),
@@ -3422,6 +3554,17 @@ class _SongList extends StatelessWidget {
     return withPrefetch(
       pinnedIndices.isNotEmpty
           ? buildPinnedSongsView(grid: false)
+          : header != null
+          ? CustomScrollView(
+              slivers: [
+                SliverToBoxAdapter(child: header),
+                SliverList.builder(
+                  itemCount: songs.length,
+                  itemBuilder: (context, index) =>
+                      buildSongTile(index, grid: false),
+                ),
+              ],
+            )
           : ListView.builder(
               itemCount: songs.length,
               itemBuilder: (context, index) =>
@@ -3713,7 +3856,8 @@ class _ArtworkPrefetchViewportState extends State<_ArtworkPrefetchViewport> {
 }
 
 class _MiniPlayer extends StatelessWidget {
-  const _MiniPlayer();
+  const _MiniPlayer({this.surfaceEnabled = true});
+  final bool surfaceEnabled;
   @override
   Widget build(BuildContext context) {
     final playback = context
@@ -3733,6 +3877,7 @@ class _MiniPlayer extends StatelessWidget {
     return _NowPlayingArtworkWarmup(
       song: song,
       child: HomeGlassMaterial(
+        enabled: surfaceEnabled,
         child: ListTile(
           leading: NowPlayingCoverHero(
             normalizedSongPath: song.normalizedPath,
@@ -4555,7 +4700,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   ) {
     if (!notifier.isContinuousSkipping) {
       _heldLyricSong = song;
-      _heldLyricPosition = notifier.currentPosition;
+      _heldLyricPosition = notifier.lyricVisualPosition;
       _frozenLyricLineIndex.value = notifier.lyricLineIndexListenable.value;
     }
     return notifier.beginContinuousSkip();
@@ -4917,6 +5062,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     Duration target,
     PlaylistContentNotifier notifier,
   ) async {
+    target = notifier.mediaPositionForLyric(target);
     final totalMs = notifier.totalDuration.inMilliseconds.toDouble();
     final targetMs = target.inMilliseconds
         .toDouble()
@@ -4927,7 +5073,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     _isDraggingSeek = false;
     _seekPosition.value = targetMs;
     _jumpPending.value = true;
-    _lyricsListController.settleOn(target);
+    _lyricsListController.settleOn(
+      Duration(milliseconds: targetMs.round()) -
+          notifier.mediaPositionForLyric(Duration.zero),
+    );
     notifier.signalLyricSeekIntent();
     try {
       for (var attempt = 0; attempt < 2; attempt++) {
@@ -5389,7 +5538,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                             if (!hasHighlightedLyricLine(
                               lines: notifier.currentLyrics,
                               activeIndex: notifier.currentLyricLineIndex,
-                              position: notifier.currentPosition,
+                              position: notifier.lyricVisualPosition,
                             )) {
                               return null;
                             }
@@ -5490,10 +5639,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       activeColor: activeLyricColor,
       position: notifier.isContinuousSkipping
           ? _heldLyricPosition
-          : notifier.currentPosition,
+          : notifier.lyricVisualPosition,
       positionListenable:
           _lyricsRealtimeVisualsEnabled && !notifier.isContinuousSkipping
-          ? notifier.positionListenable
+          ? notifier.lyricPositionListenable
           : null,
       playbackRate: notifier.currentPlaybackRate,
       playbackRateListenable: notifier.isContinuousSkipping
@@ -7533,6 +7682,14 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
           value: settings.enableKaraokeLyrics,
           onChanged: settings.setEnableKaraokeLyrics,
         ),
+        ListTile(
+          contentPadding: EdgeInsets.zero,
+          title: const Text('歌词同步校准'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const AudioOutputPage()),
+          ),
+        ),
         if (settings.enableKaraokeLyrics) ...[
           SwitchListTile(
             contentPadding: EdgeInsets.zero,
@@ -8639,7 +8796,7 @@ class _GroupSearchDelegate extends SearchDelegate<void> {
             final notifier = context.read<PlaylistContentNotifier>();
             Navigator.of(context).push(
               CupertinoPageRoute<void>(
-                builder: (_) => _SongCollectionPage(
+                builder: (_) => SongCollectionPage(
                   title: entry.key,
                   songs: entry.value,
                   pinScope: kind == '歌手'

@@ -13,6 +13,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
 import android.view.KeyEvent
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.session.CommandButton
@@ -151,6 +153,11 @@ internal object MediaSessionManager :
     // MediaNotificationManager, so without this binding the notification — and
     // the lock-screen / shade media controls it drives — never appear.
     private var controllerFuture: ListenableFuture<MediaController>? = null
+    private var serviceController: MediaController? = null
+    private var serviceRetry: Runnable? = null
+    private var serviceTimeout: Runnable? = null
+    private val serviceRecovery = BackgroundServiceRecovery()
+    private var serviceFailure: String? = null
     private var publishCount: Int = 0
 
     /** The last media button preferences pushed to the session — so a
@@ -389,7 +396,7 @@ internal object MediaSessionManager :
         enabled = true
         ensureSessionCreated()
         ensureAudioFocus()
-        startService()
+        startService(resetRetry = true)
         publish()
         // Take audio focus + arm the headphone-unplug receiver if we're
         // already playing at enable time.
@@ -417,6 +424,7 @@ internal object MediaSessionManager :
 
     private fun updatePlayback(playback: Map<*, *>) = runOnMain {
         val pb = parsePlayback(playback)
+        val wasPlaying = this.playback.playing
         this.playback = pb
         val frozen = scrubFreezeMs
         // Clear the scrub freeze once Dart confirms the landed position is
@@ -435,6 +443,7 @@ internal object MediaSessionManager :
         // held across a user pause and released only on disable. On pause, drop
         // the becoming-noisy receiver but keep focus.
         if (pb.playing) {
+            if (!wasPlaying || controllerFuture == null) startService(resetRetry = !wasPlaying)
             audioFocus?.onPlaybackActive()
         } else {
             audioFocus?.onPlaybackInactive()
@@ -459,8 +468,7 @@ internal object MediaSessionManager :
         publishCount++
         // Release the foreground-holding controller before stopping the
         // service so Media3 drops the notification and demotes the FGS.
-        controllerFuture?.let { MediaController.releaseFuture(it) }
-        controllerFuture = null
+        cancelServiceConnection()
         stopService()
         // Media3's documented onDestroy order: release the Player BEFORE the
         // MediaSession it wraps, or the player's release-time notifications hit
@@ -535,24 +543,94 @@ internal object MediaSessionManager :
         }
     }
 
-    private fun startService() {
+    private fun startService(resetRetry: Boolean = false) {
         val ctx = appContext ?: return
+        if (!enabled) return
+        if (resetRetry) {
+            serviceRecovery.reset()
+            serviceRetry?.let(mainHandler::removeCallbacks)
+            serviceRetry = null
+        }
+        if (controllerFuture != null || serviceRetry != null || !serviceRecovery.tryStart()) return
         try {
             ctx.startService(Intent(ctx, MpvMediaSessionService::class.java))
-        } catch (_: Exception) {
-            // Background-start restriction (Android 8+) — enable() is
-            // user-initiated in the foreground, so this rarely fires; if it
-            // does, the session still exists, only the notification is absent.
+        } catch (error: Exception) {
+            Log.w("MyuneBackground", "Service start request failed; checking media binding", error)
         }
         // Bind a controller to the service. This is what makes Media3 promote
         // the service to the foreground and post the media notification — a
         // bare startService never engages its notification manager. The
         // controller drives nothing (playback is owned by Dart); it exists
         // only to hold the service foreground for the session's lifetime.
-        if (controllerFuture == null) {
+        try {
             val token =
                 SessionToken(ctx, ComponentName(ctx, MpvMediaSessionService::class.java))
-            controllerFuture = MediaController.Builder(ctx, token).buildAsync()
+            val future = MediaController.Builder(ctx, token)
+                .setListener(object : MediaController.Listener {
+                    override fun onDisconnected(controller: MediaController) {
+                        if (serviceController !== controller) return
+                        serviceRecovery.disconnected(SystemClock.elapsedRealtime())
+                        cancelServiceConnection()
+                        retryService("media controller disconnected")
+                    }
+                }).buildAsync()
+            controllerFuture = future
+            val timeout = Runnable {
+                if (controllerFuture !== future || serviceController != null) return@Runnable
+                cancelServiceConnection()
+                retryService("media controller connection timed out")
+            }
+            serviceTimeout = timeout
+            mainHandler.postDelayed(timeout, 5_000)
+            future.addListener({
+                if (controllerFuture !== future || !enabled) return@addListener
+                serviceTimeout?.let(mainHandler::removeCallbacks)
+                serviceTimeout = null
+                try {
+                    serviceController = future.get()
+                    serviceRecovery.connected(SystemClock.elapsedRealtime())
+                    serviceFailure = null
+                    Log.i("MyuneBackground", "Media service connected")
+                } catch (error: Exception) {
+                    cancelServiceConnection()
+                    retryService("media controller connection failed: ${error.javaClass.simpleName}")
+                }
+            }, { task -> mainHandler.post(task) })
+        } catch (error: Exception) {
+            cancelServiceConnection()
+            retryService("media controller initialization failed: ${error.javaClass.simpleName}")
+        }
+    }
+
+    private fun cancelServiceConnection() {
+        serviceRetry?.let(mainHandler::removeCallbacks)
+        serviceTimeout?.let(mainHandler::removeCallbacks)
+        serviceRetry = null
+        serviceTimeout = null
+        serviceController = null
+        val future = controllerFuture
+        controllerFuture = null
+        if (future != null) MediaController.releaseFuture(future)
+    }
+
+    private fun retryService(reason: String) {
+        serviceFailure = reason
+        Log.w("MyuneBackground", "$reason (attempt ${serviceRecovery.attempts}/3)")
+        val delay = serviceRecovery.retryDelay() ?: return
+        if (!enabled || !playback.playing || serviceRetry != null) return
+        val retry = Runnable {
+            serviceRetry = null
+            if (enabled && playback.playing) startService()
+        }
+        serviceRetry = retry
+        mainHandler.postDelayed(retry, delay)
+    }
+
+    fun onServiceDestroyed() = runOnMain {
+        if (enabled && playback.playing) {
+            serviceRecovery.disconnected(SystemClock.elapsedRealtime())
+            cancelServiceConnection()
+            retryService("media service destroyed during playback")
         }
     }
 
@@ -611,7 +689,11 @@ internal object MediaSessionManager :
                 "frozen" to false,
             )
         }
-        return p.debugProbe(publishCount)
+        return p.debugProbe(publishCount) + mapOf(
+            "backgroundServiceConnected" to (serviceController != null),
+            "backgroundServiceAttempts" to serviceRecovery.attempts,
+            "backgroundServiceFailure" to serviceFailure,
+        )
     }
 
     // ── Parsing ─────────────────────────────────────────────────────────

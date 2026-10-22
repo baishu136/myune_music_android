@@ -9,6 +9,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart'
     show ValueListenable, kDebugMode, listEquals;
 import 'package:flutter/services.dart' show PlatformException;
+import '../../services/audio/audio_output_controller.dart';
+import '../../services/audio/audio_output_error_policy.dart';
+import '../../services/lyric_visual_timeline.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -1026,6 +1029,46 @@ class PlaylistContentNotifier extends ChangeNotifier
   // --- 播放器相关 ---
   final AudioService _audioService = AudioService();
   PlayerApi get mediaPlayer => _audioService.player;
+  AudioOutputController? _outputController;
+  AudioOutputController get audioOutput =>
+      _outputController ??= AudioOutputController(player: mediaPlayer)
+        ..sync.addListener(_handleLyricSyncChanged);
+  final ValueNotifier<Duration> _lyricPosition = ValueNotifier(Duration.zero);
+  ValueListenable<Duration> get lyricPositionListenable => _lyricPosition;
+  Duration get lyricVisualPosition => _lyricPosition.value;
+  Duration mediaPositionForLyric(Duration lyric) =>
+      _outputController?.sync.mediaPosition(
+        lyric,
+        rate: _actualPlaybackRateListenable.value,
+      ) ??
+      lyric;
+  final _lyricTimeline = LyricVisualTimeline();
+  final _lyricWallClock = Stopwatch()..start();
+  Duration lyricPositionFor(Duration media) {
+    final sync = _outputController?.sync;
+    if (sync == null) return media;
+    sync.useSong(_currentSong?.normalizedPath);
+    final rate = _actualPlaybackRateListenable.value;
+    final projected = _lyricTimeline.sample(
+      media,
+      _lyricWallClock.elapsed,
+      running: _actualPlaybackListenable.value,
+      rate: rate,
+      automatic: sync.automatic,
+    );
+    return sync.visualPosition(projected, rate: rate);
+  }
+
+  void _handleLyricSyncChanged() {
+    _lyricTimeline.reset();
+    final next = lyricPositionFor(_currentPosition);
+    if (_lyricPosition.value == next) return;
+    _lyricPosition.value = next;
+    updateLyricLine(_currentPosition);
+    _lyricSeekListenable.publish(next);
+    notifyListeners();
+  }
+
   bool _appExitShutdownStarted = false;
   StreamSubscription<Duration>? _positionSubscription;
   bool _isAppForeground = true;
@@ -1354,7 +1397,8 @@ class PlaylistContentNotifier extends ChangeNotifier
       _lyricSeekIntentListenable;
   void signalLyricSeekIntent() => _lyricSeekIntentListenable.value++;
   void signalLyricSeek(Duration position) {
-    _lyricSeekListenable.publish(position);
+    _lyricTimeline.reset();
+    _lyricSeekListenable.publish(lyricPositionFor(position));
   }
 
   ValueListenable<int> get lyricLineIndexListenable =>
@@ -1675,9 +1719,18 @@ class PlaylistContentNotifier extends ChangeNotifier
     _continuousSkip.addListener(_handleContinuousSkipChanged);
     _coverOverrides.addListener(_handleCoverOverridesChanged);
     _setupMediaPlayerListeners(); // 设置 media-kit 的监听器
+    if (Platform.isAndroid) {
+      unawaited(
+        audioOutput.initializationFuture.catchError(
+          (Object error) => _writeErrorToLog('初始化音频输出管理失败', error),
+        ),
+      );
+    }
     _initLogFile();
     unawaited(_loadAllData()); // 使用一个统一的方法来加载所有数据
-    _loadDevices(); // 加载音频设备
+    if (!Platform.isAndroid) {
+      _loadDevices(); // Android routes are owned by audioOutput.
+    }
 
     // 初始化全局快捷键 (等待 SettingsProvider 异步加载完成后再执行，避免初始读取为 null)
     unawaited(
@@ -2125,7 +2178,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     await Future.wait<void>([
       StatisticsManager().flushPendingSave(),
       savePlaybackState(),
-      _audioService.dispose(),
+      _disposeAudioOutput(),
     ]);
   }
 
@@ -2160,6 +2213,9 @@ class PlaylistContentNotifier extends ChangeNotifier
     _coverOverrides.removeListener(_handleCoverOverridesChanged);
     _positionSubscription?.cancel();
     _positionListenable.dispose();
+    _lyricPosition.dispose();
+    _outputController?.sync.removeListener(_handleLyricSyncChanged);
+    _outputController?.dispose();
     _actualPlaybackListenable.dispose();
     _actualPlaybackRateListenable.dispose();
     _lyricSeekListenable.dispose();
@@ -2190,7 +2246,12 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _safeDispose() {
-    _audioService.dispose();
+    unawaited(_disposeAudioOutput());
+  }
+
+  Future<void> _disposeAudioOutput() async {
+    await _outputController?.releaseResources();
+    await _audioService.dispose();
   }
 
   MediaSession _buildMediaSession(Song song) {
@@ -2266,6 +2327,8 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   void _setCurrentPosition(Duration position) {
     _currentPosition = position;
+    final visual = lyricPositionFor(position);
+    if (_lyricPosition.value != visual) _lyricPosition.value = visual;
     if (_positionListenable.value != position) {
       _positionListenable.value = position;
     }
@@ -2396,6 +2459,7 @@ class PlaylistContentNotifier extends ChangeNotifier
     });
     _audioService.player.stream.rate.distinct().listen((rate) {
       _actualPlaybackRateListenable.value = rate;
+      if (_outputController != null) _handleLyricSyncChanged();
     });
     // `playing` briefly becomes false while seeking or buffering. The stable
     // playWhenReady signal matches the user's requested transport state.
@@ -2478,6 +2542,10 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     _audioService.player.stream.error.listen((error) {
       final errorString = error.toString();
+      if (Platform.isAndroid && isRecoveringAudioDisconnect(error)) {
+        debugPrint('音频输出连接变化，等待播放器恢复：$error');
+        return;
+      }
 
       // windows 在使用独占模式播放有损压缩的音频格式时
       // mpv会报：MpvLogError(prefix: ao/wasapi, level: LogLevel.error, text: Error initializing device: AUDCLNT_E_BUFFER_SIZE_NOT_ALIGNED (0x88890019))
@@ -2490,6 +2558,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
       // 检测音频设备错误：当用户选择了特定设备且该设备不可用时，自动回退到自动选择
       if (errorString.contains('Could not open/initialize audio device') &&
+          !Platform.isAndroid &&
           !_settingsProvider.audioDeviceIsAuto) {
         useAutoDevice();
         _infoStreamController.add('所选音频设备不可用，已自动切换到默认设备');
@@ -7712,6 +7781,7 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void updateLyricLine(Duration currentPosition) {
+    currentPosition = lyricPositionFor(currentPosition);
     if (isContinuousSkipping) return;
     if (_currentLyrics.isEmpty) {
       if (_currentLyricLineIndex != -1) {

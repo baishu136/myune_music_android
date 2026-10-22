@@ -37,6 +37,15 @@ mixin _FfiModule on _PlayerBase {
 
   @override
   Future<int> _propRc(String name, String value) {
+    final guard = _transparentAudio;
+    if (guard != null && guard.containsKey(name)) {
+      _savedAudioProperties[name] = value;
+      value = guard[name]!;
+    }
+    return _writeNativeProperty(name, value);
+  }
+
+  Future<int> _writeNativeProperty(String name, String value) {
     // A multi-write setter (e.g. setReplayGain's four writes) can be
     // suspended awaiting reply N when dispose() runs; `_drainPendingReplies`
     // resumes it as a microtask, and `mpv_terminate_destroy` frees the handle
@@ -70,6 +79,11 @@ mixin _FfiModule on _PlayerBase {
 
   @override
   Future<int> _command(List<String> args) {
+    if (_transparentAudio != null &&
+        args.isNotEmpty &&
+        (args.first == 'af-command' || args.first == 'af')) {
+      return Future.value(MpvError.mpvErrorSuccess);
+    }
     // See `_propRc`: never issue FFI on a handle dispose may have freed.
     if (_ffiClosed) return Future.value(MpvError.mpvErrorSuccess);
     final id = _nextReplyId++;
@@ -293,6 +307,72 @@ mixin _FfiModule on _PlayerBase {
       );
     }
     await _prop(name, value);
+  }
+
+  @override
+  Future<void> setTransparentOutput(
+    bool enabled, {
+    String format = 'auto',
+    int sampleRate = 0,
+    String channels = 'auto',
+  }) async {
+    await _gate();
+    if (enabled) {
+      final wasActive = _transparentAudio != null;
+      final values = <String, String>{
+        'af': '',
+        'volume': '100',
+        'volume-gain': '0',
+        'speed': '1',
+        'pitch': '1',
+        'replaygain': 'no',
+        'audio-normalize-downmix': 'no',
+        'audio-pitch-correction': 'no',
+          'resume-playback': 'no',
+        'audio-format': format,
+        'audio-samplerate': '$sampleRate',
+        'audio-channels': channels,
+      };
+      _transparentAudio = values;
+      try {
+        if (!wasActive) {
+          _savedAudioProperties.clear();
+          for (final name in values.keys) {
+            final (rc, value) =
+                await _getAsync(name, MpvFormat.mpvFormatString);
+            if (rc >= 0 && value != null) {
+              _savedAudioProperties.putIfAbsent(name, () => '$value');
+            }
+          }
+        }
+        for (final entry in values.entries) {
+          final rc = await _writeNativeProperty(entry.key, entry.value);
+          if (rc < 0) {
+            throw MpvException(
+                name: entry.key, code: rc, message: _errorString(rc));
+          }
+        }
+      } catch (_) {
+        await setTransparentOutput(false);
+        rethrow;
+      }
+    } else {
+      if (_transparentAudio == null) return;
+      _transparentAudio = null;
+      final saved = Map<String, String>.of(_savedAudioProperties);
+      _savedAudioProperties.clear();
+      Object? failure;
+      for (final entry in saved.entries) {
+        if (entry.key == 'af') continue;
+        final rc = await _writeNativeProperty(entry.key, entry.value);
+        if (rc < 0) {
+          failure ??= MpvException(
+              name: entry.key, code: rc, message: _errorString(rc));
+        }
+      }
+      await _syncAfChain(_effectiveAfChain(_state.audioEffects));
+      if (failure != null) throw failure;
+    }
   }
 
   /// Sends a raw mpv command.

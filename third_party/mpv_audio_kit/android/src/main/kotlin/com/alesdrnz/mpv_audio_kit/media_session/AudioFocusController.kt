@@ -59,6 +59,9 @@ internal class AudioFocusController(
      *  Gate on the request result — a FAILED/DELAYED grant pauses instead of
      *  barging over a non-duckable holder (active call / assistant). */
     fun onPlaybackActive() {
+        // Position/metadata pushes are not new play requests. In particular,
+        // don't erase the transient-loss resume latch on one of these pushes.
+        if (hasFocus) { registerNoisy(); return }
         val result = requestFocus()
         registerNoisy()
         val r = InterruptionLogic.onFocusRequestResult(result, policy())
@@ -81,6 +84,7 @@ internal class AudioFocusController(
     }
 
     private fun onFocusChange(focusChange: Int) {
+        if (focusChange == AudioManager.AUDIOFOCUS_GAIN) hasFocus = true
         val r = InterruptionLogic.onFocusChange(focusChange, policy(), resumeOnFocusGain)
         resumeOnFocusGain = r.resumeOnFocusGain
         if (r.abandonFocus) abandonFocus()

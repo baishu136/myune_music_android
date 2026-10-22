@@ -21,6 +21,7 @@ import java.io.IOException
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
+    private var audioOutputManager: AudioOutputManager? = null
     private val channelName = "com.myune.music/desktop_lyrics"
     private val coverEditorChannelName = "com.myune.music/cover_editor"
     private val faultLogChannelName = "com.myune.music/fault_log"
@@ -42,6 +43,8 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        audioOutputManager?.dispose()
+        audioOutputManager = AudioOutputManager(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             faultLogChannelName,
@@ -414,6 +417,12 @@ class MainActivity : FlutterActivity() {
     override fun onStop() {
         DesktopLyricsService.setAppVisible(false)
         super.onStop()
+    }
+
+    override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        audioOutputManager?.dispose()
+        audioOutputManager = null
+        super.cleanUpFlutterEngine(flutterEngine)
     }
 
     override fun onDestroy() {

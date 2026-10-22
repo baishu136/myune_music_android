@@ -724,6 +724,8 @@ abstract class _PlayerBase {
   /// `_disposed` (set at the very start of dispose) because the dispose `quit`
   /// must still reach mpv — it is issued while this is still false.
   bool _ffiClosed = false;
+  Map<String, String>? _transparentAudio;
+  final Map<String, String> _savedAudioProperties = {};
 
   /// In-flight `registerHook` runs. `mpv_hook_add` locks the core and has no
   /// async variant, so it executes in a throwaway `Isolate.run` against the
@@ -759,6 +761,9 @@ abstract class _PlayerBase {
   /// `stream-open-filename` across the part boundary.
   Future<String?> getRawProperty(String name);
   Future<void> setRawProperty(String name, String value);
+  Future<void> setTransparentOutput(bool enabled, {
+    String format = 'auto', int sampleRate = 0, String channels = 'auto',
+  });
 
   /// See `_HooksModule` (player_hooks.part.dart) — called by the dispatch
   /// layer for every MPV_EVENT_HOOK: runs the source resolver when one is

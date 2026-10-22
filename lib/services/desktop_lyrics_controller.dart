@@ -91,6 +91,14 @@ class DesktopLyricsController extends ChangeNotifier {
     _theme?.removeListener(_onThemeChanged);
     _playlist?.removeListener(_onPlaylistChanged);
     _playlist?.lyricSeekListenable.removeListener(_onSeek);
+    if (isSupported) {
+      _playlist?.actualPlaybackListenable.removeListener(
+        _onPlaybackClockChanged,
+      );
+      _playlist?.actualPlaybackRateListenable.removeListener(
+        _onPlaybackClockChanged,
+      );
+    }
     _settings = settings;
     _theme = theme;
     _observedFontFamily = theme.currentFontFamily;
@@ -99,6 +107,12 @@ class DesktopLyricsController extends ChangeNotifier {
     theme.addListener(_onThemeChanged);
     playlist.addListener(_onPlaylistChanged);
     playlist.lyricSeekListenable.addListener(_onSeek);
+    if (isSupported) {
+      playlist.actualPlaybackListenable.addListener(_onPlaybackClockChanged);
+      playlist.actualPlaybackRateListenable.addListener(
+        _onPlaybackClockChanged,
+      );
+    }
     if (!_initialized) {
       _initialized = true;
       _channel.setMethodCallHandler(_handleNativeCall);
@@ -239,6 +253,13 @@ class DesktopLyricsController extends ChangeNotifier {
     await _settings?.setDesktopLyricsAlignment(value);
   }
 
+  void _onPlaybackClockChanged() {
+    final playlist = _playlist;
+    if (!enabled || playlist == null) return;
+    _position = playlist.lyricPositionFor(playlist.mediaPlayer.state.position);
+    unawaited(_sync(force: true));
+  }
+
   void _onSeek() {
     final position = _playlist?.lyricSeekListenable.value;
     if (position == null || !enabled) return;
@@ -325,11 +346,11 @@ class DesktopLyricsController extends ChangeNotifier {
     if (!enabled || _positionSubscription != null) return;
     final player = _playlist?.mediaPlayer;
     if (player == null) return;
-    _position = player.state.position;
+    _position = _playlist!.lyricPositionFor(player.state.position);
     _positionSubscription = player.stream.position.listen((position) {
-      _position = position;
+      _position = _playlist!.lyricPositionFor(position);
       final lyrics = _playlist?.currentLyrics ?? const <LyricLine>[];
-      final index = _currentLyricIndex(lyrics, position);
+      final index = _currentLyricIndex(lyrics, _position);
       if (index != _lastLyricIndex) {
         _lastLyricIndex = index;
         if (_pendingSongSwitchPath != null) return;
@@ -366,8 +387,8 @@ class DesktopLyricsController extends ChangeNotifier {
     if (playlist == null) return;
     final songPath = playlist.currentSong?.filePath;
     final lyrics = playlist.currentLyrics;
-    final playing = playlist.isPlaying;
-    final rate = playlist.currentPlaybackRate;
+    final playing = playlist.actualPlaybackListenable.value;
+    final rate = playlist.actualPlaybackRateListenable.value;
     final songChanged = songPath != _observedSongPath;
     final materiallyChanged =
         songPath != _observedSongPath ||
@@ -381,7 +402,7 @@ class DesktopLyricsController extends ChangeNotifier {
     _observedLyricsLength = lyrics.length;
     _observedPlaying = playing;
     _observedRate = rate;
-    _position = playlist.mediaPlayer.state.position;
+    _position = playlist.lyricPositionFor(playlist.mediaPlayer.state.position);
     _lastLyricIndex = _currentLyricIndex(lyrics, _position);
     if (songChanged) {
       _pendingSongSwitchPath = songPath;
@@ -453,8 +474,8 @@ class DesktopLyricsController extends ChangeNotifier {
       'karaoke': karaoke,
       'highlightColor': highlightColor,
       'alignment': alignment.name,
-      'playbackRate': playlist.currentPlaybackRate,
-      'isPlaying': playlist.isPlaying,
+      'playbackRate': playlist.actualPlaybackRateListenable.value,
+      'isPlaying': playlist.actualPlaybackListenable.value,
       'isLocked': settings.desktopLyricsLocked,
       'color': settings.desktopLyricsColor,
       'fontSize': settings.desktopLyricsFontSize,
@@ -523,6 +544,14 @@ class DesktopLyricsController extends ChangeNotifier {
     _theme?.removeListener(_onThemeChanged);
     _playlist?.removeListener(_onPlaylistChanged);
     _playlist?.lyricSeekListenable.removeListener(_onSeek);
+    if (isSupported) {
+      _playlist?.actualPlaybackListenable.removeListener(
+        _onPlaybackClockChanged,
+      );
+      _playlist?.actualPlaybackRateListenable.removeListener(
+        _onPlaybackClockChanged,
+      );
+    }
     _positionSubscription?.cancel();
     _songSwitchSyncTimer?.cancel();
     _mediaCommandSubscription?.cancel();

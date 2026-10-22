@@ -27,6 +27,36 @@ class SongGroupPresentation {
   static int playCount(Song song, Map<String, int> normalizedCounts) =>
       normalizedCounts[_normalize(song.normalizedPath)] ?? 0;
 
+  static int totalPlayCount(Iterable<Song> songs, Map<String, int> counts) {
+    final paths = <String>{};
+    var total = 0;
+    for (final song in songs) {
+      final path = _normalize(song.normalizedPath);
+      if (paths.add(path)) total += counts[path] ?? 0;
+    }
+    return total;
+  }
+
+  static String? mostPlayedGroup(Map<String, int> totals) {
+    String? best;
+    var maximum = 0;
+    for (final entry in totals.entries) {
+      if (entry.value <= 0) continue;
+      final current = best;
+      final order = current == null
+          ? -1
+          : alphabeticSortKey(entry.key).compareTo(alphabeticSortKey(current));
+      if (entry.value > maximum ||
+          (entry.value == maximum &&
+              (order < 0 ||
+                  (order == 0 && entry.key.compareTo(current!) < 0)))) {
+        best = entry.key;
+        maximum = entry.value;
+      }
+    }
+    return best;
+  }
+
   static List<Song> sortByPlayCount(
     Iterable<Song> songs,
     Map<String, int> normalizedCounts,
