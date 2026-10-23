@@ -15,11 +15,15 @@ from analyze_android_apk import (  # noqa: E402
 
 def elf(alignment=16384):
     data = bytearray(4096)
-    data[:6] = b"\x7fELF\x02\x01"
+    data[:7] = b"\x7fELF\x02\x01\x01"
+    struct.pack_into("<H", data, 16, 3)  # ET_DYN
     struct.pack_into("<H", data, 18, 183)
+    struct.pack_into("<I", data, 20, 1)
     struct.pack_into("<Q", data, 32, 64)
+    struct.pack_into("<H", data, 52, 64)
     struct.pack_into("<HH", data, 54, 56, 1)
     struct.pack_into("<I", data, 64, 1)
+    struct.pack_into("<QQ", data, 96, len(data), len(data))
     struct.pack_into("<Q", data, 112, alignment)
     return data
 
@@ -88,6 +92,48 @@ class ApkAuditTest(unittest.TestCase):
         for data in (b"invalid", elf(4096), elf()[:80], elf(20000)):
             with self.assertRaises(ValueError):
                 elf_load_alignments(data)
+
+    def test_load_offset_and_address_must_be_congruent(self):
+        data = elf()
+        struct.pack_into("<Q", data, 80, 1)  # p_vaddr, with p_offset still zero
+        with self.assertRaisesRegex(ValueError, "congruent"):
+            elf_load_alignments(data)
+
+    def test_load_segment_must_fit_file_and_memory(self):
+        for offset, file_size, memory_size in ((0, 4097, 4097), (0, 4096, 4095), (16384, 1, 1)):
+            with self.subTest(offset=offset, file_size=file_size, memory_size=memory_size):
+                data = elf()
+                struct.pack_into("<QQ", data, 72, offset, offset)
+                struct.pack_into("<QQ", data, 96, file_size, memory_size)
+                with self.assertRaises(ValueError):
+                    elf_load_alignments(data)
+
+    def test_elf_identity_and_header_must_describe_a_shared_library(self):
+        for offset, format_, value in ((6, "B", 0), (16, "H", 1), (20, "I", 0), (52, "H", 32)):
+            with self.subTest(offset=offset):
+                data = elf()
+                struct.pack_into("<" + format_, data, offset, value)
+                with self.assertRaises(ValueError):
+                    elf_load_alignments(data)
+
+    def test_zero_filled_memory_tail_is_valid(self):
+        data = elf()
+        struct.pack_into("<Q", data, 104, 8192)
+        self.assertEqual(elf_load_alignments(data), [16384])
+
+    def test_nonzero_congruent_offsets_are_valid(self):
+        data = elf()
+        struct.pack_into("<QQ", data, 72, 512, 16384 + 512)
+        struct.pack_into("<QQ", data, 96, 1024, 2048)
+        self.assertEqual(elf_load_alignments(data), [16384])
+
+    def test_no_load_segments_or_truncated_program_table_rejected(self):
+        for offset, format_, value in ((64, "I", 4), (56, "H", 0), (32, "Q", 4096), (54, "H", 40)):
+            with self.subTest(offset=offset):
+                data = elf()
+                struct.pack_into("<" + format_, data, offset, value)
+                with self.assertRaises(ValueError):
+                    elf_load_alignments(data)
 
 
 if __name__ == "__main__":

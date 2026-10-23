@@ -31,11 +31,17 @@ def elf_load_alignments(data):
     """Read ELF64 LE program headers (ARM64), without extracting files."""
     if len(data) < 64 or data[:6] != b"\x7fELF\x02\x01":
         raise ValueError("Expected ELF64 little-endian library")
+    if data[6] != 1 or struct.unpack_from("<I", data, 20)[0] != 1:
+        raise ValueError("Unsupported ELF version")
+    if struct.unpack_from("<H", data, 16)[0] != 3:
+        raise ValueError("Expected ELF shared object (ET_DYN)")
     if struct.unpack_from("<H", data, 18)[0] != 183:
         raise ValueError("Expected AArch64 library")
+    if struct.unpack_from("<H", data, 52)[0] != 64:
+        raise ValueError("Invalid ELF64 header size")
     offset = struct.unpack_from("<Q", data, 32)[0]
     stride, count = struct.unpack_from("<HH", data, 54)
-    if stride < 56 or offset + stride * count > len(data):
+    if offset < 64 or stride < 56 or offset + stride * count > len(data):
         raise ValueError("Truncated ELF program headers")
     alignments = []
     for index in range(count):
@@ -44,6 +50,16 @@ def elf_load_alignments(data):
             alignment = struct.unpack_from("<Q", data, start + 48)[0]
             if alignment < 16384 or alignment & (alignment - 1):
                 raise ValueError("ELF LOAD alignment is not >= 16 KiB")
+            file_offset, address = struct.unpack_from("<QQ", data, start + 8)
+            file_size, memory_size = struct.unpack_from("<QQ", data, start + 32)
+            # p_align alone cannot establish that a segment is loadable.
+            # https://gabi.xinuos.com/elf/07-pheader.html
+            if file_offset % alignment != address % alignment:
+                raise ValueError("ELF LOAD offset/address are not congruent")
+            if file_size > memory_size:
+                raise ValueError("ELF LOAD file size exceeds memory size")
+            if file_offset + file_size > len(data):
+                raise ValueError("ELF LOAD segment exceeds file bounds")
             alignments.append(alignment)
     if not alignments:
         raise ValueError("ELF has no LOAD segments")
@@ -82,11 +98,15 @@ def inspect_apk(path, require_compressed=False):
             if entry in libraries:
                 if require_compressed and entry.compress_type != zipfile.ZIP_DEFLATED:
                     raise ValueError(f"Uncompressed native library: {entry.filename}")
+                try:
+                    alignments = elf_load_alignments(apk.read(entry))
+                except ValueError as error:
+                    raise ValueError(f"{entry.filename}: {error}") from error
                 native.append({
                     "name": entry.filename, "raw_bytes": entry.file_size,
                     "zip_bytes": entry.compress_size,
                     "compression_method": entry.compress_type,
-                    "load_alignments": elf_load_alignments(apk.read(entry)),
+                    "load_alignments": alignments,
                     "sha256": hashes[entry.filename],
                 })
         largest = sorted(entries, key=lambda entry: entry.compress_size, reverse=True)[:12]

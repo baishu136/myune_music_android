@@ -85,6 +85,7 @@ class AudioOutputController extends ChangeNotifier {
     );
     try {
       await refresh();
+      if (_disposed) return;
       if (snapshot.bridgeAvailable && snapshot.sdk >= 26) {
         // Default remains system automatic (device-id 0), with the old backend as fallback.
         await player.setRawProperty('ao', 'aaudio,audiotrack,opensles');
@@ -94,6 +95,7 @@ class AudioOutputController extends ChangeNotifier {
     }
     if (_disposed) return;
     _params = player.stream.audioParams.listen((params) {
+      if (_disposed) return;
       final identity = (params.format, params.sampleRate, params.channelCount);
       if (identity == _configuredSource) return;
       _dspBypassConfirmed = false;
@@ -112,7 +114,7 @@ class AudioOutputController extends ChangeNotifier {
       });
     });
     _errors = player.stream.error.listen((error) {
-      if (busy || !isAudioOutputFailure(error)) return;
+      if (_disposed || busy || !isAudioOutputFailure(error)) return;
       _recoverAfterSettling(() async {
         if (!player.state.playWhenReady) return false;
         final driver = await player.getRawProperty('current-ao');
@@ -225,6 +227,7 @@ class AudioOutputController extends ChangeNotifier {
   }
 
   Future<void> _run(Future<void> Function() operation) {
+    if (_disposed) return Future.value();
     _recoveryTimer?.cancel();
     _recoveryTimer = null;
     final revision = ++_request;
@@ -236,6 +239,7 @@ class AudioOutputController extends ChangeNotifier {
       try {
         await operation();
       } catch (error) {
+        if (_disposed) return;
         try {
           await _standard();
         } catch (_) {}
@@ -274,6 +278,7 @@ class AudioOutputController extends ChangeNotifier {
   });
   Future<void> useAutomatic() => _run(() => _standard());
   Future<void> requestUsbIdentity() async {
+    if (_disposed) return;
     final device = current;
     if (device == null || !device.usb) return;
     await _channel.invokeMethod('requestUsbIdentity', {'id': device.id});
@@ -281,7 +286,9 @@ class AudioOutputController extends ChangeNotifier {
   }
 
   Future<void> systemPicker() async {
+    if (_disposed) return;
     await useAutomatic();
+    if (_disposed) return;
     await _channel.invokeMethod<void>('systemPicker');
   }
 
@@ -437,8 +444,8 @@ class AudioOutputController extends ChangeNotifier {
     if (failure != null) throw StateError('普通输出恢复时部分接口失败：$failure');
   }
 
-  @override
-  void dispose() {
+  void _stopWork() {
+    if (_disposed) return;
     _disposed = true;
     _request++;
     _formatDebounce?.cancel();
@@ -446,11 +453,20 @@ class AudioOutputController extends ChangeNotifier {
     unawaited(_nativeEvents?.cancel());
     unawaited(_params?.cancel());
     unawaited(_errors?.cancel());
+  }
+
+  @override
+  void dispose() {
+    _stopWork();
     sync.dispose();
     super.dispose();
   }
 
   Future<void> releaseResources() => _release ??= () async {
+    // Explicit app exit releases the player before its owning notifier is
+    // disposed. Stop callbacks now and drain initialization as well as commands.
+    _stopWork();
+    await initializationFuture.catchError((_) {});
     await _tail.catchError((_) {});
     if (!supported) return;
     try {

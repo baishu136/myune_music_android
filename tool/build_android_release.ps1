@@ -1,10 +1,41 @@
 param(
     [string]$OutputDirectory = "dist",
-    [string]$FlutterPath = ""
+    [string]$FlutterPath = "",
+    [switch]$SkipPubGet
 )
 
 $ErrorActionPreference = "Stop"
 $projectRoot = Split-Path -Parent $PSScriptRoot
+
+function Read-ReleaseVersion {
+    $pubspec = Get-Content -LiteralPath (Join-Path $projectRoot "pubspec.yaml") -Raw
+    $versionMatches = [regex]::Matches(
+        $pubspec,
+        '(?m)^version:[ \t]*(\d+\.\d+\.\d+)\+(\d+)[ \t]*\r?$'
+    )
+    if ($versionMatches.Count -ne 1 -or [regex]::Matches($pubspec, '(?m)^version:').Count -ne 1) {
+        throw "pubspec.yaml must contain exactly one version: x.y.z+build"
+    }
+    [PSCustomObject]@{
+        Version = $versionMatches[0].Groups[1].Value
+        Build = $versionMatches[0].Groups[2].Value
+    }
+}
+
+# Reject invalid metadata and immutable archive collisions before invoking Flutter.
+$releaseVersion = Read-ReleaseVersion
+$version = $releaseVersion.Version
+$build = $releaseVersion.Build
+$destination = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
+    $OutputDirectory
+} else {
+    Join-Path $projectRoot $OutputDirectory
+}
+$apkPath = Join-Path $destination "Myune-Music-$version-android.$build-arm64-v8a.apk"
+if (Test-Path -LiteralPath $apkPath) {
+    throw "Release archive already exists: $apkPath. Increment the build or choose a new output directory."
+}
+
 if ([string]::IsNullOrWhiteSpace($FlutterPath)) {
     $flutterCommand = Get-Command flutter -ErrorAction SilentlyContinue
     if ($null -ne $flutterCommand) {
@@ -21,29 +52,26 @@ if ([string]::IsNullOrWhiteSpace($FlutterPath)) {
 
 Push-Location $projectRoot
 try {
-    & $FlutterPath pub get
-    if ($LASTEXITCODE -ne 0) { throw "flutter pub get failed" }
+    if (-not $SkipPubGet) {
+        & $FlutterPath pub get
+        if ($LASTEXITCODE -ne 0) { throw "flutter pub get failed" }
+    }
 
     # Build only the requested ABI, not three binaries followed by copying one.
     & $FlutterPath build apk --release --target-platform android-arm64 --split-per-abi
     if ($LASTEXITCODE -ne 0) { throw "flutter release build failed" }
 
-    $versionMatch = [regex]::Match(
-        (Get-Content -LiteralPath (Join-Path $projectRoot "pubspec.yaml") -Raw),
-        '(?m)^version:\s*(\d+\.\d+\.\d+)\+(\d+)\s*$'
-    )
-    if (-not $versionMatch.Success) { throw "pubspec.yaml must contain version: x.y.z+build" }
-    $version = $versionMatch.Groups[1].Value
-    $build = $versionMatch.Groups[2].Value
-    $destination = if ([IO.Path]::IsPathRooted($OutputDirectory)) {
-        $OutputDirectory
-    } else {
-        Join-Path $projectRoot $OutputDirectory
+    $builtVersion = Read-ReleaseVersion
+    if ($builtVersion.Version -ne $version -or $builtVersion.Build -ne $build) {
+        throw "pubspec.yaml version changed during the build; refusing to label the APK."
     }
     New-Item -ItemType Directory -Force -Path $destination | Out-Null
-    $apkPath = Join-Path $destination "Myune-Music-$version-android.$build-arm64-v8a.apk"
-    Copy-Item "build\app\outputs\flutter-apk\app-arm64-v8a-release.apk" `
-        $apkPath -Force
+    # The exclusive copy also rejects a file created after the preflight check.
+    [IO.File]::Copy(
+        (Join-Path $projectRoot "build/app/outputs/flutter-apk/app-arm64-v8a-release.apk"),
+        $apkPath,
+        $false
+    )
 
     Get-Item -LiteralPath $apkPath |
         Select-Object FullName, Length, @{Name = "SizeMiB"; Expression = { [math]::Round($_.Length / 1MB, 2) }}

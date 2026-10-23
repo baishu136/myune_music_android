@@ -34,25 +34,31 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
-      - name: Run focused tests
+      - name: Run tests and analysis
         run: |
-          flutter test test/project_changelog_test.dart
-          flutter analyze --no-fatal-infos
+          flutter test --no-pub
+          flutter analyze --no-pub
+          python3 -m unittest discover -s tool/tests -p 'test_*.py'
 
       - name: Build arm64 release APK
-        run: flutter build apk --release --target-platform android-arm64 --split-per-abi
+        shell: pwsh
+        run: ./tool/build_android_release.ps1 -SkipPubGet
 
       - name: Stage APK
+        id: release
+        shell: pwsh
         run: |
-          mkdir -p dist
-          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk \
-            dist/Myune-Music-0.9.9-android.325-arm64-v8a.apk
-          sha256sum dist/*.apk > dist/SHA256SUMS.txt
+          $apks = @(Get-ChildItem -LiteralPath dist -Filter '*-arm64-v8a.apk' -File)
+          if ($apks.Count -ne 1) { throw 'Expected exactly one release APK' }
+          $artifactName = $apks[0].BaseName -replace '-arm64-v8a$', ''
+          "artifact_name=$artifactName" >> $env:GITHUB_OUTPUT
+          $hash = (Get-FileHash -LiteralPath $apks[0].FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $($apks[0].Name)" | Set-Content -LiteralPath dist/SHA256SUMS.txt -Encoding ascii
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: Myune-Music-0.9.9-android.325
+          name: ${{ steps.release.outputs.artifact_name }}
           path: dist/
           if-no-files-found: error
           retention-days: 30
