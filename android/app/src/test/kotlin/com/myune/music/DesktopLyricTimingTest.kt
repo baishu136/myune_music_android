@@ -5,6 +5,17 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class DesktopLyricTimingTest {
+    @Test fun animationSleepsDuringGapsAndStopsAtEnd() {
+        val words = listOf(DesktopLyricWord(0, 1, 2000.0, 3000.0),
+            DesktopLyricWord(1, 1, 7000.0, 8000.0))
+        assertEquals(2000L, desktopLyricFrameDelay(0.0, words, 1.0))
+        assertEquals(0L, desktopLyricFrameDelay(2500.0, words, 1.0))
+        assertEquals(2000L, desktopLyricFrameDelay(3000.0, words, 2.0))
+        assertEquals(-1L, desktopLyricFrameDelay(8000.0, words, 1.0))
+        assertEquals(-1L, desktopLyricFrameDelay(0.0, emptyList(), 1.0))
+        // Provider order and overlaps do not disable an active token.
+        assertEquals(0L, desktopLyricFrameDelay(2500.0, words.reversed(), 1.0))
+    }
     @Test fun playbackPauseResumeRateAndSeek() {
         val clock = DesktopLyricClock()
         clock.update("a", 1000.0, true, 1.0, 100)

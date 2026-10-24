@@ -2310,7 +2310,7 @@ class PlaylistContentNotifier extends ChangeNotifier
       }
       final previousLyricIndex = _currentLyricLineIndex;
       _setCurrentPosition(position);
-      updateLyricLine(position);
+      _updateLyricLineAt(_lyricPosition.value);
       // Progress-sensitive widgets listen to [positionListenable] directly.
       // Throttling the broad notification prevents retained pages from being
       // rebuilt for every native position event.
@@ -7781,7 +7781,10 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void updateLyricLine(Duration currentPosition) {
-    currentPosition = lyricPositionFor(currentPosition);
+    _updateLyricLineAt(lyricPositionFor(currentPosition));
+  }
+
+  void _updateLyricLineAt(Duration currentPosition) {
     if (isContinuousSkipping) return;
     if (_currentLyrics.isEmpty) {
       if (_currentLyricLineIndex != -1) {

@@ -8,6 +8,7 @@ import '../../../app_version.dart';
 import '../../playlist/playlist_content_notifier.dart';
 import '../settings_provider.dart';
 import '../update_checker.dart';
+import '../../../services/automatic_update_controller.dart';
 import '../about.dart';
 import 'info_icon.dart';
 import 'other_settings_section.dart';
@@ -35,6 +36,22 @@ class _GeneralTabState extends State<GeneralTab> {
   // 检查更新
   Future<void> _checkForUpdates() async {
     final notifier = context.read<PlaylistContentNotifier>();
+    if (Platform.isAndroid) {
+      final updater = context.read<AutomaticUpdateController>();
+      await updater.checkNow();
+      if (!mounted) return;
+      if (updater.error != null) {
+        notifier.postError(updater.error!);
+      } else if (updater.available == null) {
+        notifier.postInfo('您使用的版本已是最新');
+      } else if (updater.available!.apk == null) {
+        await launchUrl(
+          Uri.parse(updater.available!.downloadUrl),
+          mode: LaunchMode.externalApplication,
+        );
+      }
+      return;
+    }
 
     setState(() {
       _isCheckingUpdate = true;
@@ -89,12 +106,56 @@ class _GeneralTabState extends State<GeneralTab> {
   @override
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
+    final checking = Platform.isAndroid
+        ? context.select<AutomaticUpdateController, bool>((u) => u.checking)
+        : _isCheckingUpdate;
 
     return ListView(
       key: const ValueKey('general'),
       children: [
         // Android 将主题相关选项归入“个性化”。
         if (!Platform.isAndroid) const ThemeSettingsSection(),
+        if (Platform.isAndroid) ...[
+          SwitchListTile(
+            title: const Text('自动检测更新并下载'),
+            value: settings.autoUpdateDownload,
+            onChanged: settings.setAutoUpdateDownload,
+          ),
+          Consumer<AutomaticUpdateController>(
+            builder: (context, updater, _) {
+              final state = updater.download['state'];
+              final message = updater.error ?? updater.download['reason'];
+              if ((state == null || state == 'none') && message == null) {
+                return const SizedBox.shrink();
+              }
+              return ListTile(
+                leading: Icon(
+                  state == 'complete'
+                      ? Icons.download_done
+                      : Icons.system_update,
+                ),
+                title: Text(
+                  message?.toString() ??
+                      '${updater.download['version'] ?? ''} · ${switch (state) {
+                        'complete' => '下载完成',
+                        'waiting' => '等待可用网络',
+                        'failed' => '下载失败',
+                        _ => '下载中',
+                      }}',
+                ),
+                trailing: IconButton(
+                  tooltip: state == 'complete' ? '安装更新' : '刷新下载状态',
+                  icon: Icon(
+                    state == 'complete' ? Icons.open_in_new : Icons.refresh,
+                  ),
+                  onPressed: state == 'complete'
+                      ? updater.openDownload
+                      : updater.refresh,
+                ),
+              );
+            },
+          ),
+        ],
         // 检查更新按钮
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
@@ -106,8 +167,8 @@ class _GeneralTabState extends State<GeneralTab> {
                 style: Theme.of(context).textTheme.titleMedium,
               ),
               ElevatedButton.icon(
-                onPressed: _isCheckingUpdate ? null : _checkForUpdates,
-                icon: _isCheckingUpdate
+                onPressed: checking ? null : _checkForUpdates,
+                icon: checking
                     ? const SizedBox(
                         width: 20,
                         height: 20,

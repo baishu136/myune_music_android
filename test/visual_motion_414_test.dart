@@ -307,11 +307,11 @@ void main() {
       }
     },
   );
-  test('phone font limit is 50 and edits snap to integers', () async {
+  test('phone font limit is 60 and edits snap to integers', () async {
     SharedPreferences.setMockInitialValues({});
     final settings = SettingsProvider();
     await settings.initializationFuture;
-    expect(SettingsProvider.maxLyricFontSizeFor(const Size(390, 844)), 50);
+    expect(SettingsProvider.maxLyricFontSizeFor(const Size(390, 844)), 60);
     settings.previewFontSize(46.7);
     expect(settings.fontSize, 47);
     settings.dispose();

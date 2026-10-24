@@ -2058,6 +2058,9 @@ class _SongTileWidgetState extends State<SongTileWidget> {
     );
 
     final isPlaying = context.select<PlaylistContentNotifier, bool>((n) {
+      if (widget.queueActions) {
+        return n.currentSong?.normalizedPath == widget.song.normalizedPath;
+      }
       // 条件1：播放器必须有正在播放的歌曲和上下文
       if (n.currentSong == null || n.playingPlaylist == null) {
         return false;
@@ -2132,6 +2135,9 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                 ),
                 title: Text(
                   widget.song.title,
+                  style: widget.queueActions && isPlaying
+                      ? TextStyle(color: colorScheme.primary)
+                      : null,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),
@@ -2139,6 +2145,9 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                   settings.showAlbumName
                       ? '${widget.song.artist} - ${widget.song.album}'
                       : widget.song.artist,
+                  style: widget.queueActions && isPlaying
+                      ? TextStyle(color: colorScheme.primary)
+                      : null,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                 ),

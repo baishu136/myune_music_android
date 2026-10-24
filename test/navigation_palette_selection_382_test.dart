@@ -129,40 +129,45 @@ void main() {
     expect(velocity(1, 0), isNot(closeTo(velocity(1, 1), .01)));
   });
 
-  testWidgets(
-    'selection toolbar has only the four actions and dispatches each',
-    (tester) async {
-      final events = <String>[];
-      Future<void> host(bool restore) => tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            appBar: AppBar(
-              actions: [
-                SongSelectionActions(
-                  onSelectAll: () => events.add('all'),
-                  onDeselectAll: () => events.add('none'),
-                  onExit: () => events.add('exit'),
-                  onVisibility: () => events.add(restore ? 'restore' : 'hide'),
-                  restoreHidden: restore,
-                ),
-              ],
-            ),
+  testWidgets('selection toolbar independently dispatches hide and restore', (
+    tester,
+  ) async {
+    final events = <String>[];
+    Future<void> host(bool enabled) => tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(
+          appBar: AppBar(
+            actions: [
+              SongSelectionActions(
+                onSelectAll: () => events.add('all'),
+                onDeselectAll: () => events.add('none'),
+                onExit: () => events.add('exit'),
+                onHide: enabled ? () => events.add('hide') : null,
+                onRestore: enabled ? () => events.add('restore') : null,
+              ),
+            ],
           ),
         ),
-      );
-      await host(false);
-      expect(find.byType(IconButton), findsNWidgets(4));
-      for (final tooltip in ['全选', '取消全选', '取消多选', '隐藏歌曲']) {
-        await tester.tap(find.byTooltip(tooltip));
-      }
-      expect(events, ['all', 'none', 'exit', 'hide']);
-      await host(true);
-      expect(find.byTooltip('隐藏歌曲'), findsNothing);
-      await tester.tap(find.byTooltip('取消隐藏'));
-      expect(events.last, 'restore');
-      expect(tester.takeException(), isNull);
-    },
-  );
+      ),
+    );
+    await host(true);
+    expect(find.byType(IconButton), findsNWidgets(5));
+    for (final tooltip in ['全选', '取消全选', '取消多选', '隐藏歌曲', '取消隐藏']) {
+      await tester.tap(find.byTooltip(tooltip));
+    }
+    expect(events, ['all', 'none', 'exit', 'hide', 'restore']);
+    await host(false);
+    final buttons = tester.widgetList<IconButton>(find.byType(IconButton));
+    expect(
+      buttons.singleWhere((button) => button.tooltip == '隐藏歌曲').onPressed,
+      isNull,
+    );
+    expect(
+      buttons.singleWhere((button) => button.tooltip == '取消隐藏').onPressed,
+      isNull,
+    );
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets(
     'nav annotation removes scrim while footer paints the safe inset',

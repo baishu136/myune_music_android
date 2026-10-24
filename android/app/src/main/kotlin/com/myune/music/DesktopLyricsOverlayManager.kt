@@ -93,6 +93,10 @@ class DesktopLyricsOverlayManager(
     }
 
     fun update(values: Map<String, Any?>) {
+        if (values["clockOnly"] == true) {
+            (lyricView as? OutlinedLyricTextView)?.updatePlayback(values)
+            return
+        }
         val wasLocked = locked
         values["isPlaying"]?.let { playing = it as? Boolean ?: playing }
         values["isLocked"]?.let { locked = it as? Boolean ?: locked }

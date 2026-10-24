@@ -1,18 +1,17 @@
 import 'package:flutter/material.dart';
 
-/// The same four actions in library and playlist selection mode.
+/// Shared selection actions with independent hide and restore commands.
 class SongSelectionActions extends StatelessWidget {
   const SongSelectionActions({
     super.key,
     required this.onSelectAll,
     required this.onDeselectAll,
     required this.onExit,
-    required this.onVisibility,
-    required this.restoreHidden,
+    required this.onHide,
+    required this.onRestore,
   });
   final VoidCallback onSelectAll, onDeselectAll, onExit;
-  final VoidCallback? onVisibility;
-  final bool restoreHidden;
+  final VoidCallback? onHide, onRestore;
 
   @override
   Widget build(BuildContext context) => Row(
@@ -34,11 +33,14 @@ class SongSelectionActions extends StatelessWidget {
         onPressed: onExit,
       ),
       IconButton(
-        tooltip: restoreHidden ? '取消隐藏' : '隐藏歌曲',
-        icon: Icon(
-          restoreHidden ? Icons.visibility : Icons.visibility_off_outlined,
-        ),
-        onPressed: onVisibility,
+        tooltip: '隐藏歌曲',
+        icon: const Icon(Icons.visibility_off_outlined),
+        onPressed: onHide,
+      ),
+      IconButton(
+        tooltip: '取消隐藏',
+        icon: const Icon(Icons.visibility),
+        onPressed: onRestore,
       ),
     ],
   );

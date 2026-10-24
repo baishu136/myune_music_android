@@ -13,6 +13,7 @@ class LyricSyncPreferences extends ChangeNotifier {
   int globalDelayMs = 0;
   bool automatic = true;
   String? _deviceKey, _songKey;
+  String? _rawSongPath;
   bool _persistentDevice = false;
   final _devices = <String, int>{},
       _sessionDevices = <String, int>{},
@@ -46,6 +47,8 @@ class LyricSyncPreferences extends ChangeNotifier {
   }
 
   void useSong(String? path) {
+    if (_rawSongPath == path) return;
+    _rawSongPath = path;
     final key = path?.replaceAll('\\', '/').toLowerCase();
     if (_songKey == key) return;
     _songKey = key;

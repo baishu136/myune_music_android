@@ -9,6 +9,7 @@ import android.graphics.RectF
 import android.graphics.Typeface
 import android.icu.text.BreakIterator
 import android.os.SystemClock
+import android.os.Build
 import android.text.SpannableString
 import android.text.Spanned
 import android.text.TextPaint
@@ -38,11 +39,16 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
     private val highlightPath = Path()
     private data class Cell(val box: RectF, val start: Double, val end: Double, val rtl: Boolean)
     private var cells = emptyList<Cell>()
+    private var visibleWords = emptyList<DesktopLyricWord>()
+    private var textCache: TextCache? = null
+    private var drawingDirty = true
+    private val nextFrame = Runnable { invalidate() }
 
     fun configure(
         color: Int, size: Float, face: Typeface, autoSize: Boolean, alignment: String,
         stroke: Boolean, strokeWidth: Float, strokeColor: Int, strokeOpacity: Float,
     ) {
+        drawingDirty = true
         val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, size,
             resources.displayMetrics)
         val width = strokeWidth.coerceIn(0.5f, 4f) * resources.displayMetrics.density
@@ -68,25 +74,31 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
     }
 
     fun updatePlayback(values: Map<String, Any?>) {
+        removeCallbacks(nextFrame)
         val incoming = values["lyric"]?.toString() ?: rawText
         if (incoming != rawText) {
             rawText = incoming
             layoutDirty = true
             requestLayout()
         }
-        val incomingWords = (values["words"] as? List<*>)?.mapNotNull { entry ->
-            val w = entry as? Map<*, *> ?: return@mapNotNull null
-            val offset = (w["offset"] as? Number)?.toInt() ?: return@mapNotNull null
-            val length = (w["length"] as? Number)?.toInt() ?: return@mapNotNull null
-            val start = (w["start"] as? Number)?.toDouble() ?: return@mapNotNull null
-            val end = (w["end"] as? Number)?.toDouble() ?: return@mapNotNull null
-            if (offset < 0 || length <= 0 || offset.toLong() + length > incoming.length ||
-                !start.isFinite() || !end.isFinite() || start < 0 || end < start) null
-            else DesktopLyricWord(offset, length, start, end)
-        } ?: emptyList()
-        if (words != incomingWords) { words = incomingWords; geometryDirty = true }
-        karaoke = values["karaoke"] == true
-        highlightColor = (values["highlightColor"] as? Number)?.toInt() ?: fillColor
+        if (values.containsKey("words")) {
+            val incomingWords = (values["words"] as? List<*>)?.mapNotNull { entry ->
+                val w = entry as? Map<*, *> ?: return@mapNotNull null
+                val offset = (w["offset"] as? Number)?.toInt() ?: return@mapNotNull null
+                val length = (w["length"] as? Number)?.toInt() ?: return@mapNotNull null
+                val start = (w["start"] as? Number)?.toDouble() ?: return@mapNotNull null
+                val end = (w["end"] as? Number)?.toDouble() ?: return@mapNotNull null
+                if (offset < 0 || length <= 0 || offset.toLong() + length > incoming.length ||
+                    !start.isFinite() || !end.isFinite() || start < 0 || end < start) null
+                else DesktopLyricWord(offset, length, start, end)
+            } ?: emptyList()
+            if (words != incomingWords) { words = incomingWords; geometryDirty = true }
+        }
+        (values["karaoke"] as? Boolean)?.let { karaoke = it }
+        (values["highlightColor"] as? Number)?.toInt()?.let {
+            if (highlightColor != it) drawingDirty = true
+            highlightColor = it
+        }
         clock.update(values["lyricKey"]?.toString().orEmpty(),
             (values["positionMs"] as? Number)?.toDouble() ?: 0.0,
             values["isPlaying"] == true,
@@ -130,7 +142,7 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
     override fun onLayout(changed: Boolean, left: Int, top: Int, right: Int, bottom: Int) {
         super.onLayout(changed, left, top, right, bottom)
         scrollTo(0, 0)
-        if (changed) geometryDirty = true
+        if (changed) { geometryDirty = true; drawingDirty = true }
         if (geometryDirty) rebuildCells()
     }
 
@@ -139,51 +151,84 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
         val result = ArrayList<Cell>()
         val iterator = BreakIterator.getCharacterInstance().apply { setText(rawText) }
         val selection = Path()
+        val visibleLine = Path()
         for (word in words) {
-            val boxes = ArrayList<Pair<RectF, Boolean>>()
+            val boxes = ArrayList<Triple<RectF?, Boolean, Double>>()
             var offset = word.offset
             val limit = word.offset + word.length
             while (offset < limit) {
                 val next = iterator.following(offset).let { if (it == BreakIterator.DONE) limit else minOf(it, limit) }
-                if (rawText.substring(offset, next) != "\n") {
+                val line = textLayout.getLineForOffset(offset)
+                val ellipsisStart = textLayout.getLineStart(line) + textLayout.getEllipsisStart(line)
+                val ellipsisEnd = ellipsisStart + textLayout.getEllipsisCount(line)
+                if (line < maxLines && rawText.substring(offset, next) != "\n" &&
+                    !(offset < ellipsisEnd && next > ellipsisStart)) {
                     selection.rewind()
                     textLayout.getSelectionPath(offset, next, selection)
+                    // At a wrap boundary Android also selects the empty tail/head
+                    // of adjacent lines. Bounding that whole path makes one final
+                    // glyph cover unrelated text. Keep only this physical line.
+                    visibleLine.rewind()
+                    visibleLine.addRect(textLayout.getLineLeft(line), textLayout.getLineTop(line).toFloat(),
+                        textLayout.getLineRight(line), textLayout.getLineBottom(line).toFloat(), Path.Direction.CW)
+                    selection.op(visibleLine, Path.Op.INTERSECT)
                     val box = RectF()
                     selection.computeBounds(box, true)
-                    if (!box.isEmpty) boxes.add(box to textLayout.isRtlCharAt(offset))
+                    if (!box.isEmpty) boxes.add(Triple(box, textLayout.isRtlCharAt(offset), box.width().toDouble()))
+                } else if (rawText.substring(offset, next) != "\n") {
+                    // Hidden ellipsized text still consumes its part of the
+                    // source token's duration; do not accelerate visible letters.
+                    val measure = TextPaint(paint)
+                    (text as? Spanned)?.getSpans(offset, next, MetricAffectingSpan::class.java)
+                        ?.forEach { it.updateMeasureState(measure) }
+                    boxes.add(Triple(null, false, measure.measureText(rawText, offset, next).toDouble()))
                 }
                 offset = next
             }
-            val total = boxes.sumOf { it.first.width().toDouble() }
+            val total = boxes.sumOf { it.third }
+            if (total <= 0.0) continue
             var travelled = 0.0
-            for ((box, rtl) in boxes) {
+            for ((box, rtl, advance) in boxes) {
                 val start = word.start + (word.end - word.start) * travelled / total
-                travelled += box.width()
+                travelled += advance
                 val end = word.start + (word.end - word.start) * travelled / total
-                result.add(Cell(box, start, end, rtl))
+                if (box != null) result.add(Cell(box, start, end, rtl))
             }
         }
         cells = result
+        visibleWords = result.map { DesktopLyricWord(0, 1, it.start, it.end) }
         geometryDirty = false
+        drawingDirty = true
     }
 
     override fun onDraw(canvas: Canvas) {
+        removeCallbacks(nextFrame)
         val textLayout = layout ?: return
         if (geometryDirty) rebuildCells()
         val save = canvas.save()
         // Padding protects outlines, accents and both edges during fitting.
         canvas.clipRect(0, 0, width, height)
         canvas.translate(compoundPaddingLeft.toFloat(), extendedPaddingTop.toFloat())
-        if (outlineEnabled) {
-            paint.style = Paint.Style.STROKE
-            paint.strokeWidth = outlineWidth
-            paint.strokeJoin = Paint.Join.ROUND
-            paint.color = outlineColor
+        val cached = if (Build.VERSION.SDK_INT >= 29 && canvas.isHardwareAccelerated) {
+            val cache = textCache ?: TextCache().also { textCache = it }
+            if (drawingDirty || cache.layout !== textLayout) {
+                cache.record(textLayout, paint, outlineEnabled, outlineWidth, outlineColor, fillColor, highlightColor)
+                drawingDirty = false
+            }
+            cache
+        } else null
+        if (cached != null) cached.drawBase(canvas) else {
+            if (outlineEnabled) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = outlineWidth
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.color = outlineColor
+                textLayout.draw(canvas)
+            }
+            paint.style = Paint.Style.FILL
+            paint.color = fillColor
             textLayout.draw(canvas)
         }
-        paint.style = Paint.Style.FILL
-        paint.color = fillColor
-        textLayout.draw(canvas)
         val position = clock.position(SystemClock.uptimeMillis())
         if (karaoke && cells.isNotEmpty()) {
             highlightPath.rewind()
@@ -202,14 +247,72 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
             }
             canvas.save()
             canvas.clipPath(highlightPath)
-            paint.color = highlightColor
-            textLayout.draw(canvas)
+            if (cached != null) cached.drawHighlight(canvas) else {
+                paint.color = highlightColor
+                textLayout.draw(canvas)
+            }
             canvas.restore()
             paint.color = fillColor
-            if (clock.playing && isAttachedToWindow && windowVisibility == View.VISIBLE &&
-                cells.any { position < it.end }) postInvalidateOnAnimation()
+            if (clock.playing && isAttachedToWindow && isShown && windowVisibility == View.VISIBLE) {
+                val delay = desktopLyricFrameDelay(position, visibleWords, clock.rate)
+                if (delay == 0L) postOnAnimation(nextFrame)
+                else if (delay > 0) postDelayed(nextFrame, delay)
+            }
         }
         canvas.restoreToCount(save)
+    }
+
+    override fun onDetachedFromWindow() {
+        removeCallbacks(nextFrame)
+        textCache = null
+        super.onDetachedFromWindow()
+    }
+
+    override fun onAttachedToWindow() {
+        super.onAttachedToWindow()
+        invalidate()
+    }
+
+    override fun onWindowVisibilityChanged(visibility: Int) {
+        super.onWindowVisibilityChanged(visibility)
+        removeCallbacks(nextFrame)
+        if (visibility == View.VISIBLE) invalidate()
+    }
+
+    @android.annotation.TargetApi(29)
+    private class TextCache {
+        private val base = android.graphics.RenderNode("desktop-lyric-base")
+        private val highlight = android.graphics.RenderNode("desktop-lyric-highlight")
+        var layout: android.text.Layout? = null
+            private set
+
+        fun record(text: android.text.Layout, paint: TextPaint, stroke: Boolean,
+                   width: Float, outline: Int, fill: Int, active: Int) {
+            layout = text
+            for (node in arrayOf(base, highlight)) {
+                node.setPosition(0, 0, text.width, text.height)
+                node.setClipToBounds(false)
+            }
+            val canvas = base.beginRecording()
+            if (stroke) {
+                paint.style = Paint.Style.STROKE
+                paint.strokeWidth = width
+                paint.strokeJoin = Paint.Join.ROUND
+                paint.color = outline
+                text.draw(canvas)
+            }
+            paint.style = Paint.Style.FILL
+            paint.color = fill
+            text.draw(canvas)
+            base.endRecording()
+            paint.color = active
+            text.draw(highlight.beginRecording())
+            highlight.endRecording()
+            paint.color = fill
+        }
+
+        fun drawBase(canvas: Canvas) = canvas.drawRenderNode(base)
+        fun drawHighlight(canvas: Canvas) = canvas.drawRenderNode(highlight)
     }
 
     private class FloatSize(private val size: Float) : MetricAffectingSpan() {

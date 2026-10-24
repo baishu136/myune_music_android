@@ -1,6 +1,7 @@
 package com.myune.music
 
 import kotlin.math.abs
+import kotlin.math.ceil
 
 internal data class DesktopLyricWord(
     val offset: Int, val length: Int, val start: Double, val end: Double,
@@ -18,7 +19,8 @@ internal class DesktopLyricClock {
     private var at = 0L
     var playing = false
         private set
-    private var rate = 1.0
+    var rate = 1.0
+        private set
 
     fun position(now: Long): Double =
         anchor + if (playing) (now - at).coerceAtLeast(0) * rate else 0.0
@@ -49,4 +51,15 @@ internal fun fitDesktopLyricSize(
         if (measure(middle) <= available) low = middle else high = middle
     }
     return low
+}
+
+/** -1 means finished; zero means an advancing word needs the next display frame. */
+internal fun desktopLyricFrameDelay(position: Double, words: List<DesktopLyricWord>, rate: Double): Long {
+    var next = Double.POSITIVE_INFINITY
+    for (word in words) {
+        if (position >= word.start && position < word.end) return 0
+        if (position < word.start) next = minOf(next, word.start)
+    }
+    return if (next.isFinite()) ceil((next - position) / rate.coerceAtLeast(.01))
+        .coerceIn(1.0, Int.MAX_VALUE.toDouble()).toLong() else -1
 }

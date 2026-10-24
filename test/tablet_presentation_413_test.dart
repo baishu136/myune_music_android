@@ -103,11 +103,11 @@ void main() {
       'misans',
     )..addFont(rootBundle.load('assets/fonts/MiSansVF.ttf'))).load();
   });
-  testWidgets('50 point multiline lyrics reuse layout while scrolling', (
+  testWidgets('60 point phone multiline lyrics reuse layout while scrolling', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
-    tester.view.physicalSize = const Size(800, 1280);
+    tester.view.physicalSize = const Size(390, 844);
     addTearDown(tester.view.resetPhysicalSize);
     addTearDown(tester.view.resetDevicePixelRatio);
     final controller = MobileLyricsListController();
@@ -130,7 +130,7 @@ void main() {
               active: index,
               activeColor: Colors.white,
               position: Duration(seconds: index * 3),
-              fontSize: 50,
+              fontSize: 60,
               fontFamily: 'misans',
               karaokeLyricsEnabled: false,
             ),
@@ -248,7 +248,7 @@ void main() {
       settings.dispose();
     },
   );
-  testWidgets('tablet lyric controls reach 50 and restore it after restart', (
+  testWidgets('tablet lyric controls reach 60 and restore it after restart', (
     tester,
   ) async {
     tester.view.devicePixelRatio = 1;
@@ -265,23 +265,23 @@ void main() {
       ),
     );
     final slider = tester.widget<Slider>(find.byType(Slider).first);
-    expect(slider.max, 50);
-    slider.onChanged!(50);
+    expect(slider.max, 60);
+    slider.onChanged!(60);
     await tester.pump();
-    expect(settings.fontSize, 50);
-    // All mobile viewports now share the same integer 50-point ceiling.
+    expect(settings.fontSize, 60);
+    // All mobile viewports share the same integer 60-point ceiling.
     tester.view.physicalSize = const Size(390, 1400);
     await tester.pump();
     final phone = tester.widget<Slider>(find.byType(Slider).first);
-    expect(phone.max, 50);
-    expect(phone.value, 50);
-    expect(settings.fontSize, 50);
+    expect(phone.max, 60);
+    expect(phone.value, 60);
+    expect(settings.fontSize, 60);
     tester.view.physicalSize = const Size(800, 1400);
     await tester.pump();
-    expect(tester.widget<Slider>(find.byType(Slider).first).value, 50);
+    expect(tester.widget<Slider>(find.byType(Slider).first).value, 60);
     final restored = SettingsProvider();
     await restored.initializationFuture;
-    expect(restored.fontSize, 50);
+    expect(restored.fontSize, 60);
     await tester.pumpWidget(const SizedBox());
     settings.dispose();
     restored.dispose();

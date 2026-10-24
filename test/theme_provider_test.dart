@@ -104,15 +104,15 @@ void main() {
     expect(result, selected);
   });
 
-  test('dynamic colors are corrected for the active brightness mode', () {
+  test('dynamic colors use the shared dark-mode colour rule', () {
     const darkSource = Color(0xFF101820);
     const lightSource = Color(0xFFF5F1E8);
 
-    final darkAdjusted = adaptDynamicSeedColor(darkSource, Brightness.dark);
-    final lightAdjusted = adaptDynamicSeedColor(lightSource, Brightness.light);
+    final darkAdjusted = adaptDynamicSeedColor(darkSource);
+    final lightAdjusted = adaptDynamicSeedColor(lightSource);
 
     expect(HSLColor.fromColor(darkAdjusted).lightness, closeTo(.62, .005));
-    expect(HSLColor.fromColor(lightAdjusted).lightness, closeTo(.38, .005));
+    expect(HSLColor.fromColor(lightAdjusted).lightness, greaterThan(.9));
     for (final adjusted in [darkAdjusted, lightAdjusted]) {
       final hue = HSLColor.fromColor(adjusted).hue;
       final nearestHueDistance = themePresetColors
@@ -123,7 +123,7 @@ void main() {
     }
   });
 
-  test('changing theme mode reapplies the original dynamic color', () async {
+  test('changing theme mode retains the shared dynamic color', () async {
     SharedPreferences.setMockInitialValues({});
     final provider = ThemeProvider();
     await Future<void>.delayed(Duration.zero);
@@ -137,7 +137,7 @@ void main() {
     );
 
     await provider.setThemeMode(ThemeMode.light);
-    expect(provider.currentSeedColor, source);
+    expect(provider.currentSeedColor, adaptDynamicSeedColor(source));
   });
 
   test('dynamic theme data is reused after a color is revisited', () async {

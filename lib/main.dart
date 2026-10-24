@@ -30,6 +30,7 @@ import 'services/desktop_lyrics_controller.dart';
 import 'services/cover_override_service.dart';
 import 'services/fault_log_service.dart';
 import 'services/frame_performance_monitor.dart';
+import 'services/automatic_update_controller.dart';
 import 'services/page_transition_work_observer.dart';
 import 'widgets/android_system_bars.dart';
 
@@ -171,6 +172,10 @@ void main() async {
     MultiProvider(
       providers: [
         ChangeNotifierProvider.value(value: settingsProvider),
+        ChangeNotifierProvider(
+          lazy: false,
+          create: (_) => AutomaticUpdateController(settingsProvider),
+        ),
         ChangeNotifierProvider(create: (_) => NotificationService()),
         ChangeNotifierProvider.value(value: coverOverrideService),
         ChangeNotifierProvider.value(value: themeProvider),

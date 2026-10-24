@@ -123,6 +123,48 @@ void main() {
       .map((tile) => tile.song.title)
       .toList();
 
+  testWidgets('playing labels follow the current song across picker scopes', (
+    tester,
+  ) async {
+    final notifier = await mount(tester);
+    Color? titleColor(String text) =>
+        tester.widget<Text>(find.text(text)).style?.color;
+    final accent = Theme.of(
+      tester.element(find.byType(PlayingQueueDrawer)),
+    ).colorScheme.primary;
+    expect(titleColor('A first'), accent);
+    expect(titleColor('A second'), isNot(accent));
+    notifier.changeSong(notifier.songs[1]);
+    await tester.pumpAndSettle();
+    expect(titleColor('A first'), isNot(accent));
+    expect(titleColor('A second'), accent);
+    for (final scope in ['歌手', '专辑', '搜索']) {
+      await tester.tap(find.byTooltip(scope));
+      await tester.pumpAndSettle();
+      if (scope == '搜索') {
+        await tester.enterText(
+          find.byKey(const ValueKey('queue-library-search')),
+          'second',
+        );
+        await tester.pumpAndSettle();
+      }
+      expect(titleColor('A second'), accent);
+      final tile = find.ancestor(
+        of: find.text('A second'),
+        matching: find.byType(SongTileWidget),
+      );
+      final subtitle =
+          tester
+                  .widget<ListTile>(
+                    find.descendant(of: tile, matching: find.byType(ListTile)),
+                  )
+                  .subtitle!
+              as Text;
+      expect(subtitle.style?.color, accent);
+    }
+    await tester.pumpWidget(const SizedBox());
+  });
+
   testWidgets(
     'picker restores search after remount without changing playback source',
     (tester) async {

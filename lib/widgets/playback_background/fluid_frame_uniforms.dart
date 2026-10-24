@@ -66,8 +66,7 @@ class FluidFrameUniforms {
     }
   }
 
-  void write(
-    ui.FragmentShader shader, {
+  void update({
     required ui.Size size,
     required double time,
     required double motion,
@@ -198,6 +197,29 @@ class FluidFrameUniforms {
     for (var channel = 0; channel < 3; channel++) {
       values[26 + channel] = _mixed[12 + channel];
     }
+  }
+
+  void write(
+    ui.FragmentShader shader, {
+    required ui.Size size,
+    required double time,
+    required double motion,
+    required double dim,
+    required FluidPalette source,
+    required FluidPalette target,
+    double paletteProgress = 1,
+    List<bool>? stagedFields,
+  }) {
+    update(
+      size: size,
+      time: time,
+      motion: motion,
+      dim: dim,
+      source: source,
+      target: target,
+      paletteProgress: paletteProgress,
+      stagedFields: stagedFields,
+    );
     final changedShader = !identical(shader, _lastShader);
     for (var i = 0; i < values.length; i++) {
       if (changedShader || _written[i] != values[i]) {

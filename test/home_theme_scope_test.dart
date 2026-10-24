@@ -1,4 +1,8 @@
+import 'dart:ui' as ui;
+import 'dart:io';
+
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/theme/home_theme_scope.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
@@ -9,6 +13,82 @@ import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  testWidgets(
+    'light home paints pure white while keeping its coloured accent',
+    (tester) async {
+      for (final brightness in Brightness.values) {
+        for (final disabled in [false, true]) {
+          final source = ThemeData(
+            colorScheme: ColorScheme.fromSeed(
+              seedColor: Colors.pink,
+              brightness: brightness,
+            ),
+          );
+          final capture = GlobalKey();
+          late ThemeData home;
+          await tester.pumpWidget(
+            MaterialApp(
+              theme: source,
+              home: HomeThemeScope(
+                disabled: disabled,
+                builder: (context) {
+                  home = Theme.of(context);
+                  return RepaintBoundary(
+                    key: capture,
+                    child: Scaffold(
+                      appBar: AppBar(title: const Text('音乐库')),
+                      body: const SizedBox.expand(),
+                      bottomNavigationBar: const HomeNavigationSurface(
+                        child: SizedBox(height: 64),
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+          );
+          await tester.pumpAndSettle();
+          if (brightness == Brightness.light) {
+            expect(home.scaffoldBackgroundColor, Colors.white);
+            expect(home.colorScheme.surface, Colors.white);
+            expect(home.colorScheme.surfaceContainerHigh, Colors.white);
+            expect(home.colorScheme.surfaceContainer, Colors.white);
+            await tester.runAsync(() async {
+              final image =
+                  await (capture.currentContext!.findRenderObject()
+                          as RenderRepaintBoundary)
+                      .toImage();
+              final pixels = (await image.toByteData(
+                format: ui.ImageByteFormat.rawRgba,
+              ))!;
+              for (final y in [5, image.height ~/ 2, image.height - 5]) {
+                expect(pixels.getUint32((y * image.width + 5) * 4), 0xFFFFFFFF);
+              }
+              final output = Platform.environment['HOME_WHITE_PREVIEW_DIR'];
+              if (output != null) {
+                final png = await image.toByteData(
+                  format: ui.ImageByteFormat.png,
+                );
+                await File(
+                  '$output/white-neutral-$disabled.png',
+                ).writeAsBytes(png!.buffer.asUint8List());
+              }
+              image.dispose();
+            });
+            if (!disabled) {
+              expect(home.colorScheme.primary, source.colorScheme.primary);
+            }
+          } else if (!disabled) {
+            expect(
+              home.scaffoldBackgroundColor,
+              source.scaffoldBackgroundColor,
+            );
+            expect(home.colorScheme, source.colorScheme);
+          }
+        }
+      }
+    },
+  );
   test('neutral home foreground does not retain the artwork seed tint', () {
     for (final brightness in Brightness.values) {
       final original = ThemeData(

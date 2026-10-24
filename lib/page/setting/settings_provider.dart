@@ -77,15 +77,15 @@ class SettingsProvider with ChangeNotifier {
   static const double defaultLyricFontSize = 20.0;
   static const double minLyricFontSize = 12.0;
   static const double maxLyricFontSize = 40.0;
-  static const double maxTabletLyricFontSize = 50.0;
-  static double maxLyricFontSizeFor(Size viewport) => maxTabletLyricFontSize;
+  static const double maxPlaybackLyricFontSize = 60.0;
+  static double maxLyricFontSizeFor(Size viewport) => maxPlaybackLyricFontSize;
   double lyricFontSizeFor(Size viewport) => normalizedLyricFontSize(
     _fontSize,
     maximum: maxLyricFontSizeFor(viewport),
   );
   static double normalizedLyricFontSize(
     double size, {
-    double maximum = maxTabletLyricFontSize,
+    double maximum = maxPlaybackLyricFontSize,
   }) => size.isFinite
       ? size.clamp(minLyricFontSize, maximum).roundToDouble()
       : defaultLyricFontSize;
@@ -290,6 +290,18 @@ class SettingsProvider with ChangeNotifier {
 
   bool _showTaskbarProgress = false;
   bool _enableOnlineLyrics = false; // 默认不启用从网络获取歌词
+  bool _autoUpdateDownload = true;
+  bool get autoUpdateDownload => _autoUpdateDownload;
+
+  Future<void> setAutoUpdateDownload(bool value) async {
+    await initializationFuture;
+    if (_autoUpdateDownload == value) return;
+    _autoUpdateDownload = value;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool('autoUpdateDownload419', value);
+  }
+
   bool _enableLyricTranslation = false; // 默认不显示网络歌词翻译
   bool _enableLyricSourceFallback = false; // 默认仅使用用户选择的歌词源
   bool _enableTimedLyricSourceFallback = false;
@@ -441,6 +453,8 @@ class SettingsProvider with ChangeNotifier {
 
   Future<void> _loadFromPrefs() async {
     final prefs = await SharedPreferences.getInstance();
+    _autoUpdateDownload =
+        _readPreference<bool>(prefs, 'autoUpdateDownload419') ?? true;
     try {
       final saved = jsonDecode(
         _readPreference<String>(prefs, 'playback_picker_memory_403') ?? '{}',
@@ -454,7 +468,7 @@ class SettingsProvider with ChangeNotifier {
     _maxLinesPerLyric = _readPreference<int>(prefs, _prefsKey) ?? 2;
     _fontSize = normalizedLyricFontSize(
       _readDoublePreference(prefs, _fontSizeKey) ?? defaultLyricFontSize,
-      maximum: maxTabletLyricFontSize,
+      maximum: maxPlaybackLyricFontSize,
     );
     _useBlurBackground =
         _readPreference<bool>(prefs, _useBlurBackgroundKey) ?? true;
@@ -809,7 +823,7 @@ class SettingsProvider with ChangeNotifier {
 
   void setFontSize(
     double size, {
-    double maximum = maxTabletLyricFontSize,
+    double maximum = maxPlaybackLyricFontSize,
   }) async {
     previewFontSize(size, maximum: maximum);
     final prefs = await SharedPreferences.getInstance();
@@ -817,7 +831,10 @@ class SettingsProvider with ChangeNotifier {
   }
 
   /// 更新歌词字号但暂不写入磁盘，供连续缩放手势预览使用。
-  void previewFontSize(double size, {double maximum = maxTabletLyricFontSize}) {
+  void previewFontSize(
+    double size, {
+    double maximum = maxPlaybackLyricFontSize,
+  }) {
     final next = normalizedLyricFontSize(size, maximum: maximum);
     if ((_fontSize - next).abs() < 0.01) return;
     _fontSize = next;

@@ -26,8 +26,8 @@ void main() {
                     compact: false,
                     leading: SizedBox(
                       key: ValueKey('song-cover-$index'),
-                      width: 48,
-                      height: 48,
+                      width: mobileSongListCoverSize,
+                      height: mobileSongListCoverSize,
                     ),
                     title: Text('测试歌曲 $index', maxLines: 1),
                     subtitle: const Text('测试歌手 · 测试专辑', maxLines: 1),
@@ -52,10 +52,10 @@ void main() {
         tester.getTopLeft(second).dy - tester.getTopLeft(first).dy,
         closeTo(mobileSongListRowExtent, .01),
       );
-      expect(tester.getSize(firstCover).height, 48);
+      expect(tester.getSize(firstCover).height, closeTo(50.4, .01));
       expect(
         tester.getTopLeft(secondCover).dy - tester.getBottomLeft(firstCover).dy,
-        closeTo((30 + 8) / 2, .01),
+        closeTo(mobileSongListRowExtent - 50.4, .01),
       );
       expect(tester.getSize(first).height, greaterThanOrEqualTo(48));
       await tester.tap(find.text('测试歌曲 1'));

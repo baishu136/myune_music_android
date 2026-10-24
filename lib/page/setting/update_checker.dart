@@ -30,10 +30,12 @@ class UpdateChecker {
       'https://api.github.com/repos/baishu136/myune_music_android/releases?per_page=20';
 
   static Future<UpdateCheckResult> checkForUpdates(
-    String currentVersion,
-  ) async {
+    String currentVersion, {
+    http.Client? client,
+  }) async {
+    final transport = client ?? http.Client();
     try {
-      final response = await http
+      final response = await transport
           .get(
             Uri.parse(_apiUrl),
             headers: const {
@@ -47,19 +49,45 @@ class UpdateChecker {
         return UpdateCheckResult.error('GitHub 返回 ${response.statusCode}');
       }
 
-      final releases = json.decode(response.body);
+      return parseReleases(json.decode(response.body), currentVersion);
+    } catch (error) {
+      return UpdateCheckResult.error(error.toString());
+    } finally {
+      if (client == null) transport.close();
+    }
+  }
+
+  static UpdateCheckResult parseReleases(
+    dynamic releases,
+    String currentVersion,
+  ) {
+    try {
       if (releases is! List) {
         return UpdateCheckResult.error('GitHub 返回了无效数据');
       }
 
       final published = releases.whereType<Map<String, dynamic>>().where(
-        (release) => release['draft'] != true,
+        (release) =>
+            release['draft'] != true &&
+            release['prerelease'] != true &&
+            RegExp(
+              r'^[vV]?\d+\.\d+\.\d+-android\.\d+$',
+            ).hasMatch(release['tag_name']?.toString() ?? ''),
       );
       if (published.isEmpty) {
         return UpdateCheckResult.successNoUpdate();
       }
 
-      final release = published.first;
+      final ordered = published.toList()
+        ..sort(
+          (a, b) =>
+              isVersionNewer(a['tag_name'] as String, b['tag_name'] as String)
+              ? -1
+              : isVersionNewer(b['tag_name'] as String, a['tag_name'] as String)
+              ? 1
+              : 0,
+        );
+      final release = ordered.first;
       final latestVersion = _normalizeVersion(
         release['tag_name']?.toString() ?? '',
       );
@@ -76,6 +104,7 @@ class UpdateChecker {
           latestVersion: latestVersion,
           releaseNotes: release['body'] as String? ?? '',
           downloadUrl: release['html_url'] as String? ?? projectUrl,
+          apk: UpdateApk.fromAssets(release['assets']),
         ),
       );
     } catch (error) {
@@ -116,10 +145,61 @@ class UpdateInfo {
   final String latestVersion;
   final String releaseNotes;
   final String downloadUrl;
+  final UpdateApk? apk;
 
   UpdateInfo({
     required this.latestVersion,
     required this.releaseNotes,
     required this.downloadUrl,
+    this.apk,
   });
+}
+
+class UpdateApk {
+  const UpdateApk({
+    required this.url,
+    required this.name,
+    required this.size,
+    this.sha256,
+  });
+  final String url, name;
+  final int size;
+  final String? sha256;
+
+  static UpdateApk? fromAssets(dynamic assets) {
+    if (assets is! List) return null;
+    for (final a in assets.whereType<Map>()) {
+      final name = a['name'];
+      final url = a['browser_download_url'];
+      final size = a['size'];
+      if (name is! String ||
+          url is! String ||
+          size is! int ||
+          size <= 0 ||
+          size > 300 * 1024 * 1024) {
+        continue;
+      }
+      final uri = Uri.tryParse(url);
+      if (!name.endsWith('-arm64-v8a.apk') ||
+          uri?.scheme != 'https' ||
+          uri?.host != 'github.com' ||
+          !uri!.path.startsWith(
+            '/baishu136/myune_music_android/releases/download/',
+          )) {
+        continue;
+      }
+      final digest = a['digest'];
+      return UpdateApk(
+        url: url,
+        name: name,
+        size: size,
+        sha256:
+            digest is String &&
+                RegExp(r'^sha256:[a-fA-F0-9]{64}$').hasMatch(digest)
+            ? digest.substring(7).toLowerCase()
+            : null,
+      );
+    }
+    return null;
+  }
 }

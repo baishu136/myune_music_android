@@ -45,6 +45,12 @@ class DesktopLyricsController extends ChangeNotifier {
   int _lastPositionSyncMs = -1000;
   double? _observedRate;
   int _seekGeneration = 0;
+  List<LyricLine>? _sentLyrics;
+  String? _sentSongPath;
+  int _sentLyricIndex = -2;
+  bool? _sentPlaying;
+  double? _sentRate;
+  bool _sentTimedWords = false;
 
   bool get isSupported => Platform.isAndroid;
   bool get enabled => _settings?.desktopLyricsEnabled ?? false;
@@ -450,6 +456,29 @@ class DesktopLyricsController extends ChangeNotifier {
     final lyrics = playlist.currentLyrics;
     final lyricIndex = _currentLyricIndex(lyrics, _position);
     _lastLyricIndex = lyricIndex;
+    final playing = playlist.actualPlaybackListenable.value;
+    final rate = playlist.actualPlaybackRateListenable.value;
+    if (!force &&
+        _overlayShown &&
+        identical(_sentLyrics, lyrics) &&
+        _sentSongPath == song?.filePath &&
+        _sentLyricIndex == lyricIndex &&
+        _sentPlaying == playing &&
+        _sentRate == rate) {
+      if (karaoke &&
+          _sentTimedWords &&
+          _positionSyncClock.elapsedMilliseconds - _lastPositionSyncMs >= 800) {
+        _lastPositionSyncMs = _positionSyncClock.elapsedMilliseconds;
+        await _channel.invokeMethod<void>('update', {
+          'clockOnly': true,
+          'lyricKey': '${song?.filePath}:$lyricIndex:$_seekGeneration',
+          'positionMs': _position.inMilliseconds,
+          'isPlaying': playing,
+          'playbackRate': rate,
+        });
+      }
+      return;
+    }
     final presentation = DesktopLyricPresentation.fromLine(
       lyricIndex >= 0 ? lyrics[lyricIndex] : null,
       karaoke: karaoke,
@@ -506,6 +535,12 @@ class DesktopLyricsController extends ChangeNotifier {
       payload,
     );
     _overlayShown = true;
+    _sentLyrics = lyrics;
+    _sentSongPath = song?.filePath;
+    _sentLyricIndex = lyricIndex;
+    _sentPlaying = playing;
+    _sentRate = rate;
+    _sentTimedWords = presentation.words.isNotEmpty;
   }
 
   int _currentLyricIndex(List<LyricLine> lyrics, Duration position) {

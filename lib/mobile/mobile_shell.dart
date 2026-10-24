@@ -45,6 +45,7 @@ import '../widgets/now_playing_immersive_layout.dart';
 import '../widgets/fullscreen_lyrics_double_tap.dart';
 import '../widgets/fullscreen_swipe_song_hint.dart';
 import '../widgets/song_selection_actions.dart';
+import '../widgets/home_expandable_actions.dart';
 import '../widgets/song_collection_header.dart';
 import '../widgets/playback_jump_feedback.dart';
 import '../widgets/home_tab_viewport.dart';
@@ -54,6 +55,8 @@ import '../widgets/now_playing_cover_image.dart';
 import '../widgets/now_playing_cover_glow.dart';
 import '../widgets/play_pause_button.dart';
 import '../widgets/playback_progress_header.dart';
+import '../widgets/playback_progress_slider.dart';
+import '../widgets/song_playback_label.dart';
 import '../widgets/sort_dialog.dart';
 import '../widgets/transparent_chip_surface.dart';
 import '../services/notification_service.dart';
@@ -537,20 +540,10 @@ class _MobileShellState extends State<MobileShell>
       (value) => (value.hasHiddenLibrarySongs, value.showHiddenLibrarySongs),
     );
     final playlistSelection = context
-        .select<
-          PlaylistContentNotifier,
-          ({bool enabled, int count, bool hidden})
-        >(
+        .select<PlaylistContentNotifier, ({bool enabled, int count})>(
           (value) => (
             enabled: value.isMultiSelectMode,
             count: value.selectedSongPaths.length,
-            hidden:
-                value.selectedSongPaths.isNotEmpty &&
-                value.currentPlaylistSongs.any(
-                  (song) =>
-                      value.selectedSongPaths.contains(song.filePath) &&
-                      value.isLibrarySongHidden(song),
-                ),
           ),
         );
     final settings = context.watch<SettingsProvider>();
@@ -564,15 +557,6 @@ class _MobileShellState extends State<MobileShell>
     final librarySelecting = _tab == 0 && _librarySelectionMode;
     final playlistSelecting = _tab == 1 && playlistSelection.enabled;
     final selecting = librarySelecting || playlistSelecting;
-    final selectedLibraryHidden =
-        librarySelecting &&
-        notifier.allSongs.any(
-          (song) =>
-              _selectedLibrarySongPaths.contains(
-                song.normalizedPath.toLowerCase(),
-              ) &&
-              notifier.isLibrarySongHidden(song),
-        );
     final homeBackground = homeBackgroundPolicy(
       settings,
       hasSong: currentSong != null,
@@ -643,6 +627,8 @@ class _MobileShellState extends State<MobileShell>
             child: Text(
               headerTitle,
               key: ValueKey<String>(headerTransitionKey),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
           ),
         ),
@@ -684,10 +670,7 @@ class _MobileShellState extends State<MobileShell>
                         onExit: librarySelecting
                             ? _exitLibrarySelection
                             : notifier.exitMultiSelectMode,
-                        restoreHidden: librarySelecting
-                            ? selectedLibraryHidden
-                            : playlistSelection.hidden,
-                        onVisibility:
+                        onHide:
                             (librarySelecting
                                     ? _selectedLibrarySongPaths.length
                                     : playlistSelection.count) ==
@@ -695,14 +678,28 @@ class _MobileShellState extends State<MobileShell>
                             ? null
                             : () => _changeSelectedSongVisibility(
                                 library: librarySelecting,
-                                restore: librarySelecting
-                                    ? selectedLibraryHidden
-                                    : playlistSelection.hidden,
+                                restore: false,
+                              ),
+                        onRestore:
+                            (librarySelecting
+                                    ? _selectedLibrarySongPaths.length
+                                    : playlistSelection.count) ==
+                                0
+                            ? null
+                            : () => _changeSelectedSongVisibility(
+                                library: librarySelecting,
+                                restore: true,
                               ),
                       )
-                    : Row(
+                    : HomeExpandableActions(
                         key: ValueKey<String>(actionsTransitionKey),
-                        mainAxisSize: MainAxisSize.min,
+                        searchAction: _tab == 4
+                            ? null
+                            : IconButton(
+                                tooltip: '搜索',
+                                icon: const Icon(Icons.search),
+                                onPressed: () => _showSearch(context),
+                              ),
                         children: [
                           if (_tab < 4)
                             IconButton(
@@ -764,12 +761,6 @@ class _MobileShellState extends State<MobileShell>
                                 ),
                               ),
                               onPressed: _toggleGroupViewMode,
-                            ),
-                          if (_tab != 4)
-                            IconButton(
-                              tooltip: '搜索',
-                              icon: const Icon(Icons.search),
-                              onPressed: () => _showSearch(context),
                             ),
                           if (_tab == 4)
                             IconButton(
@@ -1129,6 +1120,7 @@ class _MobileShellState extends State<MobileShell>
                     )
                   : notifier.selectedSongPaths.contains(song.filePath),
             )
+            .where((song) => notifier.isLibrarySongHidden(song) == restore)
             .toList();
     if (selectedSongs.isEmpty) return;
     if (restore) {
@@ -3125,6 +3117,8 @@ Widget buildLibrarySongEntranceTransition({
 // Average of the pre-337 (78dp) and compact (56dp) rows: 19dp between covers.
 // Keep prefetch geometry in sync without constraining larger accessibility text.
 const double mobileSongListRowExtent = 67;
+const double mobileSongListCoverSize = 48 * 1.05;
+const double mobileCompactSongCoverSize = 40 * 1.05;
 
 Widget buildMobileSongListTile({
   required bool grid,
@@ -3243,11 +3237,15 @@ class _SongList extends StatelessWidget {
           child: buildMobileSongListTile(
             grid: grid,
             compact: compact,
-            leading: _Cover(song: song, size: compact ? 40 : 48),
-            title: Text(
-              song.title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            leading: _Cover(
+              song: song,
+              size: compact
+                  ? mobileCompactSongCoverSize
+                  : mobileSongListCoverSize,
+            ),
+            title: SongPlaybackLabel(
+              songPath: song.normalizedPath,
+              text: song.title,
               style: compact
                   ? Theme.of(context).textTheme.bodyMedium?.copyWith(
                       fontWeight: FontWeight.w600,
@@ -3256,10 +3254,9 @@ class _SongList extends StatelessWidget {
                   ? Theme.of(context).textTheme.titleMedium
                   : null,
             ),
-            subtitle: Text(
-              '${song.artist} · ${song.album}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
+            subtitle: SongPlaybackLabel(
+              songPath: song.normalizedPath,
+              text: '${song.artist} · ${song.album}',
               style: compact || grid
                   ? Theme.of(context).textTheme.bodySmall
                   : null,
@@ -3452,10 +3449,9 @@ class _SongList extends StatelessWidget {
                   ),
                   Padding(
                     padding: const EdgeInsets.fromLTRB(6, 5, 6, 6),
-                    child: Text(
-                      song.title,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
+                    child: SongPlaybackLabel(
+                      songPath: song.normalizedPath,
+                      text: song.title,
                       style: Theme.of(context).textTheme.bodySmall?.copyWith(
                         fontWeight: FontWeight.w600,
                       ),
@@ -6056,21 +6052,13 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       children: [
         SizedBox(
           height: tablet ? 42 : 34,
-          child: ValueListenableBuilder<double?>(
-            valueListenable: _seekPosition,
-            builder: (context, seekPosition, _) =>
-                ValueListenableBuilder<Duration>(
-                  valueListenable: notifier.positionListenable,
-                  builder: (context, position, _) => Slider(
-                    value: (seekPosition ?? position.inMilliseconds.toDouble())
-                        .clamp(0, totalMs > 0 ? totalMs : 1)
-                        .toDouble(),
-                    max: totalMs > 0 ? totalMs : 1,
-                    onChangeStart: _beginSeek,
-                    onChanged: _updateSeek,
-                    onChangeEnd: (value) => _commitSeek(value, notifier),
-                  ),
-                ),
+          child: PlaybackProgressSlider(
+            position: notifier.positionListenable,
+            preview: _seekPosition,
+            totalMs: totalMs,
+            onStart: _beginSeek,
+            onChanged: _updateSeek,
+            onEnd: (value) => _commitSeek(value, notifier),
           ),
         ),
         PlaybackClockBuilder(

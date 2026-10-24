@@ -144,12 +144,10 @@ Color constrainDynamicSeedToPresetRange(Color color) {
       .withValues(alpha: color.a);
 }
 
-Color adaptDynamicSeedColor(Color color, Brightness brightness) {
+Color adaptDynamicSeedColor(Color color) {
   final rangedColor = constrainDynamicSeedToPresetRange(color);
   final hsl = HSLColor.fromColor(rangedColor);
-  final targetLightness = brightness == Brightness.dark
-      ? hsl.lightness.clamp(.62, 1.0)
-      : hsl.lightness.clamp(0.0, .38);
+  final targetLightness = hsl.lightness.clamp(.62, 1.0);
   return hsl
       .withLightness(targetLightness)
       .toColor()
@@ -291,7 +289,7 @@ class ThemeProvider with ChangeNotifier {
   }
 
   void prewarmDynamicSeedColor(Color sourceColor) {
-    final adjusted = adaptDynamicSeedColor(sourceColor, resolvedBrightness);
+    final adjusted = adaptDynamicSeedColor(sourceColor);
     _themePairFor(adjusted);
   }
 
@@ -316,7 +314,7 @@ class ThemeProvider with ChangeNotifier {
   Future<void> setDynamicSeedColor(Color sourceColor) async {
     _animateThemeChanges = false;
     _dynamicSourceColor = sourceColor;
-    final adjusted = adaptDynamicSeedColor(sourceColor, resolvedBrightness);
+    final adjusted = adaptDynamicSeedColor(sourceColor);
     if (_currentSeedColor == adjusted) return;
     _currentSeedColor = adjusted;
     _rebuildThemeData();
@@ -394,10 +392,7 @@ class ThemeProvider with ChangeNotifier {
     _themeMode = mode;
     final dynamicColor = _dynamicSourceColor;
     if (dynamicColor != null) {
-      _currentSeedColor = adaptDynamicSeedColor(
-        dynamicColor,
-        resolvedBrightness,
-      );
+      _currentSeedColor = adaptDynamicSeedColor(dynamicColor);
       _rebuildThemeData();
       await _saveSeedColor(_currentSeedColor);
     }

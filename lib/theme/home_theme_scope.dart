@@ -2,6 +2,20 @@ import 'package:flutter/material.dart';
 
 import '../widgets/home_glass_surface.dart';
 
+@immutable
+class HomePlaybackAccent extends ThemeExtension<HomePlaybackAccent> {
+  const HomePlaybackAccent(this.color);
+  final Color color;
+
+  @override
+  HomePlaybackAccent copyWith({Color? color}) =>
+      HomePlaybackAccent(color ?? this.color);
+
+  @override
+  HomePlaybackAccent lerp(HomePlaybackAccent? other, double t) =>
+      HomePlaybackAccent(Color.lerp(color, other?.color ?? color, t)!);
+}
+
 // Generated once, not on song changes/animation frames. Only the home subtree
 // receives this scheme; the app theme and pushed playback route remain intact.
 final _neutralHomeSchemes = {
@@ -84,7 +98,10 @@ ThemeData neutralHomeTheme(ThemeData source) {
       foregroundColor: scheme.onSurface,
     ),
     extensions: [
-      ...source.extensions.values.where((value) => value is! HomeChromeStyle),
+      ...source.extensions.values.where(
+        (value) => value is! HomeChromeStyle && value is! HomePlaybackAccent,
+      ),
+      HomePlaybackAccent(source.colorScheme.primary),
       source.brightness == Brightness.light
           ? HomeChromeStyle.light
           : HomeChromeStyle.dark,
@@ -107,6 +124,39 @@ ThemeData neutralHomeTheme(ThemeData source) {
   );
 }
 
+ThemeData whiteHomeBackgroundTheme(ThemeData source) {
+  if (source.brightness != Brightness.light) return source;
+  final scheme = source.colorScheme.copyWith(
+    surface: Colors.white,
+    surfaceDim: Colors.white,
+    surfaceBright: Colors.white,
+    surfaceContainerLowest: Colors.white,
+    surfaceContainerLow: Colors.white,
+    surfaceContainer: Colors.white,
+    surfaceContainerHigh: Colors.white,
+    surfaceContainerHighest: Colors.white,
+    surfaceTint: Colors.transparent,
+  );
+  return source.copyWith(
+    colorScheme: scheme,
+    scaffoldBackgroundColor: Colors.white,
+    canvasColor: Colors.white,
+    cardColor: Colors.white,
+    appBarTheme: source.appBarTheme.copyWith(
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+      scrolledUnderElevation: 0,
+    ),
+    navigationBarTheme: source.navigationBarTheme.copyWith(
+      backgroundColor: Colors.white,
+      surfaceTintColor: Colors.transparent,
+    ),
+    navigationRailTheme: source.navigationRailTheme.copyWith(
+      backgroundColor: Colors.white,
+    ),
+  );
+}
+
 class HomeThemeScope extends StatefulWidget {
   const HomeThemeScope({
     super.key,
@@ -122,18 +172,21 @@ class HomeThemeScope extends StatefulWidget {
 
 class _HomeThemeScopeState extends State<HomeThemeScope> {
   ThemeData? _source;
+  ThemeData? _home;
   ThemeData? _neutral;
 
   @override
   Widget build(BuildContext context) {
     final source = Theme.of(context);
-    if (widget.disabled && !identical(source, _source)) {
+    if (!identical(source, _source)) {
       _source = source;
-      _neutral = neutralHomeTheme(source);
+      _home = whiteHomeBackgroundTheme(source);
+      _neutral = null;
     }
+    if (widget.disabled) _neutral ??= neutralHomeTheme(_home!);
     // Keep the same wrapper even when toggled, preserving page/scroll State.
     return Theme(
-      data: widget.disabled ? _neutral! : source,
+      data: widget.disabled ? _neutral! : _home!,
       child: Builder(builder: widget.builder),
     );
   }
