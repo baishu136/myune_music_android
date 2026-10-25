@@ -28,17 +28,32 @@ class _QueueNotifier extends ChangeNotifier implements PlaylistContentNotifier {
   Song? playedSearch;
   List<Song>? playedDynamic;
   final coverChanges = ValueNotifier(0);
+  int revision = 0, artistSplitCalls = 0, searchCalls = 0;
+  bool presentationReady = true;
+  @override
+  int get libraryRevision => revision;
+  @override
+  bool get libraryPresentationReady => presentationReady;
   @override
   Song? get currentSong => selected;
   @override
   List<Song> get allSongs => songs;
   @override
-  List<String> getIndividualArtists(String artist) =>
-      artistParser.split(artist);
+  List<String> getIndividualArtists(String artist) {
+    artistSplitCalls++;
+    return artistParser.split(artist);
+  }
+
   @override
-  List<Song> searchSongs(String keyword, Iterable<Song> source) => source
-      .where((song) => song.title.toLowerCase().contains(keyword.toLowerCase()))
-      .toList();
+  List<Song> searchSongs(String keyword, Iterable<Song> source) {
+    searchCalls++;
+    return source
+        .where(
+          (song) => song.title.toLowerCase().contains(keyword.toLowerCase()),
+        )
+        .toList();
+  }
+
   @override
   Future<void> playAllSongsSearchResult(Song song) async {
     playedSearch = song;
@@ -122,6 +137,100 @@ void main() {
       .widgetList<SongTileWidget>(find.byType(SongTileWidget))
       .map((tile) => tile.song.title)
       .toList();
+
+  testWidgets(
+    'lyric notifications reuse artist and search results until data changes',
+    (tester) async {
+      final notifier = await mount(tester);
+      await tester.tap(find.byTooltip('歌手'));
+      await tester.pumpAndSettle();
+      final splits = notifier.artistSplitCalls;
+      for (var i = 0; i < 20; i++) {
+        notifier.changeSong(notifier.selected);
+        await tester.pump();
+      }
+      expect(notifier.artistSplitCalls - splits, lessThanOrEqualTo(20));
+      expect(visibleSongs(tester), ['A first', 'A second']);
+      notifier.songs.add(
+        Song(title: 'A third', artist: 'A', filePath: 'd.mp3'),
+      );
+      notifier.revision++;
+      notifier.changeSong(notifier.selected);
+      await tester.pumpAndSettle();
+      expect(visibleSongs(tester), contains('A third'));
+      await tester.tap(find.byTooltip('搜索'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('queue-library-search')),
+        'A',
+      );
+      await tester.pumpAndSettle();
+      final searches = notifier.searchCalls;
+      for (var i = 0; i < 20; i++) {
+        notifier.changeSong(notifier.selected);
+        await tester.pump();
+      }
+      expect(notifier.searchCalls, searches);
+      notifier.revision++;
+      notifier.changeSong(notifier.selected);
+      await tester.pumpAndSettle();
+      expect(notifier.searchCalls, searches + 1);
+      notifier.presentationReady = false;
+      notifier.changeSong(notifier.selected);
+      await tester.pump();
+      expect(notifier.searchCalls, searches + 2);
+      notifier.presentationReady = true;
+      notifier.changeSong(notifier.selected);
+      await tester.pump();
+      expect(notifier.searchCalls, searches + 3);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
+
+  testWidgets('song rows ignore unrelated settings and retain live labels', (
+    tester,
+  ) async {
+    final notifier = await mount(tester);
+    final settings = tester
+        .element(find.byType(PlayingQueueDrawer))
+        .read<SettingsProvider>();
+    final row = SongTileWidget(
+      song: notifier.songs.first,
+      index: 0,
+      queueActions: true,
+      contextPlaylist: Playlist(id: 'row', name: 'Row'),
+    );
+    await tester.pumpWidget(
+      MultiProvider(
+        providers: [
+          ChangeNotifierProvider<PlaylistContentNotifier>.value(
+            value: notifier,
+          ),
+          ChangeNotifierProvider<SettingsProvider>.value(value: settings),
+        ],
+        child: MaterialApp(home: Scaffold(body: row)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final original = tester.widget<Text>(find.text('A first'));
+    settings.previewFontSize(37);
+    await tester.pump();
+    expect(tester.widget<Text>(find.text('A first')), same(original));
+    settings.setShowAlbumName(!settings.showAlbumName);
+    await tester.pumpAndSettle();
+    expect(tester.widget<Text>(find.text('A first')), isNot(same(original)));
+    notifier.changeSong(notifier.songs[1]);
+    await tester.pumpAndSettle();
+    expect(
+      tester.widget<Text>(find.text('A first')).style?.color,
+      isNot(
+        Theme.of(
+          tester.element(find.byType(SongTileWidget)),
+        ).colorScheme.primary,
+      ),
+    );
+    await tester.pumpWidget(const SizedBox());
+  });
 
   testWidgets('playing labels follow the current song across picker scopes', (
     tester,
@@ -232,12 +341,12 @@ void main() {
     expect(settings.playbackPickerMemory.playlistId, isNull);
   });
 
-  test('retained lift is seven percent at small and scaled text heights', () {
+  test('retained lift is eight percent at scaled text heights', () {
     final config = KaraokeMotionConfig();
     for (final height in [12.0, 40.0, 48.0, 120.0]) {
       expect(
         karaokeLiftPixels(1, height, config),
-        closeTo(-height * .07, 1e-9),
+        closeTo(-height * .08, 1e-9),
       );
     }
   });

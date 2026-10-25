@@ -21,7 +21,7 @@ List<double> fluidReferenceWeights(Float32List values, double x, double y) {
     final bend = motion / (1 + ax * ax + ay * ay);
     final bx = ax + bend * .20 * ay * ay, by = ay + bend * .16 * ax * ay;
     final falloff = 1 / (1 + bx * bx + by * by);
-    return falloff * falloff * (.80 + .20 * falloff);
+    return falloff * falloff * (.65 + .35 * falloff);
   });
 }
 

@@ -58,10 +58,13 @@ class SongPlayStat {
 class StatisticsData extends ChangeNotifier {
   final Map<String, SongPlayStat> _songStats = {};
   int _totalPlaybackMilliseconds = 0;
+  int _songRevision = 0;
+  int get songRevision => _songRevision;
 
   StatisticsData();
 
   Map<String, SongPlayStat> get songStats => Map.unmodifiable(_songStats);
+  SongPlayStat? songStatForPath(String path) => _songStats[path];
   Duration get totalPlaybackDuration =>
       Duration(milliseconds: _totalPlaybackMilliseconds);
 
@@ -72,6 +75,7 @@ class StatisticsData extends ChangeNotifier {
   }) {
     _songStats.clear();
     _songStats.addAll(newStats);
+    _songRevision++;
     _totalPlaybackMilliseconds = totalPlaybackDuration.inMilliseconds;
     notifyListeners();
   }
@@ -84,6 +88,7 @@ class StatisticsData extends ChangeNotifier {
 
   // 添加或更新歌曲播放统计
   void recordSongPlayed(SongPlayStat stat) {
+    _songRevision++;
     final existingStat = _songStats[stat.path];
     if (existingStat != null) {
       // 如果已存在，增加播放次数
@@ -215,6 +220,7 @@ class StatisticsData extends ChangeNotifier {
   }
 
   void clearStats() {
+    _songRevision++;
     _songStats.clear();
     _totalPlaybackMilliseconds = 0;
     notifyListeners();

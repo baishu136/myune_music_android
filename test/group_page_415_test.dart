@@ -39,10 +39,15 @@ class _Library extends ChangeNotifier implements PlaylistContentNotifier {
   List<Song>? played;
   final hidden = <Song>[];
   final favorites = <Song>[];
-  Map<String, List<Song>> get groups => {
-    'Pinned': [songs.last],
-    'Most': songs.take(2).where((s) => !hidden.contains(s)).toList(),
-  };
+  int groupReads = 0;
+  Map<String, List<Song>> get groups {
+    groupReads++;
+    return {
+      'Pinned': [songs.last],
+      'Most': songs.take(2).where((s) => !hidden.contains(s)).toList(),
+    };
+  }
+
   @override
   dynamic noSuchMethod(Invocation call) {
     switch (call.memberName) {
@@ -178,6 +183,11 @@ void main() {
         expect(tester.takeException(), isNull);
         final featured = find.byKey(ValueKey('$kind-featured-group'));
         expect(featured, findsOneWidget);
+        final readsBeforeDuration = library.groupReads;
+        stats.recordPlaybackDuration(const Duration(seconds: 12));
+        await tester.pump();
+        await stats.flushPendingSave();
+        expect(library.groupReads, readsBeforeDuration);
         expect(
           tester.getTopLeft(find.text('Most')).dy,
           lessThan(tester.getTopLeft(find.text('Pinned')).dy),

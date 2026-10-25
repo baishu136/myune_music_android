@@ -1988,7 +1988,9 @@ class _GroupTabState extends State<SongGroupTab> {
     // All provider dependencies remain subscribed even on the deferred path.
     context.watch<SettingsProvider>();
     context.watch<CoverOverrideService>();
-    context.watch<StatisticsManager>();
+    context.select<StatisticsManager, int>(
+      (statistics) => statistics.songRevision,
+    );
     if (InteractionPerformanceController.instance.isCritical) {
       _retryWhenIdle();
       return _lastView ?? const HomePagePreparationPlaceholder();
@@ -2004,10 +2006,7 @@ class _GroupTabState extends State<SongGroupTab> {
     if (groups.isEmpty) return const _EmptyLibrary();
     final settings = context.watch<SettingsProvider>();
     final coverOverrides = context.watch<CoverOverrideService>();
-    final statistics = context.watch<StatisticsManager>();
-    final playCounts = SongGroupPresentation.normalizedPlayCounts(
-      statistics.statisticsData.songStats,
-    );
+    final playCounts = context.read<StatisticsManager>().normalizedPlayCounts;
     final viewMode = kind == '歌手'
         ? settings.artistGroupViewMode
         : settings.albumGroupViewMode;
@@ -2866,10 +2865,10 @@ class _SongCollectionPageState extends State<SongCollectionPage> {
       (notifier) => notifier.currentSong,
     );
     final notifier = context.read<PlaylistContentNotifier>();
-    final statistics = context.watch<StatisticsManager>();
-    final playCounts = SongGroupPresentation.normalizedPlayCounts(
-      statistics.statisticsData.songStats,
+    context.select<StatisticsManager, int>(
+      (statistics) => statistics.songRevision,
     );
+    final playCounts = context.read<StatisticsManager>().normalizedPlayCounts;
     final sortedSongs = notifier.pinnedFirst(
       pinScope,
       SongGroupPresentation.sortByPlayCount(

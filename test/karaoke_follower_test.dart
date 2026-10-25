@@ -82,8 +82,8 @@ void main() {
       final wave = KaraokeFollowerTimeline(glyphs, config);
       final direct = KaraokeFollowerTimeline(glyphs, config);
       final output = Float64List(8), target = Float64List(8);
-      const retainedHeight = 40 * .07;
-      const heightScale = .07 / .055;
+      const retainedHeight = 40 * .08;
+      const heightScale = .08 / .055;
       for (final hz in [60, 90, 120]) {
         for (final rate in [.75, 1.0, 1.5, 2.0]) {
           final previous = Float64List(8), velocities = Float64List(8);
@@ -267,8 +267,8 @@ void main() {
     },
   );
 
-  test('seven percent height retains direction and slow autonomous timing', () {
-    expect(config.liftHeightFraction, .07);
+  test('increased height retains direction and slow autonomous timing', () {
+    expect(config.liftHeightFraction, .08);
     expect(config.liftDuration, const Duration(milliseconds: 760));
     final glyph = timing(0);
     final motion = KaraokeFollowerTimeline([
@@ -290,7 +290,7 @@ void main() {
       );
     }
     expect(karaokeLiftPixels(0, 40, config), 0);
-    expect(karaokeLiftPixels(1, 40, config), closeTo(-2.8, 1e-12));
+    expect(karaokeLiftPixels(1, 40, config), closeTo(-3.2, 1e-12));
     expect(motion.ownAt(0, 120000), lessThan(.15));
     expect(motion.ownAt(0, 760000), 1);
   });
@@ -340,10 +340,10 @@ void main() {
         final expected = 1 - (1 - own) * remaining;
         expect(motion.liftAt(i, us), expected);
         expect(expected, inInclusiveRange(own - 1e-12, 1));
-        expect(output[i], closeTo(-2.8 * expected, 1e-12));
+        expect(output[i], closeTo(-3.2 * expected, 1e-12));
       }
     }
-    expect(output, everyElement(closeTo(-2.8, 1e-12)));
+    expect(output, everyElement(closeTo(-3.2, 1e-12)));
   });
 
   test('breaks disconnect pre-lift while preserving own time', () {
@@ -384,11 +384,11 @@ void main() {
             for (var i = 0; i < 12; i++) {
               final displacement = previous[i] - next[i];
               final velocity = displacement * hz;
-              expect(next[i], inInclusiveRange(-40 * .07, 0));
-              expect(displacement, inInclusiveRange(-1e-12, .3 * .07 / .055));
+              expect(next[i], inInclusiveRange(-40 * .08, 0));
+              expect(displacement, inInclusiveRange(-1e-12, .3 * .08 / .055));
               expect(
                 (velocity - velocities[i]).abs(),
-                lessThan(4 * .07 / .055),
+                lessThan(4 * .08 / .055),
               );
               previous[i] = next[i];
               velocities[i] = velocity;

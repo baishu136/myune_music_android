@@ -40,19 +40,24 @@ class KaraokeSweepTimeline {
   late final Int64List _times;
   late final Float64List _distances;
   late final Float64List _slopes;
+  int _segment = 0;
 
   double phaseAt(int mediaUs) {
     if (mediaUs <= _times[0]) return 0;
     if (mediaUs >= _times.last) return 1;
-    var low = 0;
-    var high = _times.length - 2;
-    while (low < high) {
-      final mid = (low + high) >> 1;
-      if (mediaUs >= _times[mid + 1]) {
-        low = mid + 1;
-      } else {
-        high = mid;
+    var low = _segment;
+    if (mediaUs < _times[low] || mediaUs >= _times[low + 1]) {
+      low = 0;
+      var high = _times.length - 2;
+      while (low < high) {
+        final mid = (low + high) >> 1;
+        if (mediaUs >= _times[mid + 1]) {
+          low = mid + 1;
+        } else {
+          high = mid;
+        }
       }
+      _segment = low;
     }
     final duration = (_times[low + 1] - _times[low]).toDouble();
     final t = (mediaUs - _times[low]) / duration;

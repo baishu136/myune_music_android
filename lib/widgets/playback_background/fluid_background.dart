@@ -71,7 +71,7 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
   static ui.FragmentProgram? _program;
   static bool _shaderUnavailable = false;
   static Future<ui.FragmentProgram> _loadProgram() => _programRequest ??=
-      ui.FragmentProgram.fromAsset('shaders/fluid_mesh_background.frag').then((
+      ui.FragmentProgram.fromAsset('shaders/fluid_background.frag').then((
         program,
       ) {
         _program = program;
@@ -394,7 +394,6 @@ class _FluidPlaybackBackgroundState extends State<FluidPlaybackBackground>
               : CustomPaint(
                   key: const ValueKey('fluid-background-shader'),
                   painter: FluidBackgroundPainter(
-                    mesh: true,
                     shader: shader,
                     controller: _controller,
                     dim: widget.dim,

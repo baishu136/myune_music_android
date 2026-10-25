@@ -439,19 +439,21 @@ FluidPalette buildWeightedFluidPalette(
             )
             .toColor();
   return FluidPalette(
-    retained[0],
-    retained[1],
-    retained[2],
-    retained[3],
-    baseColor: base,
+    fluidSaturationBoost(retained[0]),
+    fluidSaturationBoost(retained[1]),
+    fluidSaturationBoost(retained[2]),
+    fluidSaturationBoost(retained[3]),
+    baseColor: fluidSaturationBoost(base),
     warmAccentLocked: warm != null,
     vividAccentLocked: vividAccentLocked,
     layeredRolesLocked: true,
-    motionColors: _buildMotionColors(
-      retained,
-      extracted,
-      profile,
-      fallbackSeed,
+    motionColors: List<Color>.unmodifiable(
+      _buildMotionColors(
+        retained,
+        extracted,
+        profile,
+        fallbackSeed,
+      ).map(fluidSaturationBoost),
     ),
     glowStrength: profile.dark
         ? (profile.monochrome ? .28 : (profile.vivid ? .70 : .55))
@@ -512,7 +514,7 @@ List<Color> _buildMotionColors(
     );
     step++;
   }
-  if (!profile.monochrome && pool.toSet().length < fluidMotionColourCount) {
+  if (!profile.monochrome && pool.toSet().length < 6) {
     final pigment = retained.reduce(
       (a, b) =>
           HSLColor.fromColor(a).saturation >= HSLColor.fromColor(b).saturation
@@ -521,17 +523,12 @@ List<Color> _buildMotionColors(
     );
     final hsl = HSLColor.fromColor(pigment);
     var attempt = 0;
-    for (
-      var i = 1;
-      i < pool.length && pool.toSet().length < fluidMotionColourCount;
-      i++
-    ) {
+    for (var i = 1; i < pool.length && pool.toSet().length < 6; i++) {
       if (!pool.take(i).contains(pool[i])) continue;
       Color candidate;
       do {
         attempt++;
         candidate = hsl
-            .withHue((hsl.hue + (attempt % 7 - 3) * 1.5) % 360)
             .withLightness(
               (hsl.lightness + attempt * .0125).clamp(
                 profile.bright ? .28 : 0.0,
@@ -545,25 +542,12 @@ List<Color> _buildMotionColors(
   }
   // Each field starts from its assigned pigment and visits the same cover pool
   // in a different order. No spatial rainbow or per-frame colour extraction.
-  final path = <int>[0];
-  final remaining = <int>{for (var i = 1; i < pool.length; i++) i};
-  while (remaining.isNotEmpty) {
-    final previous = pool[path.last];
-    final next = remaining.reduce(
-      (a, b) =>
-          _colorDistance(previous, pool[a]) <= _colorDistance(previous, pool[b])
-          ? a
-          : b,
-    );
-    path.add(next);
-    remaining.remove(next);
-  }
+  const path = [0, 4, 1, 5, 2, 6, 3, 7];
   return List<Color>.unmodifiable(
     List.generate(4 * fluidMotionColourCount, (i) {
       final field = i ~/ fluidMotionColourCount,
           variant = i % fluidMotionColourCount;
-      final origin = path.indexOf(field);
-      return pool[path[(variant + origin) % fluidMotionColourCount]];
+      return pool[path[(variant + field * 2) % fluidMotionColourCount]];
     }),
   );
 }

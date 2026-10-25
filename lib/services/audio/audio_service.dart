@@ -90,6 +90,7 @@ class AudioService {
   double _desiredNormalization = 0;
   late final Future<void> _initialization;
   bool _disposed = false;
+  Future<void>? _disposeFuture;
   int _trackLoadRevision = 0;
   int _nextReplacementRevision = 0;
   Future<void> _nextReplacement = Future<void>.value();
@@ -161,9 +162,12 @@ class AudioService {
     }
   }
 
-  Future<void> dispose() async {
-    if (_disposed) return;
+  Future<void> dispose() => _disposeFuture ??= _disposeOnce();
+
+  Future<void> _disposeOnce() async {
     _disposed = true;
+    _trackLoadRevision++;
+    _nextReplacementRevision++;
     await _initialization;
     await _sampleRateSubscription?.cancel();
     try {
@@ -290,12 +294,15 @@ class AudioService {
           // Optional on platforms/backends that do not expose exclusivity.
         }
       }
+      if (_disposed) return;
       if (applied == null || applied.pitch != target.pitch) {
         await _player.setPitch(target.pitch);
       }
+      if (_disposed) return;
       if (applied == null || applied.rate != target.rate) {
         await _player.setRate(target.rate);
       }
+      if (_disposed) return;
       if (applied == null ||
           !listEquals(applied.eqGains, target.eqGains) ||
           !listEquals(applied.eqFrequencies, target.eqFrequencies)) {
@@ -304,6 +311,7 @@ class AudioService {
           frequencies: target.eqFrequencies,
         );
       }
+      if (_disposed) return;
       _appliedConfiguration = target;
       if (identical(target, _desiredConfiguration)) return;
     }

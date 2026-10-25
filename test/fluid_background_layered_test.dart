@@ -30,7 +30,7 @@ void main() {
     ], fallbackSeed: Colors.blue);
     for (final color in [palette.second, palette.fourth]) {
       final hsl = HSLColor.fromColor(color);
-      expect(hsl.saturation, inInclusiveRange(.65, .95));
+      expect(hsl.saturation, inInclusiveRange(.65 * 1.10, 1));
       expect(hsl.lightness, inInclusiveRange(.345, .555));
     }
     final a = HSLColor.fromColor(palette.second),

@@ -5,7 +5,7 @@ import 'dart:ui' show Color;
 import '../../models/fluid_background_state.dart';
 
 double fluidColourPhase(double orbit, int field) {
-  orbit *= .8;
+  orbit *= 2;
   final phase = orbit - field * math.pi / 2;
   return orbit +
       .8 * math.sin(phase) +
@@ -14,9 +14,9 @@ double fluidColourPhase(double orbit, int field) {
 }
 
 double fluidColourRate(double orbit, int field) {
-  orbit *= .8;
+  orbit *= 2;
   final phase = orbit - field * math.pi / 2;
-  return .8 *
+  return 2 *
       (1 +
           .8 * math.cos(phase) +
           .30 * math.cos(2 * phase) +
@@ -56,43 +56,82 @@ Color fluidFieldColourAtTime(FluidPalette palette, double time, int field) {
   );
 }
 
-/// Deterministic random seeds spread to nearby edges, with no timers or RNG
-/// in paint. Pulses finish before their slot ends, including the wrap seam.
-class FluidColourRelayFrame {
-  final donors = Int32List(4);
-  final strengths = Float64List(4);
+/// A slow, staggered handoff around neighbouring fields. The envelope and its
+/// derivatives remain continuous at the existing five-orbit clock wrap.
+double fluidColourRelayWeight(double time, int field, double motion) {
+  final pulse =
+      .5 + .5 * math.sin(time * fluidShaderTimeScale - field * math.pi / 2);
+  return .24 *
+      motion.clamp(0.0, 1.0) *
+      fluidPaletteBlend(pulse).clamp(0.0, 1.0);
+}
 
-  void update(double time, Float32List uniforms) {
-    final position = wrapFluidPhase(time) / fluidPhaseCycle * 20;
-    final slot = position.floor();
-    final part = position - slot;
-    final hash = ((slot + 11) * 1103515245 + 12345) & 0x7fffffff;
-    final seed = (hash >> 12) & 3;
-    final direction = (hash & 0x10000) == 0 ? 1 : -1;
-    final width = uniforms[0], height = uniforms[1];
-    final shortSide = math.max(1.0, math.min(width, height));
-    for (var field = 0; field < 4; field++) {
-      final hop = ((field - seed) * direction) % 4;
-      final donor = (field - direction) % 4;
-      donors[field] = donor;
-      final phase = (part - hop * .12) / .58;
-      if (hop == 0 || phase <= 0 || phase >= 1) {
-        strengths[field] = 0;
-        continue;
-      }
-      final dx =
-          (uniforms[6 + field * 2] - uniforms[6 + donor * 2]) *
-          width /
-          shortSide;
-      final dy =
-          (uniforms[7 + field * 2] - uniforms[7 + donor * 2]) *
-          height /
-          shortSide;
-      final proximity = fluidPaletteBlend(
-        ((1.28 - math.sqrt(dx * dx + dy * dy)) / .7).clamp(0.0, 1.0),
+/// Read only the four original pigments, so a handoff cannot recursively wash
+/// all fields into one colour. Geometry, shader and the base remain unchanged.
+/// Buffers belong to the painter; no per-frame Color/HSL/list allocations.
+void writeFluidColourRelay(
+  Float64List pigments,
+  Float32List packed,
+  double time,
+  double motion,
+) {
+  final shortSide = math.max(1.0, math.min(packed[0], packed[1]));
+  for (var field = 0; field < 4; field++) {
+    final donor = (field + 3) % 4;
+    final dx =
+        (packed[6 + field * 2] - packed[6 + donor * 2]) * packed[0] / shortSide;
+    final dy =
+        (packed[7 + field * 2] - packed[7 + donor * 2]) * packed[1] / shortSide;
+    final weight =
+        fluidColourRelayWeight(time, field, motion) /
+        (1 + .30 * (dx * dx + dy * dy));
+    final own = field * 3, other = donor * 3;
+    var r = pigments[own] + (pigments[other] - pigments[own]) * weight;
+    var g =
+        pigments[own + 1] + (pigments[other + 1] - pigments[own + 1]) * weight;
+    var b =
+        pigments[own + 2] + (pigments[other + 2] - pigments[own + 2]) * weight;
+    final low = math.min(r, math.min(g, b)), high = math.max(r, math.max(g, b));
+    final chroma = high - low;
+    if (chroma > .000001) {
+      final ownChroma =
+          math.max(
+            pigments[own],
+            math.max(pigments[own + 1], pigments[own + 2]),
+          ) -
+          math.min(
+            pigments[own],
+            math.min(pigments[own + 1], pigments[own + 2]),
+          );
+      final donorChroma =
+          math.max(
+            pigments[other],
+            math.max(pigments[other + 1], pigments[other + 2]),
+          ) -
+          math.min(
+            pigments[other],
+            math.min(pigments[other + 1], pigments[other + 2]),
+          );
+      final desired = ownChroma + (donorChroma - ownChroma) * weight;
+      final midpoint = (high + low) * .5;
+      // Bound chroma restoration; opposite pigments should not turn into grey
+      // or acquire clipped, neon edges. Lightness stays at the mixed midpoint.
+      final gain = math.max(
+        1.0,
+        math.min(
+          1.15,
+          math.min(
+            desired / chroma,
+            2 * math.min(midpoint, 1 - midpoint) / chroma,
+          ),
+        ),
       );
-      final pulse = fluidPaletteBlend(1 - (2 * phase - 1).abs());
-      strengths[field] = .35 * proximity * pulse;
+      r = midpoint + (r - midpoint) * gain;
+      g = midpoint + (g - midpoint) * gain;
+      b = midpoint + (b - midpoint) * gain;
     }
+    packed[14 + own] = r;
+    packed[15 + own] = g;
+    packed[16 + own] = b;
   }
 }

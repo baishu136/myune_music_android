@@ -181,7 +181,7 @@ void main() {
       // Role pigments retain the cover's dark accents rather than forcing
       // every vivid-family colour up to .38 (362 fidelity change).
       expect(hsl.lightness, inInclusiveRange(.20, .59));
-      expect(hsl.saturation, lessThanOrEqualTo(.96));
+      expect(hsl.saturation, lessThanOrEqualTo(1));
     }
   });
 

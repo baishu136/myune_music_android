@@ -4,6 +4,7 @@ import 'package:flutter/material.dart' show ChangeNotifier;
 import 'package:path_provider/path_provider.dart';
 import 'package:path/path.dart' as p;
 import 'statistics_models.dart';
+import '../../services/song_group_presentation.dart';
 
 class StatisticsManager with ChangeNotifier {
   static final StatisticsManager _instance = StatisticsManager._internal();
@@ -12,6 +13,18 @@ class StatisticsManager with ChangeNotifier {
 
   final StatisticsData _statisticsData = StatisticsData();
   StatisticsData get statisticsData => _statisticsData;
+  int get songRevision => _statisticsData.songRevision;
+  int _countsRevision = -1;
+  Map<String, int> _normalizedPlayCounts = const {};
+  Map<String, int> get normalizedPlayCounts {
+    if (_countsRevision != songRevision) {
+      _normalizedPlayCounts = Map.unmodifiable(
+        SongGroupPresentation.normalizedPlayCounts(_statisticsData.songStats),
+      );
+      _countsRevision = songRevision;
+    }
+    return _normalizedPlayCounts;
+  }
 
   late String _statisticsFilePath;
   Timer? _saveTimer;
@@ -115,6 +128,6 @@ class StatisticsManager with ChangeNotifier {
 
   // 获取指定歌曲的统计信息
   SongPlayStat? getSongStatByPath(String path) {
-    return _statisticsData.songStats[path];
+    return _statisticsData.songStatForPath(path);
   }
 }

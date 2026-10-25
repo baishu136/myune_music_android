@@ -12,13 +12,13 @@ void main() {
     liftStartUs: 1000000,
   );
 
-  test('seven percent lift changes height without altering time or curve', () {
-    final previous = KaraokeMotionConfig(liftHeightFraction: .055);
+  test('eight percent lift preserves time and curve', () {
+    final previous = KaraokeMotionConfig(liftHeightFraction: .105);
     for (final height in [32.0, 40.0, 48.0]) {
       final oldTop = -karaokeLiftPixels(1, height, previous);
       final newTop = -karaokeLiftPixels(1, height, config);
-      expect(newTop, closeTo(height * .07, 1e-9));
-      expect(newTop / oldTop, closeTo(.07 / .055, 1e-9));
+      expect(newTop, closeTo(height * .08, 1e-9));
+      expect(newTop / oldTop, closeTo(.08 / .105, 1e-9));
       for (final hz in [60, 90, 120]) {
         for (
           var time = 950000;
@@ -31,7 +31,7 @@ void main() {
         }
       }
     }
-    expect(-karaokeLiftPixels(1, 500, config), 35);
+    expect(-karaokeLiftPixels(1, 500, config), 40);
   });
 
   test('motion settings reject out-of-range values', () {

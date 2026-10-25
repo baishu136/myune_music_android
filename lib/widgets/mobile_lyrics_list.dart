@@ -13,6 +13,7 @@ import 'package:flutter/scheduler.dart' show SchedulerBinding;
 import '../page/playlist/playlist_models.dart';
 import '../page/setting/settings_provider.dart';
 import '../services/interaction_performance_controller.dart';
+import '../services/lyric_line_lookup.dart';
 import 'interlude_animation_widget.dart';
 import 'karaoke_motion.dart';
 import 'lyric_seek_guide.dart';
@@ -1010,13 +1011,9 @@ class _MobileLyricsListState extends State<MobileLyricsList>
 
   void _snapPlaybackSeek(Duration target) {
     if (widget.lines.isEmpty) return;
-    var index = -1;
     // A media position belongs to the preceding LRC line, not the nearest
     // future timestamp. Controller lyric taps still use their exact timestamp.
-    for (var i = 0; i < widget.lines.length; i++) {
-      if (widget.lines[i].timestamp > target) break;
-      index = i;
-    }
+    final index = lyricLineIndexAt(widget.lines, target);
     _settleOnTimestamp(target, targetIndexOverride: index);
     _resetListPositionAnchor();
   }

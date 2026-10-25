@@ -43,6 +43,16 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
   SettingsProvider? _settings;
   PlaybackSourceSnapshot? _originalSource;
   final _searchController = TextEditingController();
+  Object? _scopeSongsKey;
+  List<Song> _scopeSongs = const [];
+
+  List<Song> _deriveScopeSongs(Object key, List<Song> Function() derive) {
+    if (_scopeSongsKey != key) {
+      _scopeSongs = derive();
+      _scopeSongsKey = key;
+    }
+    return _scopeSongs;
+  }
 
   @override
   void didChangeDependencies() {
@@ -109,23 +119,46 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
         final drawerAlbum = currentSong?.album ?? '';
         final artistSongs = _scope != _QueueScope.artist
             ? const <Song>[]
-            : librarySongs
-                  .where(
-                    (song) =>
-                        currentSong != null &&
-                        notifier
-                            .getIndividualArtists(song.artist)
-                            .map(artistMatchKey)
-                            .any(artists.contains),
-                  )
-                  .toList(growable: false);
+            : _deriveScopeSongs(
+                (
+                  notifier,
+                  notifier.libraryRevision,
+                  librarySongs,
+                  librarySongs.length,
+                  _scope,
+                  currentSong?.artist,
+                  settings.artistSeparators,
+                ),
+                () => librarySongs
+                    .where(
+                      (song) =>
+                          currentSong != null &&
+                          notifier
+                              .getIndividualArtists(song.artist)
+                              .map(artistMatchKey)
+                              .any(artists.contains),
+                    )
+                    .toList(growable: false),
+              );
         final albumSongs = _scope != _QueueScope.album
             ? const <Song>[]
-            : librarySongs
-                  .where(
-                    (song) => currentSong != null && song.album == drawerAlbum,
-                  )
-                  .toList(growable: false);
+            : _deriveScopeSongs(
+                (
+                  notifier,
+                  notifier.libraryRevision,
+                  librarySongs,
+                  librarySongs.length,
+                  _scope,
+                  drawerAlbum,
+                  currentSong != null,
+                ),
+                () => librarySongs
+                    .where(
+                      (song) =>
+                          currentSong != null && song.album == drawerAlbum,
+                    )
+                    .toList(growable: false),
+              );
         final playlistSongs = _scope == _QueueScope.playlists
             ? _songsForPlaylist(notifier, _selectedPlaylist)
             : const <Song>[];
@@ -133,10 +166,16 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
           _QueueScope.library => librarySongs,
           _QueueScope.artist => artistSongs,
           _QueueScope.album => albumSongs,
-          _QueueScope.search => notifier.searchSongs(
-            _searchController.text,
+          _QueueScope.search => _deriveScopeSongs((
+            notifier,
+            notifier.libraryRevision,
+            notifier.libraryPresentationReady,
+            settings.artistSeparators,
             librarySongs,
-          ),
+            librarySongs.length,
+            _scope,
+            _searchController.text,
+          ), () => notifier.searchSongs(_searchController.text, librarySongs)),
           _QueueScope.playlists => playlistSongs,
         };
 

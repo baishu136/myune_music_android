@@ -2043,7 +2043,9 @@ class _SongTileWidgetState extends State<SongTileWidget> {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
     final notifier = context.read<PlaylistContentNotifier>();
-    final settings = context.watch<SettingsProvider>();
+    final showAlbumName = context.select<SettingsProvider, bool>(
+      (settings) => settings.showAlbumName,
+    );
     final directArt = widget.song.albumArt;
     final coverArt = directArt != null && directArt.isNotEmpty
         ? directArt
@@ -2142,7 +2144,7 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                   overflow: TextOverflow.ellipsis,
                 ),
                 subtitle: Text(
-                  settings.showAlbumName
+                  showAlbumName
                       ? '${widget.song.artist} - ${widget.song.album}'
                       : widget.song.artist,
                   style: widget.queueActions && isPlaying

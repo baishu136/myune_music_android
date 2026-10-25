@@ -129,7 +129,7 @@ void main() {
       for (var i = 0; i <= 1200; i++) {
         final orbit = i / 1200 * math.pi * 2;
         final rates = [for (var f = 0; f < 4; f++) fluidColourRate(orbit, f)];
-        expect(rates.reduce((a, b) => a + b), closeTo(3.2, 1e-10));
+        expect(rates.reduce((a, b) => a + b), closeTo(8, 1e-10));
         for (var f = 0; f < 4; f++) {
           low = math.min(low, rates[f]);
           high = math.max(high, rates[f]);
@@ -138,20 +138,20 @@ void main() {
                   fluidColourPhase(orbit - .00001, f)) /
               .00002;
           expect(numeric, closeTo(rates[f], 1e-7));
-          if (rates[f] > 1.6) {
+          if (rates[f] > 4) {
             expect(
-              rates.where((r) => r != rates[f]).every((r) => r < .816),
+              rates.where((r) => r != rates[f]).every((r) => r < 2.04),
               isTrue,
             );
           }
           expect(
-            fluidColourRate(orbit + 10 * math.pi, f),
+            fluidColourRate(orbit + 2 * math.pi, f),
             closeTo(rates[f], 1e-10),
           );
         }
       }
-      expect(low, greaterThan(.12));
-      expect(high, greaterThan(.8));
+      expect(low, greaterThan(.3));
+      expect(high, greaterThan(2));
     },
   );
 

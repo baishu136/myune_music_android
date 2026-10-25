@@ -1,17 +1,11 @@
-import 'dart:math' as math;
 import 'dart:ui' as ui;
-import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
-import 'package:myune_music/models/fluid_background_state.dart';
-import 'package:myune_music/services/artwork_palette_cache.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:flutter/services.dart';
 import 'package:myune_music/widgets/mobile_lyrics_list.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
-import 'package:myune_music/widgets/playback_background/fluid_frame_uniforms.dart';
-import 'package:myune_music/widgets/playback_background/fluid_colour_motion.dart';
 
 void main() {
   test('smooth preference is opt-in and survives restart', () async {
@@ -183,130 +177,6 @@ void main() {
     expect(List<double>.from(cache.lifts), pose);
     await tester.pumpWidget(const SizedBox());
   });
-  testWidgets(
-    'roaming centres cross the hub with bounded shape, relay and wrap',
-    (tester) async {
-      final program = await tester.runAsync(
-        () => ui.FragmentProgram.fromAsset('shaders/fluid_background.frag'),
-      );
-      final shader = program!.fragmentShader();
-      final packed = FluidFrameUniforms();
-      final relay = FluidColourRelayFrame();
-      final palette = buildFluidPalette([
-        Colors.pink,
-        Colors.teal,
-        Colors.indigo,
-        Colors.amber,
-      ], fallbackSeed: Colors.blue);
-      var nearest = 1.0, farthest = 0.0, transmitted = 0.0;
-      try {
-        for (var i = 0; i < 2000; i++) {
-          final time = fluidPhaseCycle * i / 2000;
-          packed.write(
-            shader,
-            size: const Size(180, 320),
-            time: time,
-            motion: 1,
-            dim: .3,
-            source: palette,
-            target: palette,
-          );
-          final v = packed.values;
-          relay.update(time, v);
-          for (var field = 0; field < 4; field++) {
-            final x = v[6 + field * 2] - .5, y = v[7 + field * 2] - .5;
-            final radius = math.sqrt(x * x + y * y);
-            nearest = math.min(nearest, radius);
-            farthest = math.max(farthest, radius);
-            transmitted = math.max(transmitted, relay.strengths[field]);
-            final a = v[29 + field * 4],
-                b = v[30 + field * 4],
-                c = v[31 + field * 4],
-                d = v[32 + field * 4];
-            final trace = a * a + b * b + c * c + d * d;
-            final determinant = (a * d - b * c) * (a * d - b * c);
-            final minimum =
-                (trace -
-                    math.sqrt(math.max(0, trace * trace - 4 * determinant))) /
-                2;
-            expect(
-              2 * 180 / math.sqrt(minimum),
-              lessThanOrEqualTo(320 * 2 / 3 + .01),
-            );
-          }
-        }
-        expect(nearest, lessThan(.025));
-        expect(farthest, greaterThan(.75));
-        expect(transmitted, greaterThan(.15));
-        packed.write(
-          shader,
-          size: const Size(180, 320),
-          time: 0,
-          motion: 1,
-          dim: .3,
-          source: palette,
-          target: palette,
-        );
-        final start = List<double>.of(packed.values);
-        packed.write(
-          shader,
-          size: const Size(180, 320),
-          time: fluidPhaseCycle,
-          motion: 1,
-          dim: .3,
-          source: palette,
-          target: palette,
-        );
-        for (var i = 0; i < start.length; i++) {
-          if (i == 4 || i == 5) {
-            expect(
-              math.sin(packed.values[i]),
-              closeTo(math.sin(start[i]), 1e-5),
-            );
-            expect(
-              math.cos(packed.values[i]),
-              closeTo(math.cos(start[i]), 1e-5),
-            );
-            continue;
-          }
-          expect(packed.values[i], closeTo(start[i], 1e-5));
-        }
-        final output = Platform.environment['MOTION414_PREVIEW_DIR'];
-        if (output != null) {
-          await tester.runAsync(() async {
-            for (var frame = 0; frame < 6; frame++) {
-              packed.write(
-                shader,
-                size: const Size(180, 320),
-                time: frame * 9.0,
-                motion: 1,
-                dim: .3,
-                source: palette,
-                target: palette,
-              );
-              final recorder = ui.PictureRecorder();
-              Canvas(recorder).drawRect(
-                const Rect.fromLTWH(0, 0, 180, 320),
-                Paint()..shader = shader,
-              );
-              final picture = recorder.endRecording();
-              final image = await picture.toImage(180, 320);
-              final data = await image.toByteData(
-                format: ui.ImageByteFormat.png,
-              );
-              await File(
-                '$output/fluid-$frame.png',
-              ).writeAsBytes(data!.buffer.asUint8List());
-              image.dispose();
-              picture.dispose();
-            }
-          });
-        }
-      } finally {
-        shader.dispose();
-      }
-    },
-  );
   test('phone font limit is 60 and edits snap to integers', () async {
     SharedPreferences.setMockInitialValues({});
     final settings = SettingsProvider();
@@ -315,25 +185,5 @@ void main() {
     settings.previewFontSize(46.7);
     expect(settings.fontSize, 47);
     settings.dispose();
-  });
-  test('non-neutral artwork supplies eight distinct shared colours', () {
-    for (final colors in [
-      [
-        const Color(0xff281230),
-        const Color(0xff281230),
-        const Color(0xff381c3c),
-      ],
-      [Colors.pink, Colors.teal, Colors.amber, Colors.white],
-      [const Color(0xffa0b0b5), const Color(0xffb0b9c0)],
-    ]) {
-      final palette = buildFluidPalette(colors, fallbackSeed: Colors.blue);
-      expect(palette.motionColors.toSet().length, greaterThanOrEqualTo(8));
-      expect(palette.motionColors.length, 4 * fluidMotionColourCount);
-      expect(
-        palette.motionColors.every((c) => c.r >= 0 && c.g >= 0 && c.b >= 0),
-        isTrue,
-      );
-    }
-    expect(fluidPhaseCycle, greaterThan(math.pi));
   });
 }

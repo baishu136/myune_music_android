@@ -8,12 +8,20 @@ enum PlaybackArtworkBackgroundStyle { blurred, fluid }
 enum FluidBackgroundQuality { automatic, powerSaving, smooth }
 
 // Visible wall-clock seconds; frame uniforms convert to orbital radians.
-// Orbit, slower colour and 1.6x shape clocks share a five-orbit wrap.
+// Orbit, doubled colour and 1.6x shape clocks share a five-orbit wrap.
 const fluidShaderTimeScale = .15;
 const fluidOrbitPeriod = math.pi * 2 / fluidShaderTimeScale;
 // Five orbits keep the 1.6x shape clock continuous when visible time wraps.
 const fluidPhaseCycle = fluidOrbitPeriod * 5;
 const fluidMotionColourCount = 8;
+
+/// Apply once to generated palettes, never to interpolation or cached frames.
+/// Relative saturation only; preserve hue/lightness and neutral artwork.
+Color fluidSaturationBoost(Color colour) {
+  final hsl = HSLColor.fromColor(colour);
+  if (hsl.saturation == 0) return colour;
+  return hsl.withSaturation((hsl.saturation * 1.10).clamp(0.0, 1.0)).toColor();
+}
 
 bool fluidNeedsIntermediateColour(Color a, Color b) {
   double brightness(Color c) =>
@@ -141,15 +149,17 @@ class FluidPalette {
     final hsl = HSLColor.fromColor(seed);
     final neutralSeed = hsl.saturation < .08;
     Color shade(double hueOffset, double saturation, double lightness) {
-      return hsl
-          .withHue((hsl.hue + hueOffset) % 360)
-          .withSaturation(
-            neutralSeed
-                ? saturation.clamp(.02, .12)
-                : saturation.clamp(.18, .72),
-          )
-          .withLightness(lightness.clamp(.12, .62))
-          .toColor();
+      return fluidSaturationBoost(
+        hsl
+            .withHue((hsl.hue + hueOffset) % 360)
+            .withSaturation(
+              neutralSeed
+                  ? saturation.clamp(.02, .12)
+                  : saturation.clamp(.18, .72),
+            )
+            .withLightness(lightness.clamp(.12, .62))
+            .toColor(),
+      );
     }
 
     return FluidPalette(
@@ -157,6 +167,7 @@ class FluidPalette {
       shade(24, math.max(hsl.saturation * .9, .30), .40),
       shade(72, math.max(hsl.saturation * .72, .24), .24),
       shade(-58, math.max(hsl.saturation * .8, .28), .34),
+      baseColor: fluidSaturationBoost(const Color(0xFF080A0E)),
     );
   }
 

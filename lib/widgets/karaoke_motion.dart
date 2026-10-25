@@ -7,7 +7,7 @@ enum KaraokeLiftCurve { smoothTop, flowingTop, easeOutCubic }
 
 class KaraokeMotionConfig {
   KaraokeMotionConfig({
-    this.liftHeightFraction = .07,
+    this.liftHeightFraction = .08,
     this.liftDuration = const Duration(milliseconds: 760),
     this.curve = KaraokeLiftCurve.flowingTop,
     this.staggerFraction = .15,
@@ -55,11 +55,11 @@ class KaraokeMotionConfig {
     }
     if (!liftHeightFraction.isFinite ||
         liftHeightFraction < .02 ||
-        liftHeightFraction > .09) {
+        liftHeightFraction > .105) {
       throw RangeError.value(
         liftHeightFraction,
         'liftHeightFraction',
-        '.02–.09',
+        '.02–.105',
       );
     }
     if (liftDuration < const Duration(milliseconds: 400) ||
@@ -267,13 +267,54 @@ double karaokeGlyphLiftAt(
   KaraokeGlyphTiming timing,
   KaraokeMotionConfig config,
 ) {
-  return _liftAt(mediaTimeUs, timing.liftStartUs, config) +
+  final durationUs = _liftDurationUs(timing, config);
+  return _liftAt(
+        mediaTimeUs,
+        timing.liftStartUs,
+        durationUs,
+        _slowLiftBlend(durationUs, config),
+        config,
+      ) +
       _recoilAt(
         mediaTimeUs,
         timing.liftStartUs,
         _recoilAmplitude(timing, config),
         config,
       );
+}
+
+int _liftDurationUs(KaraokeGlyphTiming timing, KaraokeMotionConfig config) {
+  final base = config.liftDuration.inMicroseconds;
+  final cadence =
+      timing.estimatedCadenceUs ??
+      math.max(1, timing.sourceTokenEndUs - timing.sourceTokenStartUs);
+  if (cadence <= base) return base;
+  // Keep the existing quick articulation. Slow notes take a little longer
+  // than their local cadence so neighbouring lifts overlap instead of resting
+  // at the top between onsets. Very long sustains still settle, within 4x base.
+  return math.min(base * 4, base + ((cadence - base) * 1.2).round());
+}
+
+double _slowLiftBlend(int durationUs, KaraokeMotionConfig config) =>
+    ((durationUs / config.liftDuration.inMicroseconds - 1) / 1.2).clamp(
+      0.0,
+      1.0,
+    );
+
+double _sustainedLift(double t) {
+  const edge = .16;
+  final tail = t > .5;
+  final phase = tail ? 1 - t : t;
+  final double progress;
+  if (phase >= edge) {
+    progress = (phase - edge * .5) / (1 - edge);
+  } else {
+    final x = phase / edge;
+    // Integral of smoothstep velocity: a steady middle, with zero velocity
+    // and acceleration at both ends. No integration or spring state per frame.
+    progress = edge * x * x * x * (1 - .5 * x) / (1 - edge);
+  }
+  return tail ? 1 - progress : progress;
 }
 
 double _recoilAmplitude(KaraokeGlyphTiming timing, KaraokeMotionConfig config) {
@@ -303,15 +344,18 @@ double _recoilAt(
   return amplitude * 64 * bell * bell * bell;
 }
 
-double _liftAt(int mediaTimeUs, int startUs, KaraokeMotionConfig config) {
+double _liftAt(
+  int mediaTimeUs,
+  int startUs,
+  int durationUs,
+  double slowBlend,
+  KaraokeMotionConfig config,
+) {
   final elapsed = mediaTimeUs - startUs;
   if (elapsed <= 0) return 0;
-  if (elapsed >= config.liftDuration.inMicroseconds) return 1;
-  final liftPhase =
-      ((mediaTimeUs - startUs) / config.liftDuration.inMicroseconds).clamp(
-        0.0,
-        1.0,
-      );
+  if (elapsed >= durationUs) return 1;
+  final liftPhase = elapsed / durationUs;
+  if (slowBlend == 1) return _sustainedLift(liftPhase);
   final lift = switch (config.curve) {
     KaraokeLiftCurve.smoothTop => _smoothTop(liftPhase),
     // Zero starting velocity and a zero-velocity/acceleration arrival, but
@@ -320,7 +364,9 @@ double _liftAt(int mediaTimeUs, int startUs, KaraokeMotionConfig config) {
       liftPhase * liftPhase * (6 - 8 * liftPhase + 3 * liftPhase * liftPhase),
     KaraokeLiftCurve.easeOutCubic => 1 - math.pow(1 - liftPhase, 3).toDouble(),
   };
-  return lift;
+  return slowBlend == 0
+      ? lift
+      : lift + (_sustainedLift(liftPhase) - lift) * slowBlend;
 }
 
 double karaokeExitRetentionFraction(double phase) => 1 - _smoothTop(phase);
@@ -344,47 +390,71 @@ class KaraokeFollowerGlyph {
   final int chain;
 }
 
-/// Slow own curve plus bounded, non-recursive three-neighbour traction.
+/// Cadence-aware own curve plus bounded, non-recursive three-neighbour traction.
 /// No frame integration: seeking to a time equals playing to that time.
 class KaraokeFollowerTimeline {
   KaraokeFollowerTimeline(List<KaraokeFollowerGlyph> glyphs, this.config)
     : _starts = Int64List(glyphs.length),
+      _durations = Int64List(glyphs.length),
+      _slowBlends = Float64List(glyphs.length),
       _sources = Int32List(glyphs.length * 3)
         ..fillRange(0, glyphs.length * 3, -1),
       _own = Float64List(glyphs.length),
       _recoilAmplitudes = Float64List(glyphs.length) {
     var chainStart = 0;
+    var settled = 0;
     for (var i = 0; i < glyphs.length; i++) {
       _starts[i] = glyphs[i].timing.liftStartUs;
+      _durations[i] = _liftDurationUs(glyphs[i].timing, config);
+      _slowBlends[i] = _slowLiftBlend(_durations[i], config);
       _recoilAmplitudes[i] = _recoilAmplitude(glyphs[i].timing, config);
+      settled = math.max(
+        settled,
+        _starts[i] +
+            math.max(
+              _durations[i],
+              _recoilAmplitudes[i] == 0
+                  ? 0
+                  : (config.liftDuration.inMicroseconds * 1.35).ceil(),
+            ),
+      );
       if (i == 0 || glyphs[i].chain != glyphs[i - 1].chain) chainStart = i;
       for (var hop = 0; hop < 3 && i - hop - 1 >= chainStart; hop++) {
         _sources[i * 3 + hop] = i - hop - 1;
       }
     }
+    settleAfterUs = settled;
   }
 
   final KaraokeMotionConfig config;
   final Int64List _starts;
+  final Int64List _durations;
+  final Float64List _slowBlends;
   final Int32List _sources;
   final Float64List _own;
   final Float64List _recoilAmplitudes;
+  late final int settleAfterUs;
   int get length => _starts.length;
 
   double ownAt(int index, int mediaUs) =>
-      _liftAt(mediaUs, _starts[index], config) +
+      _ownAt(index, mediaUs) +
       _recoilAt(mediaUs, _starts[index], _recoilAmplitudes[index], config);
 
+  double _ownAt(int index, int mediaUs) => _liftAt(
+    mediaUs,
+    _starts[index],
+    _durations[index],
+    _slowBlends[index],
+    config,
+  );
+
   double liftAt(int index, int mediaUs) {
-    final own = _liftAt(mediaUs, _starts[index], config);
+    final own = _ownAt(index, mediaUs);
     var remaining = 1.0;
     for (var hop = 0; hop < 3; hop++) {
       final source = _sources[index * 3 + hop];
       if (source < 0) break;
-      remaining *=
-          1 -
-          config.followerWeights[hop] *
-              _liftAt(mediaUs, _starts[source], config);
+      remaining *= 1 - config.followerWeights[hop] * _ownAt(source, mediaUs);
     }
     // Smooth remaining-travel blend instead of max's velocity-changing switch.
     // Each follower reads ONLY own motion, never another follower's result.
@@ -406,7 +476,7 @@ class KaraokeFollowerTimeline {
       return;
     }
     for (var i = 0; i < length; i++) {
-      _own[i] = _liftAt(mediaUs, _starts[i], config);
+      _own[i] = _ownAt(i, mediaUs);
     }
     final maximum = karaokeLiftPixels(1, lineHeight, config) * envelope;
     for (var i = 0; i < length; i++) {

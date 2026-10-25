@@ -18,7 +18,6 @@ uniform vec4 uShape0;
 uniform vec4 uShape1;
 uniform vec4 uShape2;
 uniform vec4 uShape3;
-uniform vec4 uRelay;
 out vec4 fragColor;
 
 float pigmentWeight(vec2 point, vec2 centre, vec4 shape) {
@@ -31,7 +30,7 @@ float pigmentWeight(vec2 point, vec2 centre, vec4 shape) {
   float falloff = 1.0 / (1.0 + dot(delta, delta));
   // Convex, open fields retain the wide edge while reducing distant pigment
   // contamination of dark centres; no additive whitening or layered enclosure.
-  return falloff * falloff * (0.80 + 0.20 * falloff);
+  return falloff * falloff * (0.65 + 0.35 * falloff);
 }
 float interleavedGradientNoise(vec2 pixel) {
   return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
@@ -46,21 +45,8 @@ void main() {
       pigmentWeight(point, uCentre3, uShape3));
   float mass = dot(weights, vec4(1.0));
   weights /= max(mass, 0.00001);
-  // Colour enters through shared edges; isolated cores keep their own pigment.
-  vec3 donor0 = uRelay.x < 0.0 ? uPigment1 : uPigment3;
-  vec3 donor1 = uRelay.y < 0.0 ? uPigment2 : uPigment0;
-  vec3 donor2 = uRelay.z < 0.0 ? uPigment3 : uPigment1;
-  vec3 donor3 = uRelay.w < 0.0 ? uPigment0 : uPigment2;
-  vec4 donorWeights = vec4(
-      uRelay.x < 0.0 ? weights.y : weights.w,
-      uRelay.y < 0.0 ? weights.z : weights.x,
-      uRelay.z < 0.0 ? weights.w : weights.y,
-      uRelay.w < 0.0 ? weights.x : weights.z);
-  vec4 edge = abs(uRelay) * 2.0 * min(weights, donorWeights);
-  vec3 pigment = mix(uPigment0, donor0, edge.x) * weights.x +
-      mix(uPigment1, donor1, edge.y) * weights.y +
-      mix(uPigment2, donor2, edge.z) * weights.z +
-      mix(uPigment3, donor3, edge.w) * weights.w;
+  vec3 pigment = uPigment0 * weights.x + uPigment1 * weights.y +
+      uPigment2 * weights.z + uPigment3 * weights.w;
   // Do not reinforce a rounded outline with a distance-dependent colour veil.
   float coverage = 0.84;
   vec3 color = mix(uBase, pigment, coverage);

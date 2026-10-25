@@ -10,6 +10,7 @@ import '../page/playlist/playlist_models.dart';
 import '../page/setting/settings_provider.dart';
 import 'font_service.dart';
 import 'desktop_lyric_presentation.dart';
+import 'lyric_line_lookup.dart';
 import '../theme/theme_provider.dart';
 
 class DesktopLyricsController extends ChangeNotifier {
@@ -544,20 +545,7 @@ class DesktopLyricsController extends ChangeNotifier {
   }
 
   int _currentLyricIndex(List<LyricLine> lyrics, Duration position) {
-    if (lyrics.isEmpty) return -1;
-    var low = 0;
-    var high = lyrics.length - 1;
-    var index = -1;
-    while (low <= high) {
-      final middle = (low + high) >> 1;
-      if (lyrics[middle].timestamp <= position) {
-        index = middle;
-        low = middle + 1;
-      } else {
-        high = middle - 1;
-      }
-    }
-    return index;
+    return lyricLineIndexAt(lyrics, position, hint: _lastLyricIndex);
   }
 
   Future<String?> _resolveFontPath(String fontFamily) async {
