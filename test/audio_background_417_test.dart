@@ -29,6 +29,7 @@ class _Player extends Fake implements PlayerApi {
   final events = _Events();
   final writes = <String>[];
   String driver = 'aaudio';
+  String configuredDriver = 'aaudio';
   int selected = 0, reloads = 0;
   @override
   PlayerStream get stream => events;
@@ -39,7 +40,12 @@ class _Player extends Fake implements PlayerApi {
   Future<void> setRawProperty(String name, String value) async {
     writes.add('$name=$value');
     if (name == 'aaudio-device-id') selected = int.parse(value);
-    if (name == 'ao') driver = value.split(',').first;
+    if (name == 'ao') {
+      driver = value.split(',').first;
+      configuredDriver = driver;
+      // `ao` is UPDATE_AUDIO in the pinned mpv: the property itself reopens it.
+      reloads++;
+    }
   }
 
   @override
@@ -47,6 +53,7 @@ class _Player extends Fake implements PlayerApi {
   @override
   Future<void> reloadAudio() async {
     reloads++;
+    driver = configuredDriver;
   }
 
   @override
@@ -133,6 +140,7 @@ void main() {
     );
     await output.initializationFuture;
     player.writes.clear();
+    player.reloads = 0;
   });
   tearDown(() async {
     output.dispose();
@@ -169,10 +177,8 @@ void main() {
     }
     await Future<void>.delayed(const Duration(milliseconds: 1050));
     expect(player.reloads, 1);
-    expect(
-      player.writes.where((s) => s == 'ao=audiotrack,opensles'),
-      hasLength(1),
-    );
+    expect(player.driver, 'audiotrack');
+    expect(player.writes.where((s) => s.startsWith('ao=')), isEmpty);
     expect(output.message, contains('兼容'));
   });
   test('manual device selection cancels an old failure recovery', () async {

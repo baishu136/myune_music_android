@@ -81,6 +81,7 @@ class _PlaybackConfiguration {
 
 class AudioService {
   final PlayerApi _player;
+  final bool _android;
   StreamSubscription<AudioParams>? _sampleRateSubscription;
   Future<void>? _equalizerDrain, _normalizationDrain;
   List<double>? _desiredGains;
@@ -100,8 +101,9 @@ class AudioService {
 
   PlayerApi get player => _player;
 
-  AudioService({PlayerApi? player})
-    : _player =
+  AudioService({PlayerApi? player, bool? android})
+    : _android = android ?? Platform.isAndroid,
+      _player =
           player ??
           Player(
             // configuration: const PlayerConfiguration(autoPlay: false),
@@ -119,7 +121,18 @@ class AudioService {
     await _bestEffort(
       () => _player.setAudioClientName('Myune music for Android'),
     );
-    if (Platform.isAndroid) {
+    if (_android) {
+      // Small audio blocks should not wait at a cross-core barrier for every
+      // EQ stage. This controls graph scheduling only; DSP parameters and PCM
+      // precision stay unchanged, and an inactive graph stays inactive.
+      await _bestEffort(
+        () => _player.updateMusicDsp((dsp) => dsp.copyWith(filterThreads: 1)),
+      );
+      // Match the USAGE_MEDIA / CONTENT_TYPE_MUSIC policy queried by output
+      // inventory; apply before opening media, never on background transitions.
+      await _bestEffort(
+        () => _player.setRawProperty('audio-set-media-role', 'yes'),
+      );
       // Keep enough decoded audio queued to absorb activity switches,
       // scheduler jitter and short Doze transitions without audible gaps.
       await _bestEffort(

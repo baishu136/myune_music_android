@@ -86,12 +86,27 @@ class AudioOutputSnapshot {
           .whereType<num>()
           .map((v) => v.toInt())
           .toList(),
+      systemMediaDeviceIds = ((data['systemMediaDeviceIds'] as List?) ?? [])
+          .whereType<num>()
+          .map((v) => v.toInt())
+          .toSet(),
       routeVerified = data['routeVerified'] == true,
       mixerConfirmed = data['mixerConfirmed'] == true;
   final int sdk;
   final bool bridgeAvailable, routeVerified, mixerConfirmed;
   final List<AudioOutputDevice> devices;
   final List<int> stream;
+  final Set<int> systemMediaDeviceIds;
+  // This is Android's routing policy, not an observed app-owned AudioTrack.
+  // Never use it to assert actual PCM format, exclusivity or Bit-Perfect.
+  AudioOutputDevice? get systemMediaDevice {
+    if (systemMediaDeviceIds.length != 1) return null;
+    for (final device in devices) {
+      if (device.id == systemMediaDeviceIds.single) return device;
+    }
+    return null;
+  }
+
   int at(int i) => i < stream.length ? stream[i] : 0;
   AudioOutputDevice? get current {
     if (!routeVerified || at(1) != 1 || at(7) < 2 || at(7) > 10) return null;

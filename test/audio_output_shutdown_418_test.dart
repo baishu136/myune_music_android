@@ -162,7 +162,7 @@ void main() {
       harness.player.initializationGate!.complete();
       await release;
       expect(harness.player.writes, [
-        'ao=aaudio,audiotrack,opensles',
+        'ao=audiotrack,opensles',
         'transparent=false',
         'exclusive=false',
       ]);

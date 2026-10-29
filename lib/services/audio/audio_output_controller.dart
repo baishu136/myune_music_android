@@ -40,7 +40,8 @@ class AudioOutputController extends ChangeNotifier {
   Future<void> _tail = Future.value();
   Timer? _formatDebounce;
   Timer? _recoveryTimer;
-  bool _compatibleBackend = false;
+  static const _automaticBackends = 'audiotrack,opensles';
+  String? _configuredBackend;
   Object? _configuredSource;
   Future<void>? _release;
   int _systemRouteRevision = 0;
@@ -48,6 +49,13 @@ class AudioOutputController extends ChangeNotifier {
   int _snapshotRevision = -1;
   bool _dspBypassConfirmed = false;
   AudioOutputDevice? get current => snapshot.current;
+  AudioOutputDevice? get syncDevice =>
+      current ??
+      (mode == AudioOutputMode.standard &&
+              requestedDeviceId == null &&
+              snapshot.at(1) == 0
+          ? snapshot.systemMediaDevice
+          : null);
   bool get bitPerfectReported =>
       mode == AudioOutputMode.bitPerfect &&
       _dspBypassConfirmed &&
@@ -86,10 +94,10 @@ class AudioOutputController extends ChangeNotifier {
     try {
       await refresh();
       if (_disposed) return;
-      if (snapshot.bridgeAvailable && snapshot.sdk >= 26) {
-        // Default remains system automatic (device-id 0), with the old backend as fallback.
-        await player.setRawProperty('ao', 'aaudio,audiotrack,opensles');
-      }
+      // Ordinary music follows Android's compatible output. AAudio remains an
+      // explicit device / USB path, not a prerequisite for inventory reporting.
+      await player.setRawProperty('ao', _automaticBackends);
+      _configuredBackend = _automaticBackends;
     } catch (error) {
       message = '输出管理暂不可用：$error';
     }
@@ -126,7 +134,6 @@ class AudioOutputController extends ChangeNotifier {
             (current != null || driver != 'aaudio')) {
           return false;
         }
-        _compatibleBackend = true;
         return true;
       }, '输出未能恢复，已切换兼容的系统自动输出');
     });
@@ -138,14 +145,14 @@ class AudioOutputController extends ChangeNotifier {
     final revision = (data['snapshotRevision'] as num?)?.toInt() ?? 0;
     if (revision < _snapshotRevision) return;
     _snapshotRevision = revision;
-    final previousDevice = current;
+    final previousDevice = syncDevice;
     final previousOverride = sync.deviceOverrideMs;
     final previousProfile = _lastProfileKey;
     final systemRevision = (data['systemRouteRevision'] as num?)?.toInt() ?? 0;
     final systemChanged = systemRevision > _systemRouteRevision;
     _systemRouteRevision = systemRevision;
     snapshot = AudioOutputSnapshot.fromMap(data);
-    final device = current;
+    final device = syncDevice;
     if (device != null) {
       _lastProfileKey = device.profileKey;
       sync.useDevice(device.profileKey, persistent: device.persistentIdentity);
@@ -259,9 +266,31 @@ class AudioOutputController extends ChangeNotifier {
     (d) => d.id == id,
     orElse: () => throw StateError('设备已断开'),
   );
+
+  Future<void> _reloadWithBackend(String backend) async {
+    if (_configuredBackend == backend) {
+      // Backend-specific device/format options need an explicit reopen.
+      await player.reloadAudio();
+    } else {
+      // mpv's `ao` option has UPDATE_AUDIO: changing it already reopens output.
+      await player.setRawProperty('ao', backend);
+      _configuredBackend = backend;
+    }
+  }
+
   Future<void> selectDevice(int id) => _run(() async {
     await initializationFuture;
+    await refresh();
     final device = _device(id);
+    if (!device.usb && snapshot.systemMediaDevice?.id == id) {
+      // Selecting Android's existing media route does not require a different
+      // audio driver. Keep Bluetooth on the same stable path as automatic use.
+      await _automatic();
+      message = snapshot.systemMediaDevice?.id == id
+          ? '已使用系统媒体路由：${device.name}；应用音轨的实际设备由系统管理'
+          : '已恢复系统自动输出；系统媒体路由在切换期间发生变化';
+      return;
+    }
     if (!device.directSelectable) throw StateError('系统限制此设备直接切换，请使用系统输出选择');
     if (mode == AudioOutputMode.standard &&
         current?.id == id &&
@@ -269,14 +298,25 @@ class AudioOutputController extends ChangeNotifier {
       return;
     }
     await _standard(resetDevice: false, reload: false);
-    _compatibleBackend = false;
     requestedDeviceId = id;
     await player.setRawProperty('aaudio-device-id', '$id');
-    await player.setRawProperty('ao', 'aaudio');
-    await player.reloadAudio();
+    await _reloadWithBackend('aaudio');
     await _verifyRoute(id);
   });
-  Future<void> useAutomatic() => _run(() => _standard());
+  Future<void> useAutomatic() => _run(_automatic);
+
+  Future<void> _automatic() async {
+    await initializationFuture;
+    if (mode == AudioOutputMode.standard && requestedDeviceId == null) {
+      final driver = await player.getRawProperty('current-ao');
+      if (driver == 'audiotrack' || driver == 'opensles') {
+        await refresh();
+        return;
+      }
+    }
+    await _standard();
+  }
+
   Future<void> requestUsbIdentity() async {
     if (_disposed) return;
     final device = current;
@@ -325,9 +365,8 @@ class AudioOutputController extends ChangeNotifier {
     await player.setAudioExclusive(true);
     await player.setRawProperty('aaudio-performance-mode', 'low-latency');
     await player.setRawProperty('aaudio-device-id', '$id');
-    await player.setRawProperty('ao', 'aaudio');
     requestedDeviceId = id;
-    await player.reloadAudio();
+    await _reloadWithBackend('aaudio');
     await _verifyRoute(id);
     if (!snapshot.exclusiveConfirmed) throw StateError('系统仅提供共享输出，未获得 USB 独占流');
     mode = value;
@@ -373,11 +412,10 @@ class AudioOutputController extends ChangeNotifier {
           : '${channels}ch',
     );
     await player.setRawProperty('aaudio-device-id', '$id');
-    await player.setRawProperty('ao', 'aaudio');
     requestedDeviceId = id;
     requestedFormat = format;
     mode = AudioOutputMode.bitPerfect;
-    await player.reloadAudio();
+    await _reloadWithBackend('aaudio');
     await _verifyRoute(id);
     final checks = await Future.wait([
       for (final name in [
@@ -427,18 +465,12 @@ class AudioOutputController extends ChangeNotifier {
       requestedDeviceId = null;
       await attempt(() => player.setRawProperty('aaudio-device-id', '0'));
     }
-    await attempt(
-      () => player.setRawProperty(
-        'ao',
-        requestedDeviceId == null
-            ? (_compatibleBackend
-                  ? 'audiotrack,opensles'
-                  : 'aaudio,audiotrack,opensles')
-            : 'aaudio',
-      ),
-    );
     if (reload) {
-      await attempt(player.reloadAudio);
+      await attempt(
+        () => _reloadWithBackend(
+          requestedDeviceId == null ? _automaticBackends : 'aaudio',
+        ),
+      );
       await attempt(refresh);
     }
     if (failure != null) throw StateError('普通输出恢复时部分接口失败：$failure');

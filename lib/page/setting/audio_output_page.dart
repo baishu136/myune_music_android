@@ -202,7 +202,9 @@ class _AudioOutputPageState extends State<AudioOutputPage> {
                 title: const Text('当前实际输出'),
                 subtitle: Text(
                   device == null
-                      ? '当前没有可确认的应用音频流；播放后再检查'
+                      ? output.syncDevice == null
+                            ? '系统自动输出；未读取到应用音轨的实际设备'
+                            : '系统媒体路由：${output.syncDevice!.name}\n应用音轨的实际设备与硬件格式未读回'
                       : '${device.name}\n${device.connection}\n应用音频流：${output.snapshot.at(3)} Hz · ${switch (output.snapshot.at(4)) {
                           1 => '16-bit',
                           2 => 'Float',

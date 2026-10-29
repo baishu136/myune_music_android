@@ -9,6 +9,7 @@ class MusicDspSettings {
     this.gains = const [],
     this.frequencies = const [],
     this.sampleRate = 48000,
+    this.filterThreads = 0,
     this.normalizationGainDb = 0,
     this.keepAlive = false,
     this.entrySofteningEnabled = false,
@@ -18,6 +19,7 @@ class MusicDspSettings {
   final List<double> gains;
   final List<int> frequencies;
   final int sampleRate;
+  final int filterThreads;
   final double normalizationGainDb;
   final bool entrySofteningEnabled;
   final double entrySofteningDb;
@@ -28,6 +30,7 @@ class MusicDspSettings {
           List<double>? gains,
           List<int>? frequencies,
           int? sampleRate,
+          int? filterThreads,
           double? normalizationGainDb,
           bool? keepAlive,
           bool? entrySofteningEnabled,
@@ -37,6 +40,7 @@ class MusicDspSettings {
         gains: gains ?? this.gains,
         frequencies: frequencies ?? this.frequencies,
         sampleRate: sampleRate ?? this.sampleRate,
+        filterThreads: filterThreads ?? this.filterThreads,
         normalizationGainDb: normalizationGainDb ?? this.normalizationGainDb,
         keepAlive: keepAlive ?? this.keepAlive,
         entrySofteningEnabled:
@@ -47,6 +51,7 @@ class MusicDspSettings {
   int get rate =>
       sampleRate >= 8000 && sampleRate <= 384000 ? sampleRate : 48000;
   int get bandCount => math.min(32, math.min(gains.length, frequencies.length));
+  int get threads => filterThreads > 0 ? math.min(filterThreads, 32) : 0;
   double gain(int band) =>
       gains[band].isFinite ? gains[band].clamp(-12.0, 12.0) : 0;
   double frequency(int band) =>
@@ -72,7 +77,8 @@ class MusicDspSettings {
     if (!active(effects)) return '';
     final graph = filterGraph(effects);
     // mpv length quoting preserves UTF-8 model paths and nested graph syntax.
-    return '@$label:lavfi=graph=%${utf8.encode(graph).length}%$graph';
+    final options = threads == 0 ? '' : 'o=[threads=$threads]:';
+    return '@$label:lavfi=${options}graph=%${utf8.encode(graph).length}%$graph';
   }
 
   String filterGraph(String effects) {
@@ -168,6 +174,7 @@ class MusicDspSettings {
     if (enabled != previous.enabled ||
         bandCount != previous.bandCount ||
         active(effects) != previous.active(effects) ||
+        (active(effects) && threads != previous.threads) ||
         entrySofteningEnabled != previous.entrySofteningEnabled ||
         processingActive(effects) != previous.processingActive(effects)) {
       return null;

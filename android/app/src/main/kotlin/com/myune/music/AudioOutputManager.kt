@@ -146,6 +146,11 @@ class AudioOutputManager(private val context: Context, messenger: BinaryMessenge
         val report = if (available) try { nativeSnapshot() } catch (_: LinkageError) { LongArray(18) } else LongArray(18)
         val devices = manager.getDevices(AudioManager.GET_DEVICES_OUTPUTS).filter { it.isSink }
         val currentId = if (report.getOrElse(1) { 0 } == 1L) report.getOrElse(2) { 0 }.toInt() else 0
+        // Public API reports anticipated media routing, not a per-track proof.
+        // Keep it separate from AAudio stream data and never guess by name.
+        val systemMediaDeviceIds = if (Build.VERSION.SDK_INT >= 33) try {
+            manager.getAudioDevicesForAttributes(attributes).map { it.id }
+        } catch (_: Exception) { emptyList<Int>() } else emptyList<Int>()
         val inventory = devices.map { device ->
             val (key, stable) = identity(device)
             mapOf(
@@ -161,6 +166,7 @@ class AudioOutputManager(private val context: Context, messenger: BinaryMessenge
         return mapOf(
             "sdk" to Build.VERSION.SDK_INT, "snapshotRevision" to ++snapshotRevision, "bridgeAvailable" to available, "systemRouteRevision" to systemRouteRevision, "identityNotice" to notice,
             "devices" to inventory, "stream" to report.toList(), "currentId" to currentId,
+            "systemMediaDeviceIds" to systemMediaDeviceIds,
             "routeVerified" to (currentId != 0 && devices.any { it.id == currentId }),
             "mixerConfirmed" to (Build.VERSION.SDK_INT >= 34 && mixer?.mixerBehavior == AudioMixerAttributes.MIXER_BEHAVIOR_BIT_PERFECT),
             "usbDevices" to usb.deviceList.values.filter { d -> (0 until d.interfaceCount).any { d.getInterface(it).interfaceClass == UsbConstants.USB_CLASS_AUDIO } }.map { d ->
