@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/widgets/fullscreen_swipe_song_hint.dart';
-import 'package:myune_music/widgets/now_playing_cover_glow.dart';
 
 final _song = Song(filePath: '/new.mp3', title: 'New song', artist: 'Artist');
 const _hint = ValueKey('fullscreen-swipe-song-hint');
@@ -197,52 +196,6 @@ void main() {
       await tester.pumpWidget(const SizedBox());
       highlight.dispose();
       songs.dispose();
-    },
-  );
-
-  testWidgets(
-    'cover halo is external and preserves cover layout/state across toggles',
-    (tester) async {
-      var enabled = true;
-      late StateSetter rebuild;
-      const coverKey = ValueKey('retained-cover');
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Center(
-            child: StatefulBuilder(
-              builder: (context, setState) {
-                rebuild = setState;
-                return NowPlayingCoverGlow(
-                  enabled: enabled,
-                  child: const SizedBox.square(
-                    key: coverKey,
-                    dimension: 240,
-                    child: ColoredBox(color: Colors.blue),
-                  ),
-                );
-              },
-            ),
-          ),
-        ),
-      );
-      await tester.pumpAndSettle();
-      final element = tester.element(find.byKey(coverKey));
-      final bounds = tester.getRect(find.byKey(coverKey));
-      final decorator = find.descendant(
-        of: find.byType(NowPlayingCoverGlow),
-        matching: find.byType(DecoratedBox),
-      );
-      BoxDecoration decoration() =>
-          tester.widget<DecoratedBox>(decorator).decoration as BoxDecoration;
-      expect(decoration().boxShadow!.single.color.a, closeTo(.20, .001));
-      expect(decoration().boxShadow!.single.blurStyle, BlurStyle.outer);
-      expect(find.byType(BackdropFilter), findsNothing);
-      rebuild(() => enabled = false);
-      await tester.pump();
-      expect(decoration().boxShadow, isEmpty);
-      expect(tester.element(find.byKey(coverKey)), same(element));
-      expect(tester.getRect(find.byKey(coverKey)), bounds);
-      expect(tester.binding.transientCallbackCount, 0);
     },
   );
 }

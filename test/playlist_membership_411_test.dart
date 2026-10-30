@@ -104,7 +104,8 @@ void main() {
       await tester.pumpAndSettle();
       expect(tester.widget<Checkbox>(selector).value, isFalse);
       expect(model.playlists.first.songFilePaths, ['current.mp3']);
-      expect(model.playlists[1].songFilePaths, isEmpty);
+      expect(model.playlists[1].songFilePaths, ['current.mp3']);
+      expect(model.removes, 0);
       await tester.tap(find.text('收藏'));
       await tester.pumpAndSettle();
       expect(tester.widget<Checkbox>(selector).value, isTrue);
@@ -117,7 +118,7 @@ void main() {
   );
 
   testWidgets(
-    'pending save blocks duplicate toggles, failure unlocks controls for retry',
+    'rapid staged toggles remain interactive without accessing storage',
     (tester) async {
       final model = _DelayedLibrary()
         ..pending = Completer<void>()
@@ -130,18 +131,19 @@ void main() {
       await tester.tap(selector);
       await tester.tap(selector);
       await tester.pump();
-      expect(model.removes, 1);
-      expect(tester.widget<Checkbox>(selector).onChanged, isNull);
+      expect(model.removes, 0);
+      expect(tester.widget<Checkbox>(selector).onChanged, isNotNull);
       model.pending!.complete();
       await tester.pumpAndSettle();
       expect(tester.widget<Checkbox>(selector).value, isTrue);
       expect(tester.widget<Checkbox>(selector).onChanged, isNotNull);
-      expect(find.text('更新歌单失败，请重试'), findsOneWidget);
+      expect(find.text('更新歌单失败，请重试'), findsNothing);
       model.pending = null;
       model.fail = false;
       await tester.tap(selector);
       await tester.pumpAndSettle();
       expect(tester.widget<Checkbox>(selector).value, isFalse);
+      expect(model.removes, 0);
       await tester.pumpWidget(const SizedBox());
       model.dispose();
       expect(tester.takeException(), isNull);

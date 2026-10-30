@@ -5,309 +5,307 @@ import 'package:provider/provider.dart';
 import 'package:path/path.dart' as p;
 import 'package:silky_scroll/silky_scroll.dart';
 import '../../theme/scroll_config.dart';
-
 import '../playlist/playlist_content_notifier.dart';
-import '../setting/settings_provider.dart';
 import '../playlist/playlist_models.dart';
+import '../setting/settings_provider.dart';
 import 'statistics_manager.dart';
 import '../../widgets/artwork_image.dart';
+import '../../widgets/home_glass_surface.dart';
+
+enum StatisticsRanking {
+  songs('歌曲播放排行'),
+  artists('艺术家播放排行'),
+  albums('专辑播放排行');
+
+  const StatisticsRanking(this.title);
+  final String title;
+}
 
 class Statistics extends StatefulWidget {
-  const Statistics({super.key});
-
+  const Statistics({
+    super.key,
+    this.ranking,
+    this.backgroundEnabled = false,
+    this.onOpenRanking,
+  });
+  final StatisticsRanking? ranking;
+  final bool backgroundEnabled;
+  final ValueChanged<StatisticsRanking>? onOpenRanking;
   @override
   State<Statistics> createState() => _StatisticsState();
 }
 
 class _StatisticsState extends State<Statistics> {
-  late StatisticsManager _statsManager;
-  bool _showAllSongs = false;
-  bool _showAllArtists = false;
-  bool _showAllAlbums = false;
-  final Set<String> _trackedCoverPaths = <String>{};
-  final Map<String, Listenable> _trackedCoverSignals = <String, Listenable>{};
-
-  late final ScrollController scrollController;
-  PlaylistContentNotifier? _playlistNotifier;
+  final _scroll = ScrollController();
+  Object? _libraryKey, _rankingKey;
+  final _rankings = <StatisticsRanking, List<_RankedItem>>{};
+  final _songsByPath = <String, Song>{}, _songsByFile = <String, Song>{};
+  final _artists = <String, Song>{}, _albums = <String, Song>{};
+  List<Song> _songs = const [];
+  Duration _totalDuration = Duration.zero;
   int? _libraryBytes;
-  int? _librarySizeSignature;
-  int _librarySizeGeneration = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _statsManager = StatisticsManager();
-    scrollController = ScrollController();
-  }
-
-  @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    _playlistNotifier ??= context.read<PlaylistContentNotifier>();
-  }
+  int? _sizeSignature, _seenLibraryRevision;
+  int _librarySignature = 0;
+  int _sizeGeneration = 0;
 
   @override
   void dispose() {
-    final pathsToRelease = List<String>.from(_trackedCoverPaths);
-    _trackedCoverPaths.clear();
-    for (final signal in _trackedCoverSignals.values) {
-      signal.removeListener(_handleTrackedCoverChanged);
-    }
-    _trackedCoverSignals.clear();
-
-    if (_playlistNotifier != null && pathsToRelease.isNotEmpty) {
-      Future.microtask(() {
-        for (final path in pathsToRelease) {
-          _playlistNotifier!.releaseSongCover(path);
-        }
-      });
-    }
-
-    scrollController.dispose();
+    _scroll.dispose();
     super.dispose();
   }
 
-  void _handleTrackedCoverChanged() {
-    if (mounted) setState(() {});
+  @override
+  void didUpdateWidget(covariant Statistics oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.ranking != widget.ranking) _rankings.clear();
   }
+
+  Iterable<String> _split(String artists, List<String> separators) {
+    var parts = [artists];
+    for (final separator in separators) {
+      if (separator.isEmpty) continue;
+      parts = parts.expand((part) => part.split(separator)).toList();
+    }
+    return parts
+        .map((part) => part.trim())
+        .where((part) => part.isNotEmpty)
+        .toSet();
+  }
+
+  void _prefer(Map<String, Song> index, String key, Song song) {
+    if (!index.containsKey(key) ||
+        (index[key]!.albumArt == null && song.albumArt != null)) {
+      index[key] = song;
+    }
+  }
+
+  int _readLibrarySignature(PlaylistContentNotifier library) {
+    if (_seenLibraryRevision != library.libraryRevision) {
+      _seenLibraryRevision = library.libraryRevision;
+      _librarySignature = Object.hashAll(
+        library.allSongs.map(
+          (song) => Object.hash(
+            song.normalizedPath,
+            song.title,
+            song.artist,
+            song.album,
+            song.duration,
+          ),
+        ),
+      );
+    }
+    return _librarySignature;
+  }
+
+  void _syncLibrary(
+    PlaylistContentNotifier library,
+    List<String> separators,
+    int signature,
+  ) {
+    final key = (signature, Object.hashAll(separators));
+    if (_libraryKey == key) return;
+    _libraryKey = key;
+    _songs = library.allSongs;
+    _songsByPath.clear();
+    _songsByFile.clear();
+    _artists.clear();
+    _albums.clear();
+    _totalDuration = Duration.zero;
+    for (final song in _songs) {
+      _songsByPath[song.normalizedPath.toLowerCase()] = song;
+      _prefer(_songsByFile, p.basename(song.filePath), song);
+      for (final artist in _split(song.artist, separators)) {
+        _prefer(_artists, artist, song);
+      }
+      if (song.album.trim().isNotEmpty) _prefer(_albums, song.album, song);
+      _totalDuration += song.duration ?? Duration.zero;
+    }
+    final sizeSignature = Object.hashAllUnordered(
+      _songs.map((song) => song.normalizedPath.toLowerCase()),
+    );
+    if (widget.ranking == null && sizeSignature != _sizeSignature) {
+      _sizeSignature = sizeSignature;
+      _libraryBytes = null;
+      final generation = ++_sizeGeneration;
+      _calculateLibraryBytes(
+        _songs.map((song) => song.filePath).toList(growable: false),
+        generation,
+      ).then((bytes) {
+        if (mounted && generation == _sizeGeneration) {
+          setState(() => _libraryBytes = bytes);
+        }
+      });
+    }
+  }
+
+  List<_RankedItem> _items(
+    StatisticsRanking kind,
+    StatisticsManager stats,
+    List<String> separators,
+  ) => _rankings.putIfAbsent(kind, () {
+    final limit = widget.ranking == null ? 5 : 0x7fffffff;
+    if (kind == StatisticsRanking.songs) {
+      return stats
+          .getTopPlayedSongs(limit)
+          .map((stat) {
+            final fallback = Song(
+              title: stat.title,
+              artist: stat.artist,
+              album: stat.album,
+              filePath: stat.path,
+            );
+            final song =
+                _songsByPath[fallback.normalizedPath.toLowerCase()] ??
+                _songsByFile[p.basename(stat.path)] ??
+                fallback;
+            return _RankedItem(
+              stat.path,
+              stat.title,
+              stat.playCount,
+              song,
+              artist: stat.artist,
+              album: stat.album,
+            );
+          })
+          .toList(growable: false);
+    }
+    final groups = kind == StatisticsRanking.artists
+        ? stats.getTopArtists(limit, separators)
+        : stats.getTopAlbums(limit);
+    final covers = kind == StatisticsRanking.artists ? _artists : _albums;
+    return groups
+        .map(
+          (entry) =>
+              _RankedItem(entry.key, entry.key, entry.value, covers[entry.key]),
+        )
+        .toList(growable: false);
+  });
 
   @override
   Widget build(BuildContext context) {
-    final playlistNotifier = context.watch<PlaylistContentNotifier>();
-    _statsManager = context.watch<StatisticsManager>();
-    final settingsProvider = context.watch<SettingsProvider>();
-    final separators = settingsProvider.artistSeparators;
-    final allSongs = playlistNotifier.allSongs;
-    final librarySizeSignature = Object.hashAllUnordered(
-      allSongs.map((song) => song.normalizedPath.toLowerCase()),
+    final library = context.read<PlaylistContentNotifier>();
+    final librarySignature = context.select<PlaylistContentNotifier, int>(
+      _readLibrarySignature,
     );
-    if (_librarySizeSignature != librarySizeSignature) {
-      _librarySizeSignature = librarySizeSignature;
-      final generation = ++_librarySizeGeneration;
-      _libraryBytes = null;
-      _calculateLibraryBytes(
-        allSongs.map((song) => song.filePath).toList(growable: false),
-      ).then((bytes) {
-        if (!mounted || generation != _librarySizeGeneration) return;
-        setState(() => _libraryBytes = bytes);
-      });
+    final revision = context.select<StatisticsManager, int>(
+      (value) => value.songRevision,
+    );
+    final stats = context.read<StatisticsManager>();
+    final settings = context.watch<SettingsProvider>();
+    final separators = settings.artistSeparators;
+    _syncLibrary(library, separators, librarySignature);
+    final key = (revision, _libraryKey);
+    if (_rankingKey != key) {
+      _rankingKey = key;
+      _rankings.clear();
     }
-
-    // 计算统计数据
-    final totalDuration = allSongs.fold(
-      Duration.zero,
-      (prev, song) => prev + (song.duration ?? Duration.zero),
-    );
-
-    final uniqueArtists = <String>{};
-    final uniqueAlbums = <String>{};
-
-    for (final song in allSongs) {
-      // 添加艺术家（使用设置中的分隔符）
-      final artists = _splitArtists(song.artist, separators);
-      uniqueArtists.addAll(
-        artists.map((a) => a.trim()).where((a) => a.isNotEmpty),
+    final ranking = widget.ranking;
+    if (ranking != null) {
+      final rows = _items(ranking, stats, separators);
+      return Padding(
+        padding: const EdgeInsets.fromLTRB(16, 12, 12, 16),
+        child: _surface(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text(
+                  ranking.title,
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+              ),
+              Expanded(
+                child: rows.isEmpty
+                    ? Align(alignment: Alignment.topLeft, child: _empty())
+                    : SilkyScroll(
+                        controller: _scroll,
+                        silkyScrollDuration: ScrollConfig.duration,
+                        scrollSpeed: ScrollConfig.speed,
+                        animationCurve: ScrollConfig.curve,
+                        builder: (_, controller, physics, _) =>
+                            ListView.separated(
+                              key: ValueKey(
+                                'statistics-ranking-${ranking.name}',
+                              ),
+                              controller: controller,
+                              physics: physics,
+                              padding: EdgeInsets.symmetric(
+                                vertical: ranking == StatisticsRanking.songs
+                                    ? 2
+                                    : 8,
+                              ),
+                              itemCount: rows.length,
+                              separatorBuilder: (_, _) => Divider(
+                                height: ranking == StatisticsRanking.songs
+                                    ? 2
+                                    : 16,
+                              ),
+                              itemBuilder: (_, index) =>
+                                  _tile(rows[index], ranking, settings),
+                            ),
+                      ),
+              ),
+            ],
+          ),
+        ),
       );
-
-      // 添加专辑
-      if (song.album.trim().isNotEmpty) {
-        uniqueAlbums.add(song.album);
-      }
     }
-
-    final requiredCoverPaths = _collectRequiredCoverPaths(
-      allSongs: allSongs,
-      separators: separators,
+    final played = context.select<StatisticsManager, Duration>(
+      (value) => value.totalPlaybackDuration,
     );
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      _syncTrackedCovers(requiredCoverPaths);
-    });
-
     return SilkyScroll(
-      controller: scrollController,
+      controller: _scroll,
       silkyScrollDuration: ScrollConfig.duration,
       scrollSpeed: ScrollConfig.speed,
       animationCurve: ScrollConfig.curve,
-      builder: (context, controller, physics, _) => SingleChildScrollView(
+      builder: (_, controller, physics, _) => SingleChildScrollView(
         controller: controller,
         physics: physics,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 12, 16),
           child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Row(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text('统计信息', style: Theme.of(context).textTheme.titleLarge),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.refresh),
-                    onPressed: () async {
-                      final confirm = await showDialog<bool>(
-                        context: context,
-                        builder: (BuildContext context) {
-                          return AlertDialog(
-                            title: const Text('确认重置'),
-                            content: const Text('此操作将清空所有播放记录，且无法撤销'),
-                            actions: [
-                              TextButton(
-                                onPressed: () =>
-                                    Navigator.of(context).pop(false),
-                                child: const Text('取消'),
-                              ),
-                              TextButton(
-                                onPressed: () =>
-                                    Navigator.of(context).pop(true),
-                                child: const Text('确定'),
-                              ),
-                            ],
-                          );
-                        },
-                      );
-
-                      if (confirm == true) {
-                        await _statsManager.clearAllStats();
-                        setState(() {
-                          // 刷新UI
-                        });
-                      }
-                    },
-                    tooltip: '重置统计数据',
-                  ),
-                ],
-              ),
-
-              const SizedBox(height: 16),
-
-              // 基本统计信息
-              LayoutBuilder(
-                builder: (context, constraints) {
-                  return Wrap(
-                    spacing: 16,
-                    runSpacing: 16,
-                    children: [
-                      SizedBox(
-                        width: (constraints.maxWidth - 32 - 16) / 2,
-                        child: _buildStatCard(
-                          icon: Icons.music_note,
-                          label: '总歌曲数',
-                          value: allSongs.length.toString(),
-                        ),
-                      ),
-                      SizedBox(
-                        width: (constraints.maxWidth - 32 - 16) / 2,
-                        child: _buildStatCard(
-                          icon: Icons.album,
-                          label: '总专辑数',
-                          value: uniqueAlbums.length.toString(),
-                        ),
-                      ),
-                      SizedBox(
-                        width: (constraints.maxWidth - 32 - 16) / 2,
-                        child: _buildStatCard(
-                          icon: Icons.person,
-                          label: '总歌手数',
-                          value: uniqueArtists.length.toString(),
-                        ),
-                      ),
-                      SizedBox(
-                        width: (constraints.maxWidth - 32 - 16) / 2,
-                        child: _buildStatCard(
-                          icon: Icons.access_time,
-                          label: '总时长',
-                          value:
-                              '${(totalDuration.inHours).toString().padLeft(2, '0')}:${(totalDuration.inMinutes % 60).toString().padLeft(2, '0')}:${(totalDuration.inSeconds % 60).toString().padLeft(2, '0')}',
-                        ),
-                      ),
-                      SizedBox(
-                        width: (constraints.maxWidth - 32 - 16) / 2,
-                        child: _buildStatCard(
-                          icon: Icons.storage_outlined,
-                          label: '曲库空间',
-                          value: _libraryBytes == null
-                              ? '计算中…'
-                              : '${(_libraryBytes! / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB',
-                        ),
-                      ),
-                      SizedBox(
-                        width: (constraints.maxWidth - 32 - 16) / 2,
-                        child: _buildStatCard(
-                          icon: Icons.timelapse,
-                          label: '累计播放时长',
-                          value: _formatPlaybackDuration(
-                            _statsManager.totalPlaybackDuration,
-                          ),
-                        ),
-                      ),
-                    ],
-                  );
-                },
-              ),
-
-              const SizedBox(height: 24),
-
-              // 歌曲播放排行榜
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('歌曲播放排行', style: Theme.of(context).textTheme.titleLarge),
-                  if (_statsManager.getTopPlayedSongs(5).length >= 5)
-                    TextButton(
-                      onPressed: () => _toggleRanking(
-                        expanded: _showAllSongs,
-                        update: (value) => _showAllSongs = value,
-                      ),
-                      child: Text(_showAllSongs ? '收起' : '查看更多'),
+              _surface(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _header(stats),
+                    const SizedBox(height: 16),
+                    _stat(Icons.music_note, '总歌曲数', '${_songs.length}'),
+                    _stat(Icons.album, '总专辑数', '${_albums.length}'),
+                    _stat(Icons.person, '总歌手数', '${_artists.length}'),
+                    _stat(
+                      Icons.access_time,
+                      '总时长',
+                      '${_totalDuration.inHours.toString().padLeft(2, '0')}:${(_totalDuration.inMinutes % 60).toString().padLeft(2, '0')}:${(_totalDuration.inSeconds % 60).toString().padLeft(2, '0')}',
                     ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              _buildTopSongsList(playlistNotifier.allSongs),
-
-              const SizedBox(height: 24),
-
-              // 艺术家播放排行榜
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text(
-                    '艺术家播放排行',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  if (_statsManager.getTopArtists(5, separators).length >= 5)
-                    TextButton(
-                      onPressed: () => _toggleRanking(
-                        expanded: _showAllArtists,
-                        update: (value) => _showAllArtists = value,
-                      ),
-                      child: Text(_showAllArtists ? '收起' : '查看更多'),
+                    _stat(
+                      Icons.storage_outlined,
+                      '曲库空间',
+                      _libraryBytes == null
+                          ? '计算中…'
+                          : '${(_libraryBytes! / (1024 * 1024 * 1024)).toStringAsFixed(2)} GB',
                     ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              _buildTopArtistsList(separators),
-
-              const SizedBox(height: 24),
-
-              // 专辑播放排行榜
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Text('专辑播放排行', style: Theme.of(context).textTheme.titleLarge),
-                  if (_statsManager.getTopAlbums(5).length >= 5)
-                    TextButton(
-                      onPressed: () => _toggleRanking(
-                        expanded: _showAllAlbums,
-                        update: (value) => _showAllAlbums = value,
-                      ),
-                      child: Text(_showAllAlbums ? '收起' : '查看更多'),
+                    _stat(
+                      Icons.timelapse,
+                      '累计播放时长',
+                      played.inHours > 0
+                          ? '${played.inHours} 小时 ${played.inMinutes.remainder(60)} 分钟'
+                          : '${played.inMinutes} 分钟',
                     ),
-                ],
+                  ],
+                ),
               ),
-              const SizedBox(height: 8),
-              _buildTopAlbumsList(),
+              for (final kind in StatisticsRanking.values) ...[
+                const SizedBox(height: 24),
+                _rankingSection(
+                  kind,
+                  _items(kind, stats, separators),
+                  settings,
+                ),
+              ],
             ],
           ),
         ),
@@ -315,443 +313,258 @@ class _StatisticsState extends State<Statistics> {
     );
   }
 
-  Future<int> _calculateLibraryBytes(List<String> paths) async {
-    var bytes = 0;
-    for (final path in paths) {
-      try {
-        bytes += await File(path).length();
-      } on FileSystemException {
-        // 文件可能在扫描后被移动或删除，忽略该项并继续计算。
-      }
-    }
-    return bytes;
-  }
+  Widget _surface(Widget child) => HomePlaylistCard(child: child);
+  Widget _empty() => Padding(
+    padding: const EdgeInsets.all(16),
+    child: Text('暂无播放记录', style: Theme.of(context).textTheme.bodyMedium),
+  );
 
-  String _formatPlaybackDuration(Duration duration) {
-    final hours = duration.inHours;
-    final minutes = duration.inMinutes.remainder(60);
-    return hours > 0 ? '$hours 小时 $minutes 分钟' : '$minutes 分钟';
-  }
-
-  void _toggleRanking({
-    required bool expanded,
-    required ValueChanged<bool> update,
-  }) {
-    // SilkyScroll may still own a ballistic activity when a long ranking is
-    // collapsed. Cancel it before changing the page extent, then clamp the
-    // preserved offset after the shorter layout has been measured.
-    if (scrollController.hasClients) {
-      scrollController.jumpTo(scrollController.offset);
-    }
-    setState(() => update(!expanded));
-    if (!expanded) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !scrollController.hasClients) return;
-      final position = scrollController.position;
-      final target = position.pixels
-          .clamp(position.minScrollExtent, position.maxScrollExtent)
-          .toDouble();
-      scrollController.jumpTo(target);
-    });
-  }
-
-  Widget _buildStatCard({
-    required IconData icon,
-    required String label,
-    required String value,
-  }) {
-    return Card(
+  Widget _stat(IconData icon, String label, String value) => Padding(
+    padding: const EdgeInsets.only(bottom: 12),
+    child: ConstrainedBox(
+      constraints: const BoxConstraints(minHeight: 76),
       child: Padding(
-        padding: const EdgeInsets.all(12.0),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+        child: Row(
           children: [
             Icon(icon, size: 24, color: Theme.of(context).colorScheme.primary),
-            const SizedBox(height: 8),
-            Text(
-              value,
-              style: Theme.of(
-                context,
-              ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
-              textAlign: TextAlign.center,
-            ),
-            Text(
-              label,
-              style: Theme.of(context).textTheme.bodySmall,
-              textAlign: TextAlign.center,
+            const SizedBox(width: 20),
+            Expanded(
+              child: Text(
+                '$label：$value',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.bold),
+              ),
             ),
           ],
         ),
       ),
+    ),
+  );
+
+  Widget _rankingSection(
+    StatisticsRanking kind,
+    List<_RankedItem> rows,
+    SettingsProvider settings,
+  ) => _surface(
+    Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _heading(kind, rows.length),
+        const SizedBox(height: 8),
+        if (rows.isEmpty)
+          _empty()
+        else
+          Padding(
+            padding: EdgeInsets.symmetric(
+              vertical: kind == StatisticsRanking.songs ? 2 : 8,
+            ),
+            child: Column(
+              children: [
+                for (var index = 0; index < rows.length; index++) ...[
+                  if (index > 0)
+                    Divider(height: kind == StatisticsRanking.songs ? 2 : 16),
+                  _tile(rows[index], kind, settings),
+                ],
+              ],
+            ),
+          ),
+      ],
+    ),
+  );
+
+  Widget _heading(StatisticsRanking kind, int count) {
+    final row = Row(
+      children: [
+        Expanded(
+          child: Text(
+            kind.title,
+            style: Theme.of(context).textTheme.titleLarge,
+          ),
+        ),
+        if (count >= 5)
+          TextButton(
+            onPressed: () => widget.onOpenRanking?.call(kind),
+            child: const Text('查看更多'),
+          ),
+      ],
     );
+    return Padding(padding: const EdgeInsets.only(left: 12), child: row);
   }
 
-  Widget _buildTopSongsList(List<Song> allSongs) {
-    final topSongs = _statsManager.getTopPlayedSongs(_showAllSongs ? 100 : 5);
-
-    if (topSongs.isEmpty) {
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Text('暂无播放记录', style: Theme.of(context).textTheme.bodyMedium),
-        ),
-      );
-    }
-
-    // 创建一个映射，使用文件名作为键来查找所有具有相同文件名的歌曲
-    final songMap = <String, List<Song>>{};
-    for (final song in allSongs) {
-      final fileName = p.basename(song.filePath);
-      if (!songMap.containsKey(fileName)) {
-        songMap[fileName] = [];
-      }
-      songMap[fileName]!.add(song);
-    }
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 2.0),
-        child: ListView.separated(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: topSongs.length,
-          separatorBuilder: (_, __) => const Divider(height: 2),
-          itemBuilder: (context, index) {
-            final song = topSongs[index];
-
-            // 使用文件名进行匹配
-            final statFileName = p.basename(song.path);
-            final matchedSongs = songMap[statFileName];
-
-            final songWithArt = _resolveSongForStat(
-              matchedSongs: matchedSongs,
-              fallback: Song(
-                title: song.title,
-                artist: song.artist,
-                album: song.album,
-                filePath: song.path,
+  Widget _header(StatisticsManager stats) {
+    final row = Row(
+      children: [
+        Text('统计信息', style: Theme.of(context).textTheme.titleLarge),
+        const Spacer(),
+        IconButton(
+          icon: const Icon(Icons.refresh),
+          tooltip: '重置统计数据',
+          onPressed: () async {
+            final confirm = await showDialog<bool>(
+              context: context,
+              builder: (context) => AlertDialog(
+                title: const Text('确认重置'),
+                content: const Text('此操作将清空所有播放记录，且无法撤销'),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    child: const Text('取消'),
+                  ),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    child: const Text('确定'),
+                  ),
+                ],
               ),
             );
-
-            final cover = context
-                .read<PlaylistContentNotifier>()
-                .displayThumbnailForSong(songWithArt);
-            return ListTile(
-              leading: ClipRRect(
-                borderRadius: BorderRadius.circular(4),
-                child: cover != null
-                    ? ArtworkImage(
-                        bytes: cover,
-                        size: ArtworkSize.thumbnail,
-                        width: 40,
-                        height: 40,
-                        fit: BoxFit.cover,
-                      )
-                    : const SizedBox(
-                        width: 40,
-                        height: 40,
-                        child: Icon(Icons.music_note, size: 20),
-                      ),
-              ),
-              title: Text(song.title),
-              subtitle: Text(
-                context.watch<SettingsProvider>().showAlbumName
-                    ? '${song.artist} - ${song.album}'
-                    : song.artist,
-              ),
-              trailing: Text('${song.playCount} 次'),
-            );
+            if (confirm == true) await stats.clearAllStats();
           },
         ),
+      ],
+    );
+    return Padding(padding: const EdgeInsets.only(left: 12), child: row);
+  }
+
+  Widget _tile(
+    _RankedItem item,
+    StatisticsRanking kind,
+    SettingsProvider settings,
+  ) => ListTile(
+    key: ValueKey('${kind.name}-${item.id}'),
+    leading: _StatisticsCover(
+      key: ValueKey('${kind.name}-cover-${item.id}'),
+      song: item.cover,
+      kind: kind,
+    ),
+    title: Text(item.title),
+    subtitle: kind == StatisticsRanking.songs
+        ? Text(
+            settings.showAlbumName
+                ? '${item.artist} - ${item.album}'
+                : item.artist!,
+          )
+        : null,
+    trailing: Text('${item.count} 次'),
+  );
+
+  Future<int> _calculateLibraryBytes(List<String> paths, int generation) async {
+    var bytes = 0;
+    for (final path in paths) {
+      if (!mounted || generation != _sizeGeneration) break;
+      try {
+        bytes += await File(path).length();
+      } on FileSystemException {
+        continue;
+      }
+    }
+    return bytes;
+  }
+}
+
+class _RankedItem {
+  const _RankedItem(
+    this.id,
+    this.title,
+    this.count,
+    this.cover, {
+    this.artist,
+    this.album,
+  });
+  final String id, title;
+  final int count;
+  final Song? cover;
+  final String? artist, album;
+}
+
+class _StatisticsCover extends StatefulWidget {
+  const _StatisticsCover({super.key, required this.song, required this.kind});
+  final Song? song;
+  final StatisticsRanking kind;
+  @override
+  State<_StatisticsCover> createState() => _StatisticsCoverState();
+}
+
+class _StatisticsCoverState extends State<_StatisticsCover> {
+  PlaylistContentNotifier? _library;
+  Listenable? _signal;
+  String? _path;
+  bool _requested = false;
+  int _generation = 0;
+  void _release() {
+    if (_requested) {
+      final library = _library!, path = _path!;
+      Future.microtask(() => library.releaseSongCover(path));
+    }
+    _requested = false;
+    _generation++;
+  }
+
+  void _bind() {
+    final library = context.read<PlaylistContentNotifier>();
+    final path = widget.song?.filePath;
+    if (identical(library, _library) && path == _path) return;
+    _release();
+    _library = library;
+    _path = path;
+    _signal = path == null ? null : library.coverListenableForSongPath(path);
+    if (path == null) return;
+    final generation = _generation;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || generation != _generation) return;
+      _requested = true;
+      library.requestSongCover(path);
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _bind();
+  }
+
+  @override
+  void didUpdateWidget(covariant _StatisticsCover oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    _bind();
+  }
+
+  @override
+  void dispose() {
+    _release();
+    super.dispose();
+  }
+
+  Widget _image() {
+    final cover = widget.song == null
+        ? null
+        : _library!.displayThumbnailForSong(widget.song!);
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(
+        widget.kind == StatisticsRanking.artists ? 100 : 4,
       ),
+      child: cover == null
+          ? Icon(switch (widget.kind) {
+              StatisticsRanking.songs => Icons.music_note,
+              StatisticsRanking.artists => Icons.person,
+              StatisticsRanking.albums => Icons.album,
+            }, size: 20)
+          : ArtworkImage(
+              bytes: cover,
+              size: ArtworkSize.thumbnail,
+              width: 40,
+              height: 40,
+              fit: BoxFit.cover,
+            ),
     );
   }
 
-  Widget _buildTopArtistsList(List<String> separators) {
-    final topArtists = _statsManager.getTopArtists(
-      _showAllArtists ? 100 : 5,
-      separators,
-    );
-
-    if (topArtists.isEmpty) {
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Text('暂无播放记录', style: Theme.of(context).textTheme.bodyMedium),
-        ),
-      );
-    }
-
-    // 获取所有歌曲，用于查找艺术家的专辑封面
-    final playlistNotifier = context.watch<PlaylistContentNotifier>();
-    final allSongs = playlistNotifier.allSongs;
-
-    // 为每个艺术家找到一个代表性的专辑封面
-    final artistCoverMap = <String, Song>{};
-    for (final artistEntry in topArtists) {
-      final artistName = artistEntry.key;
-      if (!artistCoverMap.containsKey(artistName)) {
-        Song? fallbackSong;
-        for (final song in allSongs) {
-          final containsArtist = _splitArtists(
-            song.artist,
-            separators,
-          ).map((a) => a.trim()).contains(artistName);
-          if (!containsArtist) {
-            continue;
-          }
-          fallbackSong ??= song;
-          if (song.albumArt != null) {
-            artistCoverMap[artistName] = song;
-            break;
-          }
-        }
-        if (!artistCoverMap.containsKey(artistName) && fallbackSong != null) {
-          artistCoverMap[artistName] = fallbackSong;
-        }
-      }
-    }
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8.0),
-        child: ListView.separated(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: topArtists.length,
-          separatorBuilder: (_, __) => const Divider(),
-          itemBuilder: (context, index) {
-            final artist = topArtists[index];
-            final coverSong = artistCoverMap[artist.key];
-            final cover = coverSong == null
-                ? null
-                : playlistNotifier.displayThumbnailForSong(coverSong);
-            return ListTile(
-              leading: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: cover != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(100),
-                        child: ArtworkImage(
-                          bytes: cover,
-                          size: ArtworkSize.thumbnail,
-                          width: 40,
-                          height: 40,
-                          fit: BoxFit.cover,
-                        ),
-                      )
-                    : const Icon(Icons.person, size: 20),
-              ),
-              title: Text(artist.key),
-              trailing: Text('${artist.value} 次'),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTopAlbumsList() {
-    final topAlbums = _statsManager.getTopAlbums(_showAllAlbums ? 100 : 5);
-
-    if (topAlbums.isEmpty) {
-      return Card(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Text('暂无播放记录', style: Theme.of(context).textTheme.bodyMedium),
-        ),
-      );
-    }
-
-    // 获取所有歌曲，用于查找专辑的封面
-    final playlistNotifier = context.watch<PlaylistContentNotifier>();
-    final allSongs = playlistNotifier.allSongs;
-
-    // 为每个专辑找到一个代表性的专辑封面
-    final albumCoverMap = <String, Song>{};
-    for (final albumEntry in topAlbums) {
-      final albumName = albumEntry.key;
-      if (!albumCoverMap.containsKey(albumName)) {
-        Song? fallbackSong;
-        for (final song in allSongs) {
-          if (song.album != albumName) {
-            continue;
-          }
-          fallbackSong ??= song;
-          if (song.albumArt != null) {
-            albumCoverMap[albumName] = song;
-            break;
-          }
-        }
-        if (!albumCoverMap.containsKey(albumName) && fallbackSong != null) {
-          albumCoverMap[albumName] = fallbackSong;
-        }
-      }
-    }
-
-    return Card(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8.0),
-        child: ListView.separated(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          itemCount: topAlbums.length,
-          separatorBuilder: (_, __) => const Divider(),
-          itemBuilder: (context, index) {
-            final album = topAlbums[index];
-            final coverSong = albumCoverMap[album.key];
-            final cover = coverSong == null
-                ? null
-                : playlistNotifier.displayThumbnailForSong(coverSong);
-            return ListTile(
-              leading: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: cover != null
-                    ? ClipRRect(
-                        borderRadius: BorderRadius.circular(4),
-                        child: ArtworkImage(
-                          bytes: cover,
-                          size: ArtworkSize.thumbnail,
-                          width: 40,
-                          height: 40,
-                          fit: BoxFit.cover,
-                        ),
-                      )
-                    : const Icon(Icons.album, size: 20),
-              ),
-              title: Text(album.key),
-              trailing: Text('${album.value} 次'),
-            );
-          },
-        ),
-      ),
-    );
-  }
-
-  List<String> _splitArtists(String artistString, List<String> separators) {
-    var result = [artistString];
-    for (final separator in separators) {
-      final newResult = <String>[];
-      for (final str in result) {
-        newResult.addAll(str.split(separator));
-      }
-      result = newResult;
-    }
-
-    return result;
-  }
-
-  Song _resolveSongForStat({
-    required List<Song>? matchedSongs,
-    required Song fallback,
-  }) {
-    if (matchedSongs == null || matchedSongs.isEmpty) {
-      return fallback;
-    }
-    return matchedSongs.firstWhere(
-      (s) => s.albumArt != null,
-      orElse: () => matchedSongs.first,
-    );
-  }
-
-  Set<String> _collectRequiredCoverPaths({
-    required List<Song> allSongs,
-    required List<String> separators,
-  }) {
-    final required = <String>{};
-
-    final topSongs = _statsManager.getTopPlayedSongs(_showAllSongs ? 100 : 5);
-    final songMap = <String, List<Song>>{};
-    for (final song in allSongs) {
-      final fileName = p.basename(song.filePath);
-      (songMap[fileName] ??= <Song>[]).add(song);
-    }
-    for (final statSong in topSongs) {
-      final matched = songMap[p.basename(statSong.path)];
-      final resolved = _resolveSongForStat(
-        matchedSongs: matched,
-        fallback: Song(
-          title: statSong.title,
-          artist: statSong.artist,
-          album: statSong.album,
-          filePath: statSong.path,
-        ),
-      );
-      required.add(resolved.filePath);
-    }
-
-    final topArtists = _statsManager.getTopArtists(
-      _showAllArtists ? 100 : 5,
-      separators,
-    );
-    for (final entry in topArtists) {
-      final artistName = entry.key;
-      Song? fallbackSong;
-      for (final song in allSongs) {
-        final containsArtist = _splitArtists(
-          song.artist,
-          separators,
-        ).map((a) => a.trim()).contains(artistName);
-        if (!containsArtist) continue;
-        fallbackSong ??= song;
-        if (song.albumArt != null) {
-          required.add(song.filePath);
-          break;
-        }
-      }
-      if (fallbackSong != null) {
-        required.add(fallbackSong.filePath);
-      }
-    }
-
-    final topAlbums = _statsManager.getTopAlbums(_showAllAlbums ? 100 : 5);
-    for (final entry in topAlbums) {
-      final albumName = entry.key;
-      Song? fallbackSong;
-      for (final song in allSongs) {
-        if (song.album != albumName) continue;
-        fallbackSong ??= song;
-        if (song.albumArt != null) {
-          required.add(song.filePath);
-          break;
-        }
-      }
-      if (fallbackSong != null) {
-        required.add(fallbackSong.filePath);
-      }
-    }
-
-    return required;
-  }
-
-  void _syncTrackedCovers(Set<String> requiredPaths) {
-    final notifier = context.read<PlaylistContentNotifier>();
-    final toAdd = requiredPaths.difference(_trackedCoverPaths);
-    final toRemove = _trackedCoverPaths.difference(requiredPaths);
-
-    for (final path in toAdd) {
-      notifier.requestSongCover(path);
-      final signal = notifier.coverListenableForSongPath(path);
-      signal.addListener(_handleTrackedCoverChanged);
-      _trackedCoverSignals[path] = signal;
-    }
-    for (final path in toRemove) {
-      _trackedCoverSignals
-          .remove(path)
-          ?.removeListener(_handleTrackedCoverChanged);
-      notifier.releaseSongCover(path);
-    }
-
-    _trackedCoverPaths
-      ..clear()
-      ..addAll(requiredPaths);
-  }
+  @override
+  Widget build(BuildContext context) => SizedBox.square(
+    dimension: 40,
+    child: _signal == null
+        ? _image()
+        : AnimatedBuilder(animation: _signal!, builder: (_, _) => _image()),
+  );
 }

@@ -7,6 +7,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/cupertino.dart' show CupertinoPageRoute;
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'package:flutter/material.dart';
+import '../widgets/side_selection_menu.dart';
 import '../page/setting/equalizer_preset_widgets.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:flutter/scheduler.dart' show SchedulerBinding;
@@ -52,7 +53,6 @@ import '../widgets/home_tab_viewport.dart';
 import '../widgets/optional_shader_mask.dart';
 import '../widgets/lyrics_song_swipe_transition.dart';
 import '../widgets/now_playing_cover_image.dart';
-import '../widgets/now_playing_cover_glow.dart';
 import '../widgets/play_pause_button.dart';
 import '../widgets/playback_progress_header.dart';
 import '../widgets/playback_progress_slider.dart';
@@ -691,6 +691,17 @@ class _MobileShellState extends State<MobileShell>
                                 restore: true,
                               ),
                       )
+                    : _tab == 4
+                    ? IconButton(
+                        key: ValueKey<String>(actionsTransitionKey),
+                        tooltip: '播放统计',
+                        icon: const Icon(Icons.leaderboard_outlined),
+                        onPressed: () => Navigator.of(context).push(
+                          CupertinoPageRoute<void>(
+                            builder: (_) => const StatisticsPage(),
+                          ),
+                        ),
+                      )
                     : HomeExpandableActions(
                         key: ValueKey<String>(actionsTransitionKey),
                         searchAction: _tab == 4
@@ -761,16 +772,6 @@ class _MobileShellState extends State<MobileShell>
                                 ),
                               ),
                               onPressed: _toggleGroupViewMode,
-                            ),
-                          if (_tab == 4)
-                            IconButton(
-                              tooltip: '播放统计',
-                              icon: const Icon(Icons.leaderboard_outlined),
-                              onPressed: () => Navigator.of(context).push(
-                                CupertinoPageRoute<void>(
-                                  builder: (_) => const StatisticsPage(),
-                                ),
-                              ),
                             ),
                           if ((_tab == 0 ||
                                   (_tab == 1 &&
@@ -1638,14 +1639,6 @@ class _PlaylistsTab extends StatelessWidget {
                                       crossAxisAlignment:
                                           CrossAxisAlignment.start,
                                       children: [
-                                        if (playlist.isLibrary)
-                                          const Icon(
-                                            Icons.library_music_outlined,
-                                            size: 18,
-                                          ),
-                                        PlaylistCreatedLabel(
-                                          date: playlist.createdAt,
-                                        ),
                                         Text(
                                           playlist.name,
                                           maxLines: 2,
@@ -5794,33 +5787,20 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                                   notifier,
                                   song,
                                 ),
-                                child: NowPlayingCoverGlow(
-                                  enabled:
-                                      settings.followAlbumArtOnPlayback &&
-                                      settings.playbackArtworkBackgroundStyle ==
-                                          PlaybackArtworkBackgroundStyle.fluid,
-                                  entranceComplete:
-                                      _routeTransitionComplete && !_showLyrics,
-                                  coverTransition: _coverTransitionController,
-                                  pageEntrance:
-                                      _playbackGlassTransitionController,
-                                  waitForImage: true,
-                                  child: NowPlayingCoverHero(
-                                    normalizedSongPath: song.normalizedPath,
-                                    enabled: shouldEnableNowPlayingCoverHero(
-                                      showLyrics: _showLyrics,
-                                      routeTransitionComplete:
-                                          _routeTransitionComplete,
-                                      initialCoverHeroReady:
-                                          widget.initialCoverHeroReady,
-                                    ),
-                                    child: _AtomicNowPlayingCover(
-                                      songPath: song.normalizedPath,
-                                      size: size,
-                                      transitionsEnabled:
-                                          !_showLyrics &&
-                                          !_routeTransitionActive,
-                                    ),
+                                child: NowPlayingCoverHero(
+                                  normalizedSongPath: song.normalizedPath,
+                                  enabled: shouldEnableNowPlayingCoverHero(
+                                    showLyrics: _showLyrics,
+                                    routeTransitionComplete:
+                                        _routeTransitionComplete,
+                                    initialCoverHeroReady:
+                                        widget.initialCoverHeroReady,
+                                  ),
+                                  child: _AtomicNowPlayingCover(
+                                    songPath: song.normalizedPath,
+                                    size: size,
+                                    transitionsEnabled:
+                                        !_showLyrics && !_routeTransitionActive,
                                   ),
                                 ),
                               ),
@@ -7606,7 +7586,8 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
       children: [
         SizedBox(
           width: double.infinity,
-          child: SegmentedButton<TextAlign>(
+          child: SideSelectionMenu<TextAlign>(
+            title: '歌词对齐方式',
             expandedInsets: EdgeInsets.zero,
             showSelectedIcon: false,
             segments: const [
@@ -7634,10 +7615,10 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
             },
           ),
         ),
-        const ListTile(contentPadding: EdgeInsets.zero, title: Text('歌词滚动效果')),
         SizedBox(
           width: double.infinity,
-          child: SegmentedButton<LyricScrollEffect>(
+          child: SideSelectionMenu<LyricScrollEffect>(
+            title: '歌词滚动效果',
             key: const ValueKey('lyric-scroll-effect-selector'),
             expandedInsets: EdgeInsets.zero,
             showSelectedIcon: false,
@@ -7684,13 +7665,10 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
             value: settings.smoothKaraokeMotion,
             onChanged: settings.setSmoothKaraokeMotion,
           ),
-          const ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text('逐字歌词范围'),
-          ),
           SizedBox(
             width: double.infinity,
-            child: SegmentedButton<KaraokeLyricsMode>(
+            child: SideSelectionMenu<KaraokeLyricsMode>(
+              title: '逐字歌词范围',
               expandedInsets: EdgeInsets.zero,
               showSelectedIcon: false,
               segments: const [
@@ -7810,7 +7788,8 @@ class _LyricSettingsSheetState extends State<_LyricSettingsSheet> {
           },
         ),
         const SizedBox(height: 12),
-        SegmentedButton<String>(
+        SideSelectionMenu<String>(
+          title: '歌词源',
           expandedInsets: EdgeInsets.zero,
           style: widget.transparentBackground
               ? ButtonStyle(

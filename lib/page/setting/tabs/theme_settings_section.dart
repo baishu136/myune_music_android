@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../../../widgets/side_selection_menu.dart';
 import 'package:provider/provider.dart';
 
 import '../../../theme/theme_provider.dart';
@@ -23,15 +24,19 @@ class ThemeSettingsSection extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              Text('主题模式', style: Theme.of(context).textTheme.titleMedium),
+              Expanded(
+                child: Text(
+                  '主题模式',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              const SizedBox(width: 12),
               Consumer<ThemeProvider>(
                 builder: (context, themeProvider, child) {
-                  return SegmentedButton<ThemeMode>(
-                    style: ButtonStyle(
-                      padding: WidgetStateProperty.all(EdgeInsets.zero),
-                      visualDensity: VisualDensity.compact,
-                      minimumSize: WidgetStateProperty.all(const Size(0, 0)),
-                    ),
+                  return SideSelectionMenu<ThemeMode>(
+                    inlineLabel: false,
+                    title: '主题模式',
+                    minimumSize: const Size(104, 48),
                     segments: const [
                       ButtonSegment(value: ThemeMode.light, label: Text('浅色')),
                       ButtonSegment(value: ThemeMode.dark, label: Text('深色')),

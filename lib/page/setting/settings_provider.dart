@@ -196,6 +196,9 @@ class SettingsProvider with ChangeNotifier {
   static const _desktopLyricsOutlineColorKey = 'desktopLyricsOutlineColor';
   static const _desktopLyricsOutlineOpacityKey = 'desktopLyricsOutlineOpacity';
   static const _desktopLyricsAutoSizeKey = 'desktopLyricsAutoSize';
+  static const _desktopLyricsMaxLinesKey = 'desktopLyricsMaxLines';
+  static const _desktopLyricsMinFontSizeKey = 'desktopLyricsMinFontSize';
+  static const _desktopLyricsTransitionKey = 'desktopLyricsTransition';
   static const _desktopLyricsKaraokeKey = 'desktopLyricsKaraoke';
   static const _desktopLyricsHighlightColorKey = 'desktopLyricsHighlightColor';
   static const _desktopLyricsAlignmentKey = 'desktopLyricsAlignment';
@@ -277,6 +280,9 @@ class SettingsProvider with ChangeNotifier {
   int _desktopLyricsOutlineColor = 0xFFFFFFFF;
   double _desktopLyricsOutlineOpacity = 1.0;
   bool _desktopLyricsAutoSize = false;
+  int _desktopLyricsMaxLines = 3;
+  double _desktopLyricsMinFontSize = 12;
+  bool _desktopLyricsTransition = true;
   bool _desktopLyricsKaraoke = false;
   int? _desktopLyricsHighlightColor;
   TextAlign _desktopLyricsAlignment = TextAlign.center;
@@ -413,6 +419,9 @@ class SettingsProvider with ChangeNotifier {
   int get desktopLyricsOutlineColor => _desktopLyricsOutlineColor;
   double get desktopLyricsOutlineOpacity => _desktopLyricsOutlineOpacity;
   bool get desktopLyricsAutoSize => _desktopLyricsAutoSize;
+  int get desktopLyricsMaxLines => _desktopLyricsMaxLines;
+  double get desktopLyricsMinFontSize => _desktopLyricsMinFontSize;
+  bool get desktopLyricsTransition => _desktopLyricsTransition;
   bool get desktopLyricsKaraoke => _desktopLyricsKaraoke;
   TextAlign get desktopLyricsAlignment => _desktopLyricsAlignment;
   int get desktopLyricsHighlightColor =>
@@ -731,6 +740,16 @@ class SettingsProvider with ChangeNotifier {
             .clamp(0.1, 1.0);
     _desktopLyricsAutoSize =
         _readPreference<bool>(prefs, _desktopLyricsAutoSizeKey) ?? false;
+    _desktopLyricsMaxLines =
+        (_readPreference<int>(prefs, _desktopLyricsMaxLinesKey) ?? 3).clamp(
+          1,
+          6,
+        );
+    _desktopLyricsMinFontSize =
+        (_readDoublePreference(prefs, _desktopLyricsMinFontSizeKey) ?? 12)
+            .clamp(8, 40);
+    _desktopLyricsTransition =
+        _readPreference<bool>(prefs, _desktopLyricsTransitionKey) ?? true;
     _desktopLyricsKaraoke =
         _readPreference<bool>(prefs, _desktopLyricsKaraokeKey) ?? false;
     _desktopLyricsHighlightColor = _readPreference<int>(
@@ -1468,6 +1487,39 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
     await (await SharedPreferences.getInstance()).setBool(
       _desktopLyricsAutoSizeKey,
+      value,
+    );
+  }
+
+  Future<void> setDesktopLyricsMaxLines(int value) async {
+    final next = value.clamp(1, 6);
+    if (_desktopLyricsMaxLines == next) return;
+    _desktopLyricsMaxLines = next;
+    notifyListeners();
+    await (await SharedPreferences.getInstance()).setInt(
+      _desktopLyricsMaxLinesKey,
+      next,
+    );
+  }
+
+  Future<void> setDesktopLyricsMinFontSize(double value) async {
+    if (!value.isFinite) return;
+    final next = value.roundToDouble().clamp(8.0, 40.0);
+    if (_desktopLyricsMinFontSize == next) return;
+    _desktopLyricsMinFontSize = next;
+    notifyListeners();
+    await (await SharedPreferences.getInstance()).setDouble(
+      _desktopLyricsMinFontSizeKey,
+      next,
+    );
+  }
+
+  Future<void> setDesktopLyricsTransition(bool value) async {
+    if (_desktopLyricsTransition == value) return;
+    _desktopLyricsTransition = value;
+    notifyListeners();
+    await (await SharedPreferences.getInstance()).setBool(
+      _desktopLyricsTransitionKey,
       value,
     );
   }

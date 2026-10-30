@@ -237,20 +237,25 @@ void main() {
               brightness: Brightness.dark,
               fontFamily: 'MiSans402',
             ),
+            builder: (_, child) => RepaintBoundary(key: key, child: child!),
             home: Scaffold(
-              body: RepaintBoundary(
-                key: key,
-                child: SongPlaylistSheet(song: song),
+              body: Builder(
+                builder: (context) => TextButton(
+                  onPressed: () =>
+                      showSongPlaylistWindow(context, song, fluid: true),
+                  child: const Text('打开歌单'),
+                ),
               ),
             ),
           ),
         ),
       );
+      await tester.tap(find.text('打开歌单'));
       await tester.pumpAndSettle();
       expect(find.text('总歌曲'), findsNothing);
       await tester.tap(find.text('收藏'));
       await tester.pumpAndSettle();
-      expect(model.items[1].songFilePaths, ['current.mp3']);
+      expect(model.items[1].songFilePaths, isEmpty);
       await tester.tap(find.text('收藏'));
       await tester.pumpAndSettle();
       expect(model.items[1].songFilePaths, isEmpty);
@@ -259,9 +264,12 @@ void main() {
       await tester.enterText(find.byType(TextField), '新歌单');
       await tester.tap(find.text('创建'));
       await tester.pumpAndSettle();
+      expect(model.items.last.name, isNot('新歌单'));
+      await capture(tester, key, 'add-to-playlist');
+      await tester.tap(find.text('完成'));
+      await tester.pumpAndSettle();
       expect(model.items.last.name, '新歌单');
       expect(model.items.last.songFilePaths, ['current.mp3']);
-      await capture(tester, key, 'add-to-playlist');
       await tester.pumpWidget(const SizedBox());
       model.dispose();
       expect(tester.takeException(), isNull);

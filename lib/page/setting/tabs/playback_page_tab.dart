@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../../../widgets/side_selection_menu.dart';
 import 'package:provider/provider.dart';
 
 import '../../../services/desktop_lyrics_controller.dart';
@@ -51,9 +52,8 @@ class PlaybackCoverSizeSetting extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('播放页封面大小', style: Theme.of(context).textTheme.titleMedium),
-          const SizedBox(height: 8),
-          SegmentedButton<double>(
+          SideSelectionMenu<double>(
+            title: '播放页封面大小',
             key: const ValueKey('playback-cover-size'),
             segments: const [
               ButtonSegment(value: 1, label: Text('100%')),
@@ -129,6 +129,8 @@ class DesktopLyricsPage extends StatelessWidget {
                   value.outlineColor,
                 ).withValues(alpha: value.outlineOpacity),
                 autoSize: value.autoSize,
+                maxLines: value.maxLines,
+                minFontSize: value.minFontSize,
                 karaoke: value.karaoke,
                 highlightColor: Color(value.highlightColor),
                 alignment: value.alignment,
@@ -192,6 +194,9 @@ class DesktopLyricsPage extends StatelessWidget {
                           await value.setOutlineColor(0xFFFFFFFF);
                           await value.setOutlineOpacity(1);
                           await value.setAutoSize(false);
+                          await value.setMaxLines(3);
+                          await value.setMinFontSize(12);
+                          await value.setTransition(true);
                           await value.setKaraoke(false);
                           await value.setHighlightColor(null);
                           await value.setAlignment(TextAlign.center);
@@ -281,6 +286,40 @@ class DesktopLyricsPage extends StatelessWidget {
                     value: value.autoSize,
                     onChanged: value.setAutoSize,
                   ),
+                  if (value.autoSize) ...[
+                    ListTile(
+                      contentPadding: EdgeInsets.zero,
+                      title: const Text('最大行数'),
+                      trailing: SideSelectionMenu<int>(
+                        inlineLabel: false,
+                        key: const ValueKey('desktop-lyrics-max-lines'),
+                        title: '最大行数',
+                        segments: [
+                          for (var n = 1; n <= 6; n++)
+                            ButtonSegment(value: n, label: Text('$n')),
+                        ],
+                        selected: {value.maxLines},
+                        onSelectionChanged: (v) => value.setMaxLines(v.first),
+                      ),
+                    ),
+                    Text('最小字体大小：${value.minFontSize.round()}'),
+                    Slider(
+                      key: const ValueKey('desktop-lyrics-min-font-size'),
+                      min: 8,
+                      max: 40,
+                      divisions: 32,
+                      value: value.minFontSize,
+                      label: value.minFontSize.round().toString(),
+                      onChanged: value.setMinFontSize,
+                    ),
+                  ],
+                  SwitchListTile.adaptive(
+                    key: const ValueKey('desktop-lyrics-transition'),
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('歌词切换动画'),
+                    value: value.transition,
+                    onChanged: value.setTransition,
+                  ),
                   SwitchListTile.adaptive(
                     key: const ValueKey('desktop-lyrics-karaoke'),
                     contentPadding: EdgeInsets.zero,
@@ -321,9 +360,8 @@ class DesktopLyricsPage extends StatelessWidget {
                       },
                     ),
                   const SizedBox(height: 12),
-                  const Text('歌词对齐方式'),
-                  const SizedBox(height: 8),
-                  SegmentedButton<TextAlign>(
+                  SideSelectionMenu<TextAlign>(
+                    title: '歌词对齐方式',
                     key: const ValueKey('desktop-lyrics-alignment'),
                     segments: const [
                       ButtonSegment(value: TextAlign.left, label: Text('左对齐')),
@@ -506,6 +544,8 @@ class _DesktopLyricsPreview extends StatelessWidget {
     required this.outlineWidth,
     required this.outlineColor,
     required this.autoSize,
+    required this.maxLines,
+    required this.minFontSize,
     required this.karaoke,
     required this.highlightColor,
     required this.alignment,
@@ -520,6 +560,8 @@ class _DesktopLyricsPreview extends StatelessWidget {
   final double outlineWidth;
   final Color outlineColor;
   final bool autoSize;
+  final int maxLines;
+  final double minFontSize;
   final bool karaoke;
   final Color highlightColor;
   final TextAlign alignment;
@@ -553,14 +595,30 @@ class _DesktopLyricsPreview extends StatelessWidget {
               final painter = TextPainter(
                 text: TextSpan(text: text, style: style),
                 textDirection: TextDirection.ltr,
-                maxLines: 1,
-              )..layout();
+                maxLines: maxLines,
+                ellipsis: '…',
+                textScaler: MediaQuery.textScalerOf(context),
+              );
               final available = (constraints.maxWidth - outlineWidth * 2 - 2)
                   .clamp(1.0, double.infinity);
-              if (painter.width > available) {
-                style = style.copyWith(
-                  fontSize: size * available / painter.width,
-                );
+              painter.layout(maxWidth: available);
+              if (painter.didExceedMaxLines) {
+                var low = minFontSize.clamp(8.0, size);
+                var high = size;
+                for (var i = 0; i < 10; i++) {
+                  final mid = (low + high) / 2;
+                  painter.text = TextSpan(
+                    text: text,
+                    style: style.copyWith(fontSize: mid),
+                  );
+                  painter.layout(maxWidth: available);
+                  if (painter.didExceedMaxLines) {
+                    high = mid;
+                  } else {
+                    low = mid;
+                  }
+                }
+                style = style.copyWith(fontSize: low);
               }
               painter.dispose();
             }
@@ -568,7 +626,7 @@ class _DesktopLyricsPreview extends StatelessWidget {
               width: double.infinity,
               child: Text(
                 text,
-                maxLines: fit ? 1 : 3,
+                maxLines: fit ? maxLines : 3,
                 overflow: TextOverflow.ellipsis,
                 textAlign: alignment,
                 style: textStyle,
@@ -612,15 +670,7 @@ class _DesktopLyricsPreview extends StatelessWidget {
             );
           }
 
-          return autoSize
-              ? Column(
-                  mainAxisSize: MainAxisSize.min,
-                  children: previewText
-                      .split('\n')
-                      .map((text) => row(text, fit: true))
-                      .toList(),
-                )
-              : row(previewText, fit: false);
+          return row(previewText, fit: autoSize);
         },
       ),
     );

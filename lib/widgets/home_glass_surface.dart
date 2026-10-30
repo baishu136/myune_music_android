@@ -184,3 +184,17 @@ class HomePlaylistSurface extends StatelessWidget {
     );
   }
 }
+
+class HomePlaylistCard extends StatelessWidget {
+  const HomePlaylistCard({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    elevation: 0,
+    color: Colors.transparent,
+    surfaceTintColor: Colors.transparent,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+    child: HomePlaylistSurface(child: child),
+  );
+}

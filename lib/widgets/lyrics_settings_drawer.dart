@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'side_selection_menu.dart';
 import 'package:provider/provider.dart';
 import '../page/setting/settings_provider.dart';
 
@@ -37,11 +38,10 @@ class LyricsSettingsDrawer extends StatelessWidget {
               const SizedBox(height: 10),
 
               // 歌词对齐方式设置
-              Text('歌词对齐方式', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 10),
               SizedBox(
                 width: double.infinity,
-                child: SegmentedButton<TextAlign>(
+                child: SideSelectionMenu<TextAlign>(
+                  title: '歌词对齐方式',
                   segments: const [
                     ButtonSegment(value: TextAlign.left, label: Text('居左')),
                     ButtonSegment(value: TextAlign.center, label: Text('居中')),
@@ -61,9 +61,8 @@ class LyricsSettingsDrawer extends StatelessWidget {
               const Divider(),
 
               // 同时间戳歌词行数设置
-              Text('同时间戳歌词行数', style: Theme.of(context).textTheme.titleMedium),
-              const SizedBox(height: 10),
-              SegmentedButton<int>(
+              SideSelectionMenu<int>(
+                title: '同时间戳歌词行数',
                 segments: List.generate(5, (index) {
                   final value = index + 1;
                   return ButtonSegment(value: value, label: Text('$value'));

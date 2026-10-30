@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../../../widgets/side_selection_menu.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -216,7 +217,9 @@ class _GeneralTabState extends State<GeneralTab> {
                 ),
                 Consumer<SettingsProvider>(
                   builder: (context, settings, child) {
-                    return SegmentedButton<String>(
+                    return SideSelectionMenu<String>(
+                      inlineLabel: false,
+                      title: '歌词源',
                       style: ButtonStyle(
                         padding: WidgetStateProperty.all(EdgeInsets.zero),
                         visualDensity: VisualDensity.compact,

@@ -18,7 +18,7 @@ void main() {
     expect(hueDistance(palette.second, dominant), lessThan(2));
     expect(
       HSLColor.fromColor(palette.second).saturation,
-      inInclusiveRange(.48 * 1.10, .55 * 1.10),
+      inInclusiveRange(.48 * 1.21, .55 * 1.21),
     );
   });
 

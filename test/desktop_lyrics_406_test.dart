@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/page/playlist/playlist_models.dart';
 import 'package:myune_music/page/setting/settings_provider.dart';
@@ -250,6 +251,8 @@ void main() {
           matching: find.byType(Scrollable),
         ),
       );
+      await tester.tap(find.byKey(const ValueKey('desktop-lyrics-alignment')));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('右对齐'));
       await tester.pumpAndSettle();
       expect(settings.desktopLyricsAlignment, TextAlign.right);
@@ -257,7 +260,12 @@ void main() {
         const ValueKey('desktop-lyrics-style-preview'),
       );
       final text = tester.widget<Text>(
-        find.descendant(of: preview, matching: find.text('桌面歌词')).first,
+        find
+            .descendant(
+              of: preview,
+              matching: find.text(desktopLyricsPreviewText),
+            )
+            .first,
       );
       expect(text.textAlign, TextAlign.right);
       expect(
@@ -266,13 +274,23 @@ void main() {
               find
                   .descendant(
                     of: preview,
-                    matching: find.text('Zhuo Mian Ge Ci'),
+                    matching: find.text(desktopLyricsPreviewText),
                   )
                   .first,
             )
             .style!
             .fontSize,
-        lessThan(40),
+        inInclusiveRange(12, 40),
+      );
+      expect(
+        tester
+            .renderObject<RenderParagraph>(
+              find
+                  .descendant(of: preview, matching: find.byType(RichText))
+                  .last,
+            )
+            .didExceedMaxLines,
+        isFalse,
       );
       expect(tester.takeException(), isNull);
       await tester.pumpWidget(const SizedBox.shrink());

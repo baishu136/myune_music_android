@@ -65,6 +65,9 @@ class DesktopLyricsController extends ChangeNotifier {
   int get outlineColor => _settings?.desktopLyricsOutlineColor ?? 0xFFFFFFFF;
   double get outlineOpacity => _settings?.desktopLyricsOutlineOpacity ?? 1.0;
   bool get autoSize => _settings?.desktopLyricsAutoSize ?? false;
+  int get maxLines => _settings?.desktopLyricsMaxLines ?? 3;
+  double get minFontSize => _settings?.desktopLyricsMinFontSize ?? 12;
+  bool get transition => _settings?.desktopLyricsTransition ?? true;
   bool get karaoke => _settings?.desktopLyricsKaraoke ?? false;
   TextAlign get alignment =>
       _settings?.desktopLyricsAlignment ?? TextAlign.center;
@@ -252,6 +255,13 @@ class DesktopLyricsController extends ChangeNotifier {
     await _settings?.setDesktopLyricsKaraoke(value);
   }
 
+  Future<void> setMaxLines(int value) async =>
+      _settings?.setDesktopLyricsMaxLines(value);
+  Future<void> setMinFontSize(double value) async =>
+      _settings?.setDesktopLyricsMinFontSize(value);
+  Future<void> setTransition(bool value) async =>
+      _settings?.setDesktopLyricsTransition(value);
+
   Future<void> setHighlightColor(int? value) async {
     await _settings?.setDesktopLyricsHighlightColor(value);
   }
@@ -362,7 +372,7 @@ class DesktopLyricsController extends ChangeNotifier {
         _lastLyricIndex = index;
         if (_pendingSongSwitchPath != null) return;
         unawaited(_sync());
-      } else if (karaoke &&
+      } else if ((karaoke || transition) &&
           _pendingSongSwitchPath == null &&
           _positionSyncClock.elapsedMilliseconds - _lastPositionSyncMs >= 800) {
         // Native drawing advances between these sparse clock corrections.
@@ -466,13 +476,13 @@ class DesktopLyricsController extends ChangeNotifier {
         _sentLyricIndex == lyricIndex &&
         _sentPlaying == playing &&
         _sentRate == rate) {
-      if (karaoke &&
-          _sentTimedWords &&
+      if (((karaoke && _sentTimedWords) || transition) &&
           _positionSyncClock.elapsedMilliseconds - _lastPositionSyncMs >= 800) {
         _lastPositionSyncMs = _positionSyncClock.elapsedMilliseconds;
         await _channel.invokeMethod<void>('update', {
           'clockOnly': true,
           'lyricKey': '${song?.filePath}:$lyricIndex:$_seekGeneration',
+          'timelineKey': '${song?.filePath}:$_seekGeneration',
           'positionMs': _position.inMilliseconds,
           'isPlaying': playing,
           'playbackRate': rate,
@@ -487,6 +497,16 @@ class DesktopLyricsController extends ChangeNotifier {
           ? lyrics[lyricIndex + 1].timestamp
           : null,
     );
+    final nextIndex = lyricIndex + 1;
+    final nextPresentation = nextIndex < lyrics.length
+        ? DesktopLyricPresentation.fromLine(
+            lyrics[nextIndex],
+            karaoke: karaoke,
+            nextTimestamp: nextIndex + 1 < lyrics.length
+                ? lyrics[nextIndex + 1].timestamp
+                : null,
+          )
+        : null;
     final fontPath = await _resolveFontPath(theme.currentFontFamily);
     if (!enabled ||
         playlist.currentSong?.filePath != song?.filePath ||
@@ -499,8 +519,23 @@ class DesktopLyricsController extends ChangeNotifier {
       'artist': song?.artist ?? '',
       'lyric': presentation.text,
       'lyricKey': '${song?.filePath}:$lyricIndex:$_seekGeneration',
+      'timelineKey': '${song?.filePath}:$_seekGeneration',
+      'lineStartMs': lyricIndex >= 0
+          ? lyrics[lyricIndex].timestamp.inMilliseconds
+          : null,
+      'nextLyricKey': nextPresentation == null
+          ? null
+          : '${song?.filePath}:$nextIndex:$_seekGeneration',
+      'nextLyric': nextPresentation?.text,
+      'nextWords': nextPresentation?.words,
+      'nextTimestampMs': nextPresentation == null
+          ? null
+          : lyrics[nextIndex].timestamp.inMilliseconds,
       'words': presentation.words,
       'autoSize': autoSize,
+      'maxLines': maxLines,
+      'minFontSize': minFontSize,
+      'transition': transition,
       'karaoke': karaoke,
       'highlightColor': highlightColor,
       'alignment': alignment.name,
@@ -524,8 +559,7 @@ class DesktopLyricsController extends ChangeNotifier {
     };
     final key = payload.entries.map((e) => '${e.key}:${e.value}').join('|');
     final clockDue =
-        karaoke &&
-        presentation.words.isNotEmpty &&
+        ((karaoke && presentation.words.isNotEmpty) || transition) &&
         _positionSyncClock.elapsedMilliseconds - _lastPositionSyncMs >= 800;
     if (!force && key == _lastPayloadKey && !clockDue) return;
     payload['positionMs'] = _position.inMilliseconds;

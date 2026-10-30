@@ -1786,6 +1786,8 @@ class PlaylistContentNotifier extends ChangeNotifier
   void _handleCoverOverridesChanged() {
     _undecodableCoverBytes.clear();
     _dynamicColorCache.clear();
+    _dynamicColorRequests.clear();
+    _dynamicColorApplyGeneration++;
     _dynamicColorPrefetchGeneration++;
     for (final signal in _coverSignals.values) {
       signal.notifyListeners();
@@ -3765,6 +3767,13 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   void _invalidateCoverCache(String cacheKey) {
+    final colourKey = _normalizePath(cacheKey);
+    _dynamicColorCache.remove(colourKey);
+    _dynamicColorRequests.remove(colourKey);
+    if (_currentSong != null &&
+        _normalizePath(_currentSong!.filePath) == colourKey) {
+      _dynamicColorApplyGeneration++;
+    }
     final hadCachedResult = _coverCache.containsKey(cacheKey);
     _coverCache.remove(cacheKey);
     _fullCoverCache.remove(cacheKey);
@@ -6429,28 +6438,22 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   // -- 主题管理 --
   Future<void> _applyDynamicColorForSong(Song song) async {
-    if (isContinuousSkipping) return;
-    if (!_settingsProvider.useDynamicColor) return;
     final songPath = song.normalizedPath;
+    if (!_needsDynamicColor(songPath)) return;
     final cached = _takeDynamicColor(songPath);
     if (cached != null) {
-      if (_currentSong?.normalizedPath != songPath) return;
       await _themeProvider.setDynamicSeedColor(cached);
       unawaited(_prefetchAdjacentDynamicColors(songPath));
       return;
     }
     final lease = await InteractionPerformanceController.instance
         .acquireIdleWork(
-          priority: InteractionWorkPriority.userVisible,
-          isStillNeeded: () =>
-              !isContinuousSkipping &&
-              _settingsProvider.useDynamicColor &&
-              _currentSong?.normalizedPath == songPath,
+          priority: InteractionWorkPriority.currentVisual,
+          allowDuringVisualAnimation: true,
+          isStillNeeded: () => _needsDynamicColor(songPath),
         );
     try {
-      if (isContinuousSkipping ||
-          !_settingsProvider.useDynamicColor ||
-          _currentSong?.normalizedPath != songPath) {
+      if (!lease.isGranted || !_needsDynamicColor(songPath)) {
         return;
       }
       final preparedWhileQueued = _takeDynamicColor(songPath);
@@ -6474,31 +6477,29 @@ class PlaylistContentNotifier extends ChangeNotifier
     Uint8List? albumArt, {
     String? sourceSongPath,
   }) async {
-    final requestGeneration = ++_dynamicColorApplyGeneration;
-    if (isContinuousSkipping ||
-        !_settingsProvider.useDynamicColor ||
-        albumArt == null) {
+    final songPath = sourceSongPath ?? _currentSong?.normalizedPath;
+    if (songPath == null ||
+        !_needsDynamicColor(songPath) ||
+        albumArt == null ||
+        albumArt.isEmpty) {
       return;
     }
+    final requestGeneration = ++_dynamicColorApplyGeneration;
 
     try {
-      final songPath = sourceSongPath ?? _currentSong?.normalizedPath;
-      if (songPath == null) return;
       final color = await _resolveDynamicColor(songPath, albumArt);
       final commit = await InteractionPerformanceController.instance
           .acquireIdleWork(
-            priority: InteractionWorkPriority.userVisible,
+            priority: InteractionWorkPriority.currentVisual,
+            allowDuringVisualAnimation: true,
             isStillNeeded: () =>
-                !isContinuousSkipping &&
                 requestGeneration == _dynamicColorApplyGeneration &&
-                _settingsProvider.useDynamicColor &&
-                _currentSong?.normalizedPath == songPath,
+                _needsDynamicColor(songPath),
           );
       try {
         if (!commit.isGranted) return;
         if (requestGeneration != _dynamicColorApplyGeneration ||
-            !_settingsProvider.useDynamicColor ||
-            _currentSong?.normalizedPath != songPath ||
+            !_needsDynamicColor(songPath) ||
             color == null) {
           return;
         }
@@ -6513,6 +6514,13 @@ class PlaylistContentNotifier extends ChangeNotifier
       // print('提取颜色失败 $e');
     }
   }
+
+  bool _needsDynamicColor(String songPath) =>
+      !_preparationDisposed &&
+      !_appExitShutdownStarted &&
+      !isContinuousSkipping &&
+      _settingsProvider.useDynamicColor &&
+      _currentSong?.normalizedPath == songPath;
 
   Color? _takeDynamicColor(String songPath) {
     final key = _normalizePath(songPath);
@@ -6540,17 +6548,20 @@ class PlaylistContentNotifier extends ChangeNotifier
     final inFlight = _dynamicColorRequests[key];
     if (inFlight != null) return inFlight;
 
-    final request = _extractRepresentativeDynamicColor(albumArt);
+    late final Future<Color?> request;
+    request = _extractRepresentativeDynamicColor(albumArt)
+        .then((color) {
+          if (!identical(_dynamicColorRequests[key], request)) return null;
+          if (color != null) _putDynamicColor(key, color);
+          return color;
+        })
+        .whenComplete(() {
+          if (identical(_dynamicColorRequests[key], request)) {
+            _dynamicColorRequests.remove(key);
+          }
+        });
     _dynamicColorRequests[key] = request;
-    try {
-      final color = await request;
-      if (color != null) _putDynamicColor(key, color);
-      return color;
-    } finally {
-      if (identical(_dynamicColorRequests[key], request)) {
-        _dynamicColorRequests.remove(key);
-      }
-    }
+    return request;
   }
 
   Future<Color?> _extractRepresentativeDynamicColor(Uint8List albumArt) async {

@@ -26,7 +26,7 @@ FluidPalette _constantFields() => FluidPalette(
 );
 
 void main() {
-  test('final artwork pigments gain ten percent saturation once', () {
+  test('final artwork pigments receive the current saturation boost once', () {
     for (final colour in [
       const HSLColor.fromAHSL(1, 205, .36, .44).toColor(),
       const HSLColor.fromAHSL(1, 325, .68, .40).toColor(),
@@ -47,7 +47,7 @@ void main() {
         );
         expect(
           actual.saturation,
-          closeTo(math.min(1, original.saturation * 1.10), .006),
+          closeTo(math.min(1, original.saturation * 1.21), .006),
         );
         expect(actual.lightness, closeTo(original.lightness, .004));
         expect((actual.hue - original.hue).abs(), lessThan(1));

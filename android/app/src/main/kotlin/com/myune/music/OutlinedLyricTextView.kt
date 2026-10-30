@@ -10,7 +10,7 @@ import android.graphics.Typeface
 import android.icu.text.BreakIterator
 import android.os.SystemClock
 import android.os.Build
-import android.text.SpannableString
+import android.text.StaticLayout
 import android.text.Spanned
 import android.text.TextPaint
 import android.text.TextUtils
@@ -28,6 +28,8 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
     private var outlineWidth = 0f
     private var outlineColor = Color.WHITE
     private var autoFit = false
+    private var fittedMaxLines = 3
+    private var minimumPx = 12f
     private var layoutDirty = true
     private var geometryDirty = true
     private var configuredPx = textSize
@@ -47,14 +49,21 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
     fun configure(
         color: Int, size: Float, face: Typeface, autoSize: Boolean, alignment: String,
         stroke: Boolean, strokeWidth: Float, strokeColor: Int, strokeOpacity: Float,
+        maximumLines: Int = 3, minimumSize: Float = 12f,
     ) {
         drawingDirty = true
         val px = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, size,
             resources.displayMetrics)
         val width = strokeWidth.coerceIn(0.5f, 4f) * resources.displayMetrics.density
+        val minimum = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, minimumSize,
+            resources.displayMetrics).coerceAtMost(px)
+        val lines = maximumLines.coerceIn(1, 6)
         if (configuredPx != px || typeface != face || autoFit != autoSize ||
+            fittedMaxLines != lines || minimumPx != minimum ||
             outlineEnabled != stroke || outlineWidth != width) layoutDirty = true
         configuredPx = px
+        minimumPx = minimum
+        fittedMaxLines = lines
         if (typeface != face) typeface = face
         autoFit = autoSize
         outlineEnabled = stroke
@@ -99,7 +108,7 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
             if (highlightColor != it) drawingDirty = true
             highlightColor = it
         }
-        clock.update(values["lyricKey"]?.toString().orEmpty(),
+        clock.update((values["timelineKey"] ?: values["lyricKey"])?.toString().orEmpty(),
             (values["positionMs"] as? Number)?.toDouble() ?: 0.0,
             values["isPlaying"] == true,
             (values["playbackRate"] as? Number)?.toDouble() ?: 1.0,
@@ -112,26 +121,22 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
         if (layoutDirty || lastWidth != contentWidth) {
             lastWidth = contentWidth
             setTextSize(TypedValue.COMPLEX_UNIT_PX, configuredPx)
-            maxLines = if (autoFit) Int.MAX_VALUE else 3
-            ellipsize = if (autoFit) null else TextUtils.TruncateAt.END
-            val styled = SpannableString(rawText)
+            maxLines = if (autoFit) fittedMaxLines else 3
+            ellipsize = TextUtils.TruncateAt.END
             if (autoFit && contentWidth > 0) {
                 val measurePaint = TextPaint(paint)
                 val available = (contentWidth - (if (outlineEnabled) outlineWidth * 2 else 0f) - 2f).coerceAtLeast(1f)
-                var start = 0
-                rawText.split('\n').forEach { row ->
-                    if (row.isNotEmpty()) {
-                        val fitted = fitDesktopLyricSize(configuredPx, available) { size ->
-                            measurePaint.textSize = size
-                            measurePaint.measureText(row)
-                        }
-                        if (fitted < configuredPx) styled.setSpan(FloatSize(fitted), start,
-                            start + row.length, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
-                    }
-                    start += row.length + 1
+                val fitted = fitDesktopLyricMultilineSize(configuredPx, minimumPx) { size ->
+                    measurePaint.textSize = size
+                    val sample = StaticLayout.Builder.obtain(rawText, 0, rawText.length,
+                        measurePaint, available.toInt().coerceAtLeast(1))
+                        .setIncludePad(false).setBreakStrategy(breakStrategy)
+                        .setHyphenationFrequency(hyphenationFrequency).build()
+                    sample.lineCount <= fittedMaxLines
                 }
+                setTextSize(TypedValue.COMPLEX_UNIT_PX, fitted)
             }
-            text = styled
+            text = rawText
             scrollTo(0, 0)
             layoutDirty = false
             geometryDirty = true
@@ -315,8 +320,4 @@ internal class OutlinedLyricTextView(context: Context) : TextView(context) {
         fun drawHighlight(canvas: Canvas) = canvas.drawRenderNode(highlight)
     }
 
-    private class FloatSize(private val size: Float) : MetricAffectingSpan() {
-        override fun updateDrawState(paint: TextPaint) { paint.textSize = size }
-        override fun updateMeasureState(paint: TextPaint) { paint.textSize = size }
-    }
 }

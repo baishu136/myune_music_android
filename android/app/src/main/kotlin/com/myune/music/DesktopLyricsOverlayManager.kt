@@ -43,7 +43,7 @@ class DesktopLyricsOverlayManager(
     }
     private var root: LinearLayout? = null
     private var params: WindowManager.LayoutParams? = null
-    private var lyricView: TextView? = null
+    private var lyricView: DesktopLyricTransitionView? = null
     private var controlsView: LinearLayout? = null
     private var styleView: LinearLayout? = null
     private var playButton: ImageButton? = null
@@ -65,6 +65,8 @@ class DesktopLyricsOverlayManager(
     private var outlineColor = Color.WHITE
     private var outlineOpacity = 1f
     private var autoSize = false
+    private var maximumLines = 3
+    private var minimumSize = 12f
     private var alignment = "center"
     private var cachedWeightedTypeface: Typeface? = null
     private var cachedWeight = -1
@@ -94,7 +96,7 @@ class DesktopLyricsOverlayManager(
 
     fun update(values: Map<String, Any?>) {
         if (values["clockOnly"] == true) {
-            (lyricView as? OutlinedLyricTextView)?.updatePlayback(values)
+            lyricView?.updatePlayback(values)
             return
         }
         val wasLocked = locked
@@ -121,9 +123,11 @@ class DesktopLyricsOverlayManager(
         (values["outlineColor"] as? Number)?.let { outlineColor = it.toInt() }
         (values["outlineOpacity"] as? Number)?.let { outlineOpacity = it.toFloat() }
         (values["autoSize"] as? Boolean)?.let { autoSize = it }
+        (values["maxLines"] as? Number)?.let { maximumLines = it.toInt().coerceIn(1, 6) }
+        (values["minFontSize"] as? Number)?.let { minimumSize = it.toFloat().coerceIn(8f, 40f) }
         values["alignment"]?.toString()?.let { alignment = it }
         applyVisualState(refreshWindow = wasLocked != locked)
-        (lyricView as? OutlinedLyricTextView)?.updatePlayback(values)
+        lyricView?.updatePlayback(values)
     }
 
     fun hide(onHidden: (() -> Unit)? = null) {
@@ -261,17 +265,7 @@ class DesktopLyricsOverlayManager(
             setPadding(dp(14), dp(8), dp(14), dp(8))
         }
 
-        lyricView = OutlinedLyricTextView(context).apply {
-            gravity = Gravity.CENTER
-            maxLines = 3
-            ellipsize = TextUtils.TruncateAt.END
-            setHorizontallyScrolling(false)
-            breakStrategy = android.text.Layout.BREAK_STRATEGY_HIGH_QUALITY
-            hyphenationFrequency = android.text.Layout.HYPHENATION_FREQUENCY_NONE
-            includeFontPadding = false
-            setTypeface(typeface, Typeface.NORMAL)
-            setPadding(dp(8), dp(6), dp(8), dp(6))
-        }
+        lyricView = DesktopLyricTransitionView(context)
         installDragAndExpand(lyricView!!)
         root!!.addView(lyricView, matchWrap())
 
@@ -406,9 +400,9 @@ class DesktopLyricsOverlayManager(
             cachedWeight = lyricFontWeight
             cachedWeightedTypeface = weightedTypeface(lyricTypeface, lyricFontWeight)
         }
-        (lyricView as? OutlinedLyricTextView)?.configure(
+        lyricView?.configure(
             lyricColor, lyricSize, cachedWeightedTypeface ?: lyricTypeface, autoSize, alignment,
-            outlineEnabled, outlineWidth, outlineColor, outlineOpacity,
+            outlineEnabled, outlineWidth, outlineColor, outlineOpacity, maximumLines, minimumSize,
         )
         lyricView?.alpha = lyricOpacity
         playButton?.setImageResource(

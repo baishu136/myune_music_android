@@ -20,7 +20,7 @@ const fluidMotionColourCount = 8;
 Color fluidSaturationBoost(Color colour) {
   final hsl = HSLColor.fromColor(colour);
   if (hsl.saturation == 0) return colour;
-  return hsl.withSaturation((hsl.saturation * 1.10).clamp(0.0, 1.0)).toColor();
+  return hsl.withSaturation((hsl.saturation * 1.21).clamp(0.0, 1.0)).toColor();
 }
 
 bool fluidNeedsIntermediateColour(Color a, Color b) {

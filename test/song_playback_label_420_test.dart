@@ -59,21 +59,25 @@ void main() {
         await tester.pumpAndSettle();
         player.change(songs[0]);
         await tester.pump();
-        Text label(int i) => tester.widget<Text>(find.text('歌曲$i'));
-        expect(label(0).style!.color, source.colorScheme.primary);
-        expect(label(1).style!.color, home.textTheme.bodySmall!.color);
+        await tester.pump(const Duration(milliseconds: 150));
+        Color? colour(int i) =>
+            DefaultTextStyle.of(tester.element(find.text('歌曲$i'))).style.color;
+        expect(colour(0), source.colorScheme.primary);
+        expect(colour(1), home.textTheme.bodySmall!.color);
         final untouched = tester.element(find.text('歌曲2')).widget;
         player.change(songs[1]);
         await tester.pump();
-        expect(label(0).style!.color, home.textTheme.bodySmall!.color);
-        expect(label(1).style!.color, source.colorScheme.primary);
+        await tester.pump(const Duration(milliseconds: 150));
+        expect(colour(0), home.textTheme.bodySmall!.color);
+        expect(colour(1), source.colorScheme.primary);
         expect(
           identical(tester.element(find.text('歌曲2')).widget, untouched),
           isTrue,
         );
         player.change(null);
         await tester.pump();
-        expect(label(1).style!.color, home.textTheme.bodySmall!.color);
+        await tester.pump(const Duration(milliseconds: 150));
+        expect(colour(1), home.textTheme.bodySmall!.color);
       }
       await tester.pumpWidget(const SizedBox());
       player.dispose();

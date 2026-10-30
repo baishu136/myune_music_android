@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'package:myune_music/widgets/side_selection_menu.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -229,21 +230,25 @@ void main() {
           ),
         ),
       );
-      expect(find.byType(Text), findsNWidgets(4));
+      expect(find.byType(Text), findsNWidgets(2));
       expect(find.text('播放页封面大小'), findsOneWidget);
+      await tester.tap(find.byKey(const ValueKey('playback-cover-size')));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('90%'));
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(settings.playbackCoverScale, .9);
       expect(
         tester
-            .widget<SegmentedButton<double>>(
+            .widget<SideSelectionMenu<double>>(
               find.byKey(const ValueKey('playback-cover-size')),
             )
             .selected,
         {.9},
       );
+      await tester.tap(find.byKey(const ValueKey('playback-cover-size')));
+      await tester.pumpAndSettle();
       await tester.tap(find.text('100%'));
-      await tester.pump();
+      await tester.pumpAndSettle();
       expect(settings.playbackCoverScale, 1);
       await tester.pumpWidget(const SizedBox());
       settings.dispose();

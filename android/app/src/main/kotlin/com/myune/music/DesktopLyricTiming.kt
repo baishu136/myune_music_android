@@ -63,3 +63,37 @@ internal fun desktopLyricFrameDelay(position: Double, words: List<DesktopLyricWo
     return if (next.isFinite()) ceil((next - position) / rate.coerceAtLeast(.01))
         .coerceIn(1.0, Int.MAX_VALUE.toDouble()).toLong() else -1
 }
+
+internal fun fitDesktopLyricMultilineSize(maximum: Float, minimum: Float,
+                                        fits: (Float) -> Boolean): Float {
+    val floor = minimum.coerceIn(.1f, maximum.coerceAtLeast(.1f))
+    if (fits(maximum)) return maximum
+    if (!fits(floor)) return floor
+    var low = floor
+    var high = maximum
+    repeat(10) {
+        val mid = (low + high) * .5f
+        if (fits(mid)) low = mid else high = mid
+    }
+    return low
+}
+
+internal object DesktopLyricMotion {
+    const val EXIT_LEAD = 200.0
+    const val ENTER_LEAD = 180.0
+    const val ENTER_DURATION = 220.0
+    fun enterStart(start: Double, afterExit: Boolean = false) =
+        if (afterExit) start - EXIT_LEAD + EXIT_LEAD * .8 else start - ENTER_LEAD
+    fun enter(position: Double, start: Double, afterExit: Boolean = false) =
+        ((position - enterStart(start, afterExit)) / ENTER_DURATION).coerceIn(0.0, 1.0)
+    fun exit(position: Double, next: Double) =
+        ((position - next + EXIT_LEAD) / EXIT_LEAD).coerceIn(0.0, 1.0)
+    fun spring(t: Double): Float {
+        val x = t.coerceIn(0.0, 1.0) - 1.0
+        return (1.0 + 2.3 * x * x * x + 1.3 * x * x).toFloat()
+    }
+    fun opacity(t: Double): Float {
+        val x = (t / .8).coerceIn(0.0, 1.0)
+        return (1.0 - (1.0 - x) * (1.0 - x) * (1.0 - x)).toFloat()
+    }
+}

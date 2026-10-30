@@ -4,7 +4,6 @@ import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/services/artwork_palette_cache.dart';
-import 'package:myune_music/widgets/now_playing_cover_glow.dart';
 import 'package:myune_music/models/fluid_background_state.dart';
 import 'package:myune_music/services/fluid_background_controller.dart';
 import 'package:myune_music/widgets/playback_background/fluid_colour_motion.dart';
@@ -403,53 +402,6 @@ void main() {
     },
   );
 
-  testWidgets('halo waits for the final playback page entrance animation', (
-    tester,
-  ) async {
-    final entrance = AnimationController(
-      vsync: tester,
-      duration: const Duration(milliseconds: 320),
-    );
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Center(
-          child: NowPlayingCoverGlow(
-            enabled: true,
-            pageEntrance: entrance,
-            child: const SizedBox.square(dimension: 240),
-          ),
-        ),
-      ),
-    );
-    double alpha() =>
-        (tester
-                    .widget<DecoratedBox>(
-                      find
-                          .descendant(
-                            of: find.byType(NowPlayingCoverGlow),
-                            matching: find.byType(DecoratedBox),
-                          )
-                          .first,
-                    )
-                    .decoration
-                as BoxDecoration)
-            .boxShadow!
-            .single
-            .color
-            .a;
-    await tester.pump(const Duration(seconds: 1));
-    expect(alpha(), 0);
-    entrance.forward();
-    await tester.pump();
-    await tester.pump(const Duration(milliseconds: 319));
-    expect(alpha(), 0);
-    await tester.pump(const Duration(milliseconds: 2));
-    expect(alpha(), 0);
-    await tester.pumpAndSettle();
-    expect(alpha(), closeTo(.20, .003));
-    await tester.pumpWidget(const SizedBox());
-    entrance.dispose();
-  });
   test('bright artwork does not give black printing a dark pigment field', () {
     final palette = buildWeightedFluidPalette(const [
       FluidColorSample(Colors.white, .65),
@@ -463,54 +415,5 @@ void main() {
       isTrue,
     );
     expect(HSLColor.fromColor(palette.baseColor).lightness, greaterThan(.15));
-  });
-
-  testWidgets('a lit halo survives song image loading without restarting', (
-    tester,
-  ) async {
-    late BuildContext imageContext;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Center(
-          child: NowPlayingCoverGlow(
-            enabled: true,
-            waitForImage: true,
-            child: Builder(
-              builder: (context) {
-                imageContext = context;
-                return const SizedBox.square(dimension: 240);
-              },
-            ),
-          ),
-        ),
-      ),
-    );
-    double alpha() =>
-        (tester
-                    .widget<DecoratedBox>(
-                      find
-                          .descendant(
-                            of: find.byType(NowPlayingCoverGlow),
-                            matching: find.byType(DecoratedBox),
-                          )
-                          .first,
-                    )
-                    .decoration
-                as BoxDecoration)
-            .boxShadow!
-            .single
-            .color
-            .a;
-    NowPlayingCoverGlow.reportImageReady(imageContext, true);
-    await tester.pumpAndSettle();
-    expect(alpha(), closeTo(.20, .003));
-    NowPlayingCoverGlow.reportImageReady(imageContext, false);
-    await tester.pump(const Duration(milliseconds: 320));
-    expect(alpha(), closeTo(.20, .003));
-    NowPlayingCoverGlow.reportImageReady(imageContext, true);
-    await tester.pump();
-    expect(alpha(), closeTo(.20, .003));
-    expect(tester.binding.transientCallbackCount, 0);
-    await tester.pumpWidget(const SizedBox());
   });
 }

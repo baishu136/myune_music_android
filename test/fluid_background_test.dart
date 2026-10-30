@@ -173,6 +173,7 @@ void main() {
       first.second,
       first.third,
       first.fourth,
+      baseColor: first.baseColor,
     );
     expect(sameValues, first);
     expect(sameValues.hashCode, first.hashCode);

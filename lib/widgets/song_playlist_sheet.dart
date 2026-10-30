@@ -6,18 +6,22 @@ import 'playback_control_sheet_surface.dart';
 import 'playlist_created_label.dart';
 import '../page/playlist/playlist_content_notifier.dart';
 import '../page/playlist/playlist_models.dart';
+import '../models/song_playlist_draft.dart';
 
 Future<void> showSongPlaylistWindow(
   BuildContext context,
   Song song, {
   required bool fluid,
-}) {
+}) async {
+  final notifier = context.read<PlaylistContentNotifier>();
+  final draft = SongPlaylistDraft(song);
+  final messenger = ScaffoldMessenger.maybeOf(context);
+  final navigator = Navigator.of(context, rootNavigator: true);
   final themes = InheritedTheme.capture(
     from: context,
     to: Navigator.of(context, rootNavigator: true).context,
   );
-  return showGeneralDialog<void>(
-    context: context,
+  final route = RawDialogRoute<void>(
     barrierDismissible: true,
     barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
     transitionDuration: MediaQuery.disableAnimationsOf(context)
@@ -49,68 +53,92 @@ Future<void> showSongPlaylistWindow(
             child: PlaybackControlSheetSurface(
               fluid: fluid,
               borderRadius: BorderRadius.circular(24),
-              child: SongPlaylistSheet(song: song),
+              child: SongPlaylistSheet(song: song, draft: draft),
             ),
           ),
         ),
       ),
     ),
   );
+  await navigator.push<void>(route);
+  await route.completed;
+  if (!context.mounted) return;
+  var failed = false;
+  for (final change in draft.changes.entries) {
+    final playlist = notifier.playlists
+        .where((p) => p.id == change.key && !p.isLibrary)
+        .firstOrNull;
+    if (playlist == null ||
+        playlist.containsSongPath(song.filePath) == change.value) {
+      continue;
+    }
+    try {
+      if (change.value) {
+        await notifier.addSongsToPlaylistById(change.key, [song.filePath]);
+      } else {
+        await notifier.removeSongsFromPlaylistById(change.key, [song.filePath]);
+      }
+    } catch (_) {
+      failed = true;
+    }
+  }
+  for (final playlist in draft.created) {
+    try {
+      if (!await notifier.saveQueueAsPlaylist(
+        playlist.name,
+        draft.includes(playlist) ? [song] : [],
+      )) {
+        failed = true;
+      }
+    } catch (_) {
+      failed = true;
+    }
+  }
+  if (failed && messenger != null && messenger.mounted) {
+    messenger.showSnackBar(const SnackBar(content: Text('部分歌单未能更新，请重新打开检查')));
+  }
 }
 
 class SongPlaylistSheet extends StatefulWidget {
-  const SongPlaylistSheet({super.key, required this.song});
+  const SongPlaylistSheet({super.key, required this.song, this.draft});
   final Song song;
+  final SongPlaylistDraft? draft;
 
   @override
   State<SongPlaylistSheet> createState() => _SongPlaylistSheetState();
 }
 
 class _SongPlaylistSheetState extends State<SongPlaylistSheet> {
-  bool _busy = false;
+  late final _draft = widget.draft ?? SongPlaylistDraft(widget.song);
 
   Future<void> _create() async {
-    if (_busy) return;
     final name = await showDialog<String>(
       context: context,
       builder: (_) => const _PlaylistNameDialog(),
     );
     if (!mounted || name == null || name.isEmpty) return;
-    setState(() => _busy = true);
-    try {
-      await context.read<PlaylistContentNotifier>().saveQueueAsPlaylist(name, [
-        widget.song,
-      ]);
-    } finally {
-      if (mounted) setState(() => _busy = false);
+    if ([
+      ...context.read<PlaylistContentNotifier>().playlists,
+      ..._draft.created,
+    ].any((p) => p.name == name)) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('歌单名称已存在')));
+      return;
     }
+    setState(() => _draft.create(name));
   }
 
-  Future<void> _setIncluded(String id, bool included) async {
-    if (_busy) return;
-    setState(() => _busy = true);
-    try {
-      final notifier = context.read<PlaylistContentNotifier>();
-      if (included) {
-        await notifier.addSongsToPlaylistById(id, [widget.song.filePath]);
-      } else {
-        await notifier.removeSongsFromPlaylistById(id, [widget.song.filePath]);
-      }
-    } catch (_) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(const SnackBar(content: Text('更新歌单失败，请重试')));
-      }
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
+  void _setIncluded(Playlist playlist, bool included) =>
+      setState(() => _draft.setIncluded(playlist, included));
 
   @override
   Widget build(BuildContext context) {
     final notifier = context.watch<PlaylistContentNotifier>();
-    final playlists = notifier.playlists.where((p) => !p.isLibrary).toList();
+    final playlists = [
+      ...notifier.playlists.where((p) => !p.isLibrary),
+      ..._draft.created,
+    ];
     return SafeArea(
       child: SizedBox(
         height: MediaQuery.sizeOf(context).height * .72,
@@ -123,7 +151,6 @@ class _SongPlaylistSheetState extends State<SongPlaylistSheet> {
                 child: Icon(Icons.add, size: 32),
               ),
               title: const Text('新建歌单'),
-              enabled: !_busy,
               onTap: _create,
             ),
             const Divider(),
@@ -132,9 +159,20 @@ class _SongPlaylistSheetState extends State<SongPlaylistSheet> {
                 itemCount: playlists.length,
                 itemBuilder: (context, index) {
                   final playlist = playlists[index];
-                  final included = playlist.containsSongPath(
-                    widget.song.filePath,
-                  );
+                  final included = _draft.includes(playlist);
+                  final preview = _draft.changes.containsKey(playlist.id)
+                      ? Playlist(
+                          id: playlist.id,
+                          name: playlist.name,
+                          songFilePaths: playlist.songFilePaths,
+                        )
+                      : playlist;
+                  if (!identical(preview, playlist) && !included) {
+                    preview.removeSongPaths([widget.song.filePath]);
+                  } else if (!identical(preview, playlist) &&
+                      !preview.containsSongPath(widget.song.filePath)) {
+                    preview.songFilePaths.add(widget.song.filePath);
+                  }
                   return LayoutBuilder(
                     builder: (context, constraints) {
                       final compact =
@@ -160,14 +198,14 @@ class _SongPlaylistSheetState extends State<SongPlaylistSheet> {
                               shape: const CircleBorder(),
                               semanticLabel:
                                   '${included ? '移出' : '加入'}${playlist.name}',
-                              onChanged: _busy
-                                  ? null
-                                  : (value) =>
-                                        _setIncluded(playlist.id, value!),
+                              onChanged: (_) => _setIncluded(
+                                playlist,
+                                !_draft.includes(playlist),
+                              ),
                             ),
                             const SizedBox(width: 8),
                             _PlaylistCover(
-                              path: playlist.songFilePaths.firstOrNull,
+                              path: preview.songFilePaths.firstOrNull,
                             ),
                           ],
                         ),
@@ -175,7 +213,7 @@ class _SongPlaylistSheetState extends State<SongPlaylistSheet> {
                         subtitle: Column(
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
-                            Text('包含 ${playlist.songFilePaths.length} 首歌曲'),
+                            Text('包含 ${preview.songFilePaths.length} 首歌曲'),
                             if (compact) date,
                           ],
                         ),
@@ -185,8 +223,8 @@ class _SongPlaylistSheetState extends State<SongPlaylistSheet> {
                                 constraints: const BoxConstraints(maxWidth: 88),
                                 child: date,
                               ),
-                        enabled: !_busy,
-                        onTap: () => _setIncluded(playlist.id, !included),
+                        onTap: () =>
+                            _setIncluded(playlist, !_draft.includes(playlist)),
                       );
                     },
                   );

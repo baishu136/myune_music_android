@@ -13,6 +13,7 @@ import '../../widgets/sort_dialog.dart';
 import '../setting/settings_provider.dart';
 import '../../layout/navigation_notifier.dart';
 import '../../widgets/artwork_image.dart';
+import '../../widgets/song_playback_label.dart';
 
 enum ManagementMode { manual, folder }
 
@@ -2138,7 +2139,7 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                 title: Text(
                   widget.song.title,
                   style: widget.queueActions && isPlaying
-                      ? TextStyle(color: colorScheme.primary)
+                      ? TextStyle(color: songPlaybackAccent(Theme.of(context)))
                       : null,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -2148,7 +2149,7 @@ class _SongTileWidgetState extends State<SongTileWidget> {
                       ? '${widget.song.artist} - ${widget.song.album}'
                       : widget.song.artist,
                   style: widget.queueActions && isPlaying
-                      ? TextStyle(color: colorScheme.primary)
+                      ? TextStyle(color: songPlaybackAccent(Theme.of(context)))
                       : null,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,

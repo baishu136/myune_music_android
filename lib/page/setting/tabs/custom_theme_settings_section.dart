@@ -1,11 +1,13 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import '../../../widgets/side_selection_menu.dart';
 import 'package:provider/provider.dart';
 
 import '../../../models/fluid_background_state.dart';
 import '../../../services/custom_theme_image_service.dart';
 import '../../../widgets/custom_theme_background.dart';
+import '../../../widgets/home_glass_surface.dart';
 import '../custom_theme_background_page.dart';
 import '../settings_provider.dart';
 
@@ -46,28 +48,40 @@ class ThemeConfigurationPage extends StatelessWidget {
         path != null &&
         path.isNotEmpty &&
         File(path).existsSync();
-    return CustomThemeBackground(
-      path: path,
-      enabled: custom,
-      dim: settings.homeThemeImageDim,
-      blurSigma: settings.homeThemeImageBlur,
-      child: Scaffold(
-        backgroundColor: custom ? Colors.transparent : null,
-        appBar: AppBar(
-          title: const Text('主题配置'),
+    final theme = Theme.of(context);
+    return Theme(
+      data: custom
+          ? theme.copyWith(scaffoldBackgroundColor: Colors.black)
+          : theme,
+      child: CustomThemeBackground(
+        path: path,
+        enabled: custom,
+        dim: .40,
+        brightnessOverride: Brightness.dark,
+        blurSigma: settings.homeThemeImageBlur,
+        child: Scaffold(
           backgroundColor: custom ? Colors.transparent : null,
-          scrolledUnderElevation: 0,
-        ),
-        body: ListView(
-          key: const ValueKey('theme-configuration-scroll'),
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-          children: const [
-            _AlbumArtFollowCard(),
-            SizedBox(height: 10),
-            _ThemeImageCard(surface: CustomThemeSurface.home),
-            SizedBox(height: 10),
-            _ThemeImageCard(surface: CustomThemeSurface.playback),
-          ],
+          appBar: AppBar(
+            title: const Text('主题配置'),
+            backgroundColor: Colors.transparent,
+            flexibleSpace: const HomePlaylistSurface(
+              cornerRadius: 0,
+              child: SizedBox.expand(),
+            ),
+            elevation: 0,
+            scrolledUnderElevation: 0,
+          ),
+          body: ListView(
+            key: const ValueKey('theme-configuration-scroll'),
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+            children: const [
+              _AlbumArtFollowCard(),
+              SizedBox(height: 10),
+              _ThemeImageCard(surface: CustomThemeSurface.home),
+              SizedBox(height: 10),
+              _ThemeImageCard(surface: CustomThemeSurface.playback),
+            ],
+          ),
         ),
       ),
     );
@@ -81,10 +95,7 @@ class _AlbumArtFollowCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final settings = context.watch<SettingsProvider>();
     final scheme = Theme.of(context).colorScheme;
-    return Card(
-      elevation: 0,
-      color: scheme.surfaceContainerLow,
-      clipBehavior: Clip.antiAlias,
+    return HomePlaylistCard(
       child: Column(
         children: [
           ListTile(
@@ -126,12 +137,8 @@ class _AlbumArtFollowCard extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Text(
-                    '播放页背景样式',
-                    style: Theme.of(context).textTheme.labelLarge,
-                  ),
-                  const SizedBox(height: 8),
-                  SegmentedButton<PlaybackArtworkBackgroundStyle>(
+                  SideSelectionMenu<PlaybackArtworkBackgroundStyle>(
+                    title: '播放页背景样式',
                     segments: const [
                       ButtonSegment(
                         value: PlaybackArtworkBackgroundStyle.blurred,
@@ -311,10 +318,7 @@ class _ThemeImageCard extends StatelessWidget {
       CustomThemeSurface.home => settings.homeThemeImageBlur,
       CustomThemeSurface.playback => settings.playbackThemeImageBlur,
     };
-    return Card(
-      elevation: 0,
-      color: Theme.of(context).colorScheme.surfaceContainerLow,
-      clipBehavior: Clip.antiAlias,
+    return HomePlaylistCard(
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
