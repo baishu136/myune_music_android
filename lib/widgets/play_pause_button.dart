@@ -1,6 +1,7 @@
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'interaction_motion.dart';
 
 class PlayPauseButton extends StatefulWidget {
   final bool isPlaying;
@@ -26,17 +27,18 @@ class PlayPauseButton extends StatefulWidget {
   State<PlayPauseButton> createState() => _PlayPauseButtonState();
 }
 
-class _PlayPauseButtonState extends State<PlayPauseButton>
+class _PlayPauseButtonState extends InteractionMotionState<PlayPauseButton>
     with SingleTickerProviderStateMixin {
   late AnimationController _controller;
-  late final Animation<double> _progress;
+  late final CurvedAnimation _progress;
 
   @override
   void initState() {
     super.initState();
     _controller = AnimationController(
       vsync: this,
-      duration: const Duration(milliseconds: 300),
+      duration: const Duration(milliseconds: 280),
+      reverseDuration: const Duration(milliseconds: 240),
     );
     _progress = CurvedAnimation(
       parent: _controller,
@@ -55,6 +57,10 @@ class _PlayPauseButtonState extends State<PlayPauseButton>
 
     // 当播放状态改变时，控制动画
     if (oldWidget.isPlaying != widget.isPlaying) {
+      if (!motionAllowed) {
+        resetMotion();
+        return;
+      }
       if (widget.isPlaying) {
         _controller.forward();
       } else {
@@ -64,7 +70,15 @@ class _PlayPauseButtonState extends State<PlayPauseButton>
   }
 
   @override
+  void resetMotion() {
+    _controller.stop();
+    final target = widget.isPlaying ? 1.0 : 0.0;
+    if (_controller.value != target) _controller.value = target;
+  }
+
+  @override
   void dispose() {
+    _progress.dispose();
     _controller.dispose();
     super.dispose();
   }
@@ -81,8 +95,8 @@ class _PlayPauseButtonState extends State<PlayPauseButton>
           final transition = math.sin(math.pi * _progress.value);
           return Transform.rotate(
             key: const ValueKey('play_pause_rotation'),
-            angle: transition * math.pi / 3,
-            child: Transform.scale(scale: 1 - transition * .08, child: child),
+            angle: transition * math.pi / 18,
+            child: Transform.scale(scale: 1 - transition * .035, child: child),
           );
         },
         child: AnimatedIcon(
@@ -93,12 +107,14 @@ class _PlayPauseButtonState extends State<PlayPauseButton>
       ),
       onPressed: widget.onPressed,
     );
-    if (widget.backgroundColor == null) return button;
-    return Material(
-      color: widget.backgroundColor,
-      shape: const CircleBorder(),
-      clipBehavior: Clip.antiAlias,
-      child: button,
+    if (widget.backgroundColor == null) return ButtonPressMotion(child: button);
+    return ButtonPressMotion(
+      child: Material(
+        color: widget.backgroundColor,
+        shape: const CircleBorder(),
+        clipBehavior: Clip.antiAlias,
+        child: button,
+      ),
     );
   }
 }

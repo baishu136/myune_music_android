@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 import 'package:flutter/material.dart';
+import 'interaction_motion.dart';
 
 class SongCollectionHeader extends StatelessWidget {
   const SongCollectionHeader({
@@ -25,14 +26,14 @@ class SongCollectionHeader extends StatelessWidget {
       builder: (context, constraints) {
         final stacked =
             !featured &&
-            (constraints.maxWidth < 330 ||
+            (constraints.maxWidth < 250 ||
                 MediaQuery.textScalerOf(context).scale(14) > 23);
         final cover = ClipRRect(
           borderRadius: BorderRadius.circular(16),
           child: SizedBox.square(
             dimension: math.min(
-              featured ? 136.0 : 208.0,
-              constraints.maxWidth * (featured ? .38 : .44),
+              featured ? 102.0 : 156.0,
+              constraints.maxWidth * (featured ? .285 : .33),
             ),
             child: artwork,
           ),
@@ -56,11 +57,13 @@ class SongCollectionHeader extends StatelessWidget {
               runSpacing: 6,
               children: [
                 if (onPlayAll != null)
-                  IconButton.filledTonal(
-                    tooltip: '播放全部',
-                    onPressed: onPlayAll,
-                    icon: const Icon(Icons.play_arrow_rounded),
-                    iconSize: 30,
+                  ButtonPressMotion(
+                    child: IconButton.filledTonal(
+                      tooltip: '播放全部',
+                      onPressed: onPlayAll,
+                      icon: const Icon(Icons.play_arrow_rounded),
+                      iconSize: 30,
+                    ),
                   ),
                 Column(
                   crossAxisAlignment: CrossAxisAlignment.start,

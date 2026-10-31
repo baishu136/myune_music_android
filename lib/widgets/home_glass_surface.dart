@@ -33,6 +33,29 @@ class HomeNavigationSurface extends StatelessWidget {
       HomeGlassSurface(child: SafeArea(top: false, child: child));
 }
 
+/// The player already owns its translucent fill. Paint only the bottom safe
+/// inset with the same profile, avoiding a second layer behind the player.
+class HomePlaybackFooter extends StatelessWidget {
+  const HomePlaybackFooter({super.key, required this.child});
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    final bottom = MediaQuery.paddingOf(context).bottom;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        SafeArea(top: false, bottom: false, child: child),
+        if (bottom > 0)
+          HomeGlassSurface(
+            role: HomeGlassRole.playback,
+            child: SizedBox(height: bottom, width: double.infinity),
+          ),
+      ],
+    );
+  }
+}
+
 /// All home surfaces retain one 70%-opaque fill with no gradient, extra
 /// opacity layer or layout inset. Legacy filters stay dormant; home surfaces
 /// no longer blur their backdrop, independently of custom-image blur.

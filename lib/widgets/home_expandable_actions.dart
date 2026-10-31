@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'interaction_motion.dart';
 
 class HomeExpandableActions extends StatefulWidget {
   const HomeExpandableActions({
@@ -46,17 +47,19 @@ class _HomeExpandableActionsState extends State<HomeExpandableActions>
         mainAxisSize: MainAxisSize.min,
         children: [
           if (widget.children.isNotEmpty) ...[
-            IconButton(
-              tooltip: _expanded ? '收起功能' : '展开功能',
-              isSelected: _expanded,
-              icon: RotationTransition(
-                turns: Tween<double>(begin: 0, end: .5).animate(_animation),
-                child: const Icon(Icons.chevron_left),
+            ButtonPressMotion(
+              child: IconButton(
+                tooltip: _expanded ? '收起功能' : '展开功能',
+                isSelected: _expanded,
+                icon: RotationTransition(
+                  turns: Tween<double>(begin: 0, end: .5).animate(_animation),
+                  child: const Icon(Icons.chevron_left),
+                ),
+                onPressed: () => setState(() {
+                  _expanded = !_expanded;
+                  _expanded ? _controller.forward() : _controller.reverse();
+                }),
               ),
-              onPressed: () => setState(() {
-                _expanded = !_expanded;
-                _expanded ? _controller.forward() : _controller.reverse();
-              }),
             ),
             SizeTransition(
               axis: Axis.horizontal,
@@ -72,7 +75,15 @@ class _HomeExpandableActionsState extends State<HomeExpandableActions>
                       excluding: !_expanded,
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
-                        children: widget.children,
+                        children: [
+                          for (final child in widget.children)
+                            ButtonPressMotion(
+                              enabled:
+                                  child is! IconButton ||
+                                  child.onPressed != null,
+                              child: child,
+                            ),
+                        ],
                       ),
                     ),
                   ),
@@ -80,7 +91,8 @@ class _HomeExpandableActionsState extends State<HomeExpandableActions>
               ),
             ),
           ],
-          if (widget.searchAction != null) widget.searchAction!,
+          if (widget.searchAction != null)
+            ButtonPressMotion(child: widget.searchAction!),
         ],
       ),
     );

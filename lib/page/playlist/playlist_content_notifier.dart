@@ -44,6 +44,7 @@ import '../../services/playback_navigation.dart';
 import '../../services/continuous_skip_session.dart';
 export '../../services/playback_navigation.dart';
 import '../../services/song_group_presentation.dart';
+import '../../services/song_sorting.dart';
 import '../../services/library_song_visibility.dart';
 import '../../services/playlist_folder_policy.dart';
 import '../../services/network_lyric_client.dart';
@@ -688,6 +689,9 @@ class PlaylistContentNotifier extends ChangeNotifier
   final Map<String, List<String>> _pinnedItems = {};
   final Map<String, SongSortPreference> _songSortPreferences = {};
   final Map<String, int> _sortMembershipSignatures = {};
+  int _collectionSortRevision = 0;
+  int get collectionSortRevision => _collectionSortRevision;
+  final Map<String, int> _collectionSortGenerations = {};
 
   String playlistPinScope(String playlistId) => playlistId == Playlist.libraryId
       ? libraryPinScope
@@ -701,6 +705,23 @@ class PlaylistContentNotifier extends ChangeNotifier
       : 'playlist:$playlistId';
   String _artistSortScope(String artist) => 'artist:$artist';
   String _albumSortScope(String album) => 'album:$album';
+
+  SongSortPreference? songCollectionSortPreference({
+    required bool artist,
+    required String title,
+  }) =>
+      _songSortPreferences[artist
+          ? _artistSortScope(title)
+          : _albumSortScope(title)];
+
+  List<Song> songCollectionOrder({
+    required bool artist,
+    required String title,
+    required List<Song> songs,
+  }) => restoreSongCollectionOrder(
+    songs,
+    (artist ? _artistSortOrders : _albumSortOrders)[title],
+  );
 
   SongSortPreference? get currentSortPreference {
     return switch (_currentDetailViewContext) {
@@ -6826,22 +6847,19 @@ class PlaylistContentNotifier extends ChangeNotifier
 
     // 音轨号排序
     if (criterion == SortCriterion.trackNumber) {
-      final sortableList = <Map<String, dynamic>>[];
-      for (final path in paths) {
-        final audioInfo = await _readTrackNumberForSort(path);
-        final trackNumber = audioInfo?.trackNumber ?? 9999; // 没有音轨号的排到最后
-        sortableList.add({'path': path, 'trackNumber': trackNumber});
-      }
-
-      sortableList.sort((a, b) {
-        final trackNumberA = a['trackNumber'] as int;
-        final trackNumberB = b['trackNumber'] as int;
-
-        final result = trackNumberA.compareTo(trackNumberB);
-        return descending ? -result : result;
-      });
-
-      return sortableList.map((item) => item['path'] as String).toList();
+      final knownTracks = {
+        for (final song in _allSongs) song.filePath: song.trackNumber,
+      };
+      return sortSongPathsByTrackNumber(
+        paths: paths,
+        descending: descending,
+        readTrackNumber: (path) async {
+          final known = knownTracks[path];
+          return known != null && known > 0
+              ? known
+              : (await _readTrackNumberForSort(path))?.trackNumber;
+        },
+      );
     }
 
     // 如果是按修改日期
@@ -8687,43 +8705,55 @@ class PlaylistContentNotifier extends ChangeNotifier
       return;
     }
 
-    if (_activeSongList.isEmpty) {
-      return;
-    }
-
-    final sortedPaths = await _sortFilePaths(
-      paths: _activeSongList.map((s) => s.filePath).toList(),
+    await sortSongCollection(
+      artist: _currentDetailViewContext == DetailViewContext.artist,
+      title: _activeDetailTitle,
+      songs: _activeSongList,
       criterion: criterion,
       descending: descending,
     );
+  }
 
-    // 根据排好序的路径，更新内存中的_activeSongList
-    final Map<String, Song> songMap = {
-      for (final s in _activeSongList) s.filePath: s,
-    };
-    _activeSongList = sortedPaths.map((path) => songMap[path]!).toList();
-
-    final sortScope = _currentDetailViewContext == DetailViewContext.artist
-        ? _artistSortScope(_activeDetailTitle)
-        : _albumSortScope(_activeDetailTitle);
-    await _rememberSortPreference(sortScope, criterion, descending);
-    _sortMembershipSignatures[sortScope] = _songMembershipSignature(
-      sortedPaths,
+  Future<void> sortSongCollection({
+    required bool artist,
+    required String title,
+    required List<Song> songs,
+    required SortCriterion criterion,
+    required bool descending,
+  }) async {
+    if (songs.isEmpty || _preparationDisposed) return;
+    // A route may be closed or another collection opened while tags are read.
+    // Persist to its captured scope, never to the current global detail title.
+    final scope = artist ? _artistSortScope(title) : _albumSortScope(title);
+    final generation = (_collectionSortGenerations[scope] ?? 0) + 1;
+    _collectionSortGenerations[scope] = generation;
+    final source = List<Song>.of(songs);
+    final paths = await _sortFilePaths(
+      paths: source.map((s) => s.filePath).toList(),
+      criterion: criterion,
+      descending: descending,
     );
-
-    if (_currentDetailViewContext == DetailViewContext.artist) {
-      // 如果当前是歌手视图，更新歌手排序 Map
-      _artistSortOrders[_activeDetailTitle] = sortedPaths;
-
+    if (_preparationDisposed ||
+        _collectionSortGenerations[scope] != generation) {
+      return;
+    }
+    final orders = artist ? _artistSortOrders : _albumSortOrders;
+    orders[title] = paths;
+    _sortMembershipSignatures[scope] = _songMembershipSignature(paths);
+    final view = artist ? DetailViewContext.artist : DetailViewContext.album;
+    if (_currentDetailViewContext == view && _activeDetailTitle == title) {
+      _activeSongList = restoreSongCollectionOrder(_activeSongList, paths);
+    }
+    await _rememberSortPreference(scope, criterion, descending);
+    if (artist) {
       await _playlistManager.saveArtistSortOrders(_artistSortOrders);
-    } else if (_currentDetailViewContext == DetailViewContext.album) {
-      // 如果当前是专辑视图，更新专辑排序 Map
-      _albumSortOrders[_activeDetailTitle] = sortedPaths;
-
+    } else {
       await _playlistManager.saveAlbumSortOrders(_albumSortOrders);
     }
-
-    notifyListeners();
+    if (!_preparationDisposed) {
+      _collectionSortRevision++;
+      notifyListeners();
+    }
   }
 
   // 清理无效的排序数据（指向不存在歌曲的路径）

@@ -14,6 +14,8 @@ import 'package:myune_music/page/statistics_page/statistics_manager.dart';
 import 'package:myune_music/page/statistics_page/statistics_models.dart';
 import 'package:myune_music/services/cover_override_service.dart';
 import 'package:myune_music/widgets/song_collection_header.dart';
+import 'package:myune_music/services/song_sorting.dart';
+import 'package:myune_music/services/interaction_performance_controller.dart';
 
 class _Covers extends ChangeNotifier implements CoverOverrideService {
   @override
@@ -30,6 +32,7 @@ class _Library extends ChangeNotifier implements PlaylistContentNotifier {
       artist: i == 2 ? 'Pinned' : 'Most',
       album: i == 2 ? 'Pinned' : 'Most',
       filePath: '$i.mp3',
+      trackNumber: 3 - i,
     ),
   );
   final cover = ValueNotifier(0);
@@ -38,13 +41,42 @@ class _Library extends ChangeNotifier implements PlaylistContentNotifier {
   Song? current;
   List<Song>? played;
   final hidden = <Song>[];
+  final extra = <Song>[];
   final favorites = <Song>[];
   int groupReads = 0;
+  SongSortPreference? sortPreference;
+  List<String>? sortedOrder;
+  int sortRevision = 0;
+  @override
+  Future<void> sortSongCollection({
+    required bool artist,
+    required String title,
+    required List<Song> songs,
+    required SortCriterion criterion,
+    required bool descending,
+  }) async {
+    sortedOrder = await sortSongPathsByTrackNumber(
+      paths: songs.map((s) => s.filePath).toList(),
+      readTrackNumber: (path) async =>
+          songs.firstWhere((s) => s.filePath == path).trackNumber,
+      descending: descending,
+    );
+    sortPreference = SongSortPreference(
+      criterion: criterion,
+      descending: descending,
+    );
+    sortRevision++;
+    notifyListeners();
+  }
+
   Map<String, List<Song>> get groups {
     groupReads++;
     return {
       'Pinned': [songs.last],
-      'Most': songs.take(2).where((s) => !hidden.contains(s)).toList(),
+      'Most': [
+        ...songs.take(2),
+        ...extra,
+      ].where((s) => !hidden.contains(s)).toList(),
     };
   }
 
@@ -69,6 +101,15 @@ class _Library extends ChangeNotifier implements PlaylistContentNotifier {
       case #playlistRevision:
       case #artworkImageCacheGeneration:
         return 0;
+      case #collectionSortRevision:
+        return sortRevision;
+      case #songCollectionSortPreference:
+        return sortPreference;
+      case #songCollectionOrder:
+        return restoreSongCollectionOrder(
+          call.namedArguments[#songs] as List<Song>,
+          sortedOrder,
+        );
       case #isPinned:
         return call.positionalArguments[1] == 'Pinned';
       case #pinnedNamesFirst:
@@ -121,6 +162,10 @@ class _Library extends ChangeNotifier implements PlaylistContentNotifier {
 }
 
 void main() {
+  setUp(
+    () =>
+        InteractionPerformanceController.instance.pulse(InteractionPhase.idle),
+  );
   setUpAll(() async {
     await (FontLoader(
       'MaterialIcons',
@@ -129,6 +174,122 @@ void main() {
       'misans',
     )..addFont(rootBundle.load('assets/fonts/MiSansVF.ttf'))).load();
   });
+  for (final kind in ['歌手', '专辑']) {
+    for (final compact in [false, true]) {
+      testWidgets(
+        '$kind header remains fixed while songs scroll and footer fills the inset: compact=$compact',
+        (tester) async {
+          tester.view.devicePixelRatio = 1;
+          final size = compact ? const Size(320, 520) : const Size(390, 844);
+          tester.view.physicalSize = size;
+          addTearDown(tester.view.resetPhysicalSize);
+          addTearDown(tester.view.resetDevicePixelRatio);
+          SharedPreferences.setMockInitialValues({});
+          final settings = SettingsProvider();
+          await settings.initializationFuture;
+          final library = _Library();
+          library.current = library.songs.first;
+          addTearDown(() async {
+            await tester.pumpWidget(const SizedBox());
+            await tester.pump(const Duration(seconds: 1));
+            library.cover.dispose();
+            library.target.dispose();
+            library.skipping.dispose();
+            library.dispose();
+            settings.dispose();
+          });
+          library.extra.addAll(
+            List.generate(
+              40,
+              (i) => Song(
+                title: '额外歌曲 $i',
+                artist: 'Most',
+                album: 'Most',
+                filePath: 'extra$i.mp3',
+              ),
+            ),
+          );
+          final stats = StatisticsManager();
+          stats.statisticsData.updateStats({
+            '0.mp3': SongPlayStat(
+              title: '歌曲 0',
+              artist: 'Most',
+              album: 'Most',
+              path: '0.mp3',
+              playCount: 8,
+            ),
+          });
+          final capture = GlobalKey();
+          await tester.pumpWidget(
+            MultiProvider(
+              providers: [
+                ChangeNotifierProvider.value(value: settings),
+                ChangeNotifierProvider<PlaylistContentNotifier>.value(
+                  value: library,
+                ),
+                ChangeNotifierProvider<CoverOverrideService>.value(
+                  value: _Covers(),
+                ),
+                ChangeNotifierProvider.value(value: stats),
+              ],
+              child: MaterialApp(
+                theme: ThemeData.dark(),
+                builder: (_, child) => MediaQuery(
+                  data: MediaQueryData(
+                    size: size,
+                    textScaler: TextScaler.linear(compact ? 1.8 : 1),
+                    padding: const EdgeInsets.only(top: 24, bottom: 24),
+                    viewPadding: const EdgeInsets.only(top: 24, bottom: 24),
+                  ),
+                  child: RepaintBoundary(key: capture, child: child!),
+                ),
+                home: Scaffold(
+                  body: SongGroupTab(kind: kind, useHomeTheme: false),
+                ),
+              ),
+            ),
+          );
+          await tester.pump(const Duration(milliseconds: 700));
+          await tester.tap(find.byKey(ValueKey('$kind-featured-group')));
+          await tester.pumpAndSettle();
+          final header = find.byKey(const ValueKey('collection-detail-header'));
+          final before = tester.getRect(header);
+          final list = find.byType(Scrollable).last;
+          await tester.drag(list, const Offset(0, -420));
+          await tester.pumpAndSettle();
+          expect(tester.getRect(header), before);
+          expect(
+            tester.state<ScrollableState>(list).position.pixels,
+            greaterThan(300),
+          );
+          await tester.runAsync(() async {
+            final image =
+                await (capture.currentContext!.findRenderObject()
+                        as RenderRepaintBoundary)
+                    .toImage();
+            final rgba = (await image.toByteData(
+              format: ui.ImageByteFormat.rawRgba,
+            ))!.buffer.asUint8List();
+            final bottom = ((image.height - 2) * image.width + 5) * 4;
+            final player = ((image.height - 26) * image.width + 5) * 4;
+            expect(
+              rgba.sublist(bottom, bottom + 4),
+              rgba.sublist(player, player + 4),
+            );
+            image.dispose();
+          });
+          await tester.ensureVisible(find.byTooltip('播放全部'));
+          await tester.tap(find.byTooltip('播放全部'));
+          await tester.pumpAndSettle();
+          expect(library.played, hasLength(42));
+          InteractionPerformanceController.instance.pulse(
+            InteractionPhase.idle,
+          );
+          expect(tester.takeException(), isNull);
+        },
+      );
+    }
+  }
   for (final kind in ['歌手', '专辑']) {
     testWidgets(
       '$kind featured priority, live details, playback and list actions',
@@ -219,11 +380,46 @@ void main() {
           findsOneWidget,
         );
         expect(find.text('已收听 8 次'), findsOneWidget);
+        final toolbar = find.byKey(const ValueKey('collection-detail-toolbar'));
+        final header = find.byKey(const ValueKey('collection-detail-header'));
+        expect(
+          tester.getRect(toolbar).bottom,
+          lessThanOrEqualTo(tester.getRect(header).top),
+        );
+        expect(
+          find.descendant(of: toolbar, matching: find.byTooltip('返回主页')),
+          findsOneWidget,
+        );
+        await tester.tap(find.byTooltip('排序歌曲'));
+        await tester.pumpAndSettle();
+        await tester.ensureVisible(find.text('按音轨号排序'));
+        await tester.tap(find.text('按音轨号排序'));
+        await tester.tap(find.text('应用排序'));
+        await tester.pumpAndSettle();
+        expect(library.sortPreference!.criterion, SortCriterion.trackNumber);
+        expect(
+          tester.getTopLeft(find.text('歌曲 1')).dy,
+          lessThan(tester.getTopLeft(find.text('歌曲 0')).dy),
+        );
+        await picture('sorted');
         await tester.tap(find.byTooltip('播放全部'));
         await tester.pumpAndSettle();
         expect(library.played!.length, 2);
+        expect(library.played!.first.filePath, '1.mp3');
         expect(find.byTooltip('返回主页'), findsOneWidget);
         await picture('details');
+        await tester.tap(find.byTooltip('返回主页'));
+        await tester.pumpAndSettle();
+        await tester.tap(featured);
+        await tester.pumpAndSettle();
+        await tester.tap(find.byTooltip('排序歌曲'));
+        await tester.pumpAndSettle();
+        final radio = tester.widget<RadioGroup<SortCriterion>>(
+          find.byType(RadioGroup<SortCriterion>),
+        );
+        expect(radio.groupValue, SortCriterion.trackNumber);
+        await tester.tap(find.text('取消'));
+        await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('多选'));
         await tester.pumpAndSettle();
         await tester.tap(find.byTooltip('全选'));

@@ -56,7 +56,7 @@ class ThemeConfigurationPage extends StatelessWidget {
       child: CustomThemeBackground(
         path: path,
         enabled: custom,
-        dim: .40,
+        dim: settings.homeThemeImageDim,
         brightnessOverride: Brightness.dark,
         blurSigma: settings.homeThemeImageBlur,
         child: Scaffold(
@@ -64,10 +64,7 @@ class ThemeConfigurationPage extends StatelessWidget {
           appBar: AppBar(
             title: const Text('主题配置'),
             backgroundColor: Colors.transparent,
-            flexibleSpace: const HomePlaylistSurface(
-              cornerRadius: 0,
-              child: SizedBox.expand(),
-            ),
+            surfaceTintColor: Colors.transparent,
             elevation: 0,
             scrolledUnderElevation: 0,
           ),

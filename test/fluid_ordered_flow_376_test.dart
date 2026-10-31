@@ -40,150 +40,116 @@ void main() {
       );
     },
   );
-  testWidgets('four connected colour fields circulate around the centre', (
-    tester,
-  ) async {
-    await tester.runAsync(() async {
-      final shader = (await ui.FragmentProgram.fromAsset(
-        'shaders/fluid_background.frag',
-      )).fragmentShader();
-      try {
-        for (final size in [const Size(96, 160), const Size(160, 96)]) {
-          final width = size.width.toInt(), height = size.height.toInt();
-          double? previousAngle;
-          var rotation = 0.0;
-          var minimumTurn = double.infinity, maximumTurn = 0.0;
-          for (var step = 0; step < 32; step++) {
-            final time = fluidOrbitPeriod * step / 32;
-            final packed = FluidFrameUniforms();
-            packed.write(
-              shader,
-              size: size,
-              time: time,
-              motion: 1,
-              dim: .3,
-              source: _diagnostic,
-              target: _diagnostic,
-            );
-            final decoder = _pigmentDecoder(packed.values);
-            final pixels = await _render(
-              shader,
-              _diagnostic,
-              size: size,
-              time: time,
-            );
-            final labels = Uint8List(width * height);
-            final fieldLabels = Uint8List(width * height);
-            final fieldCounts = [0, 0, 0, 0];
-            final counts = [0, 0, 0, 0];
-            var redX = 0.0, redY = 0.0;
-            for (var y = 0; y < height; y++) {
-              for (var x = 0; x < width; x++) {
-                final i = (y * width + x) * 4;
-                final ux = (x + .5) / width, uy = (y + .5) / height;
-                final fieldWeights = fluidReferenceWeights(
-                  packed.values,
-                  ux,
-                  uy,
-                );
-                final coverage = fluidReferenceCoverage(fieldWeights);
-                var fieldWinner = 0;
-                for (var field = 1; field < 4; field++) {
-                  if (fieldWeights[field] > fieldWeights[fieldWinner]) {
-                    fieldWinner = field;
+  testWidgets(
+    'crossing colour fields retain coverage and travel across the screen',
+    (tester) async {
+      await tester.runAsync(() async {
+        final shader = (await ui.FragmentProgram.fromAsset(
+          'shaders/fluid_background.frag',
+        )).fragmentShader();
+        try {
+          for (final size in [const Size(96, 160), const Size(160, 96)]) {
+            final width = size.width.toInt(), height = size.height.toInt();
+            var minX = 1.0, minY = 1.0, maxX = 0.0, maxY = 0.0;
+            for (var step = 0; step < 32; step++) {
+              final time = fluidPhaseCycle * step / 32;
+              final packed = FluidFrameUniforms();
+              packed.write(
+                shader,
+                size: size,
+                time: time,
+                motion: 1,
+                dim: .3,
+                source: _diagnostic,
+                target: _diagnostic,
+              );
+              final decoder = _pigmentDecoder(packed.values);
+              final pixels = await _render(
+                shader,
+                _diagnostic,
+                size: size,
+                time: time,
+              );
+              final labels = Uint8List(width * height);
+              final counts = [0, 0, 0, 0];
+              var redX = 0.0, redY = 0.0;
+              for (var y = 0; y < height; y++) {
+                for (var x = 0; x < width; x++) {
+                  final i = (y * width + x) * 4;
+                  final ux = (x + .5) / width, uy = (y + .5) / height;
+                  final fieldWeights = fluidReferenceWeights(
+                    packed.values,
+                    ux,
+                    uy,
+                  );
+                  final coverage = fluidReferenceCoverage(fieldWeights);
+                  if (coverage < .035) {
+                    labels[y * width + x] = 4;
+                    expect(pixels[i + 3], 255);
+                    continue;
                   }
-                }
-                fieldLabels[y * width + x] = fieldWinner;
-                fieldCounts[fieldWinner]++;
-                if (coverage < .035) {
-                  labels[y * width + x] = 4;
+                  final edge =
+                      ((math.sqrt(
+                                    math.pow(ux - .5, 2) +
+                                        math.pow(uy - .48, 2),
+                                  ) -
+                                  .35) /
+                              .75)
+                          .clamp(0.0, 1.0);
+                  final veil =
+                      .84 * (1 - .02 * edge * edge * (3 - 2 * edge)) * .925;
+                  final rgb = [
+                    pixels[i] / (255 * veil),
+                    pixels[i + 1] / (255 * veil),
+                    pixels[i + 2] / (255 * veil),
+                    1.0,
+                  ];
+                  // RGB+yellow is affine-independent. Recover each field's
+                  // contribution, rather than mislabelling a soft yellow/red
+                  // join as a second red field just because red is brightest.
+                  final channels = List<double>.generate(4, (c) {
+                    var weight = 0.0;
+                    for (var j = 0; j < 4; j++) {
+                      weight += decoder[c][j] * rgb[j];
+                    }
+                    return weight;
+                  });
+                  var strongest = 0;
+                  for (var c = 1; c < 4; c++) {
+                    if (channels[c] > channels[strongest]) strongest = c;
+                  }
+                  labels[y * width + x] = strongest;
+                  counts[strongest]++;
+                  if (strongest == 0) {
+                    redX += (x + .5) / width;
+                    redY += (y + .5) / height;
+                  }
                   expect(pixels[i + 3], 255);
-                  continue;
                 }
-                final edge =
-                    ((math.sqrt(math.pow(ux - .5, 2) + math.pow(uy - .48, 2)) -
-                                .35) /
-                            .75)
-                        .clamp(0.0, 1.0);
-                final veil =
-                    .84 * (1 - .02 * edge * edge * (3 - 2 * edge)) * .925;
-                final rgb = [
-                  pixels[i] / (255 * veil),
-                  pixels[i + 1] / (255 * veil),
-                  pixels[i + 2] / (255 * veil),
-                  1.0,
-                ];
-                // RGB+yellow is affine-independent. Recover each field's
-                // contribution, rather than mislabelling a soft yellow/red
-                // join as a second red field just because red is brightest.
-                final channels = List<double>.generate(4, (c) {
-                  var weight = 0.0;
-                  for (var j = 0; j < 4; j++) {
-                    weight += decoder[c][j] * rgb[j];
-                  }
-                  return weight;
-                });
-                var strongest = 0;
-                for (var c = 1; c < 4; c++) {
-                  if (channels[c] > channels[strongest]) strongest = c;
-                }
-                labels[y * width + x] = strongest;
-                counts[strongest]++;
-                if (strongest == 0) {
-                  redX += (x + .5) / width;
-                  redY += (y + .5) / height;
-                }
-                expect(pixels[i + 3], 255);
               }
-            }
-            for (var c = 0; c < 4; c++) {
-              expect(counts[c], lessThan(width * height * .70));
-              // Transferred pigment can appear on a recipient's edge. The
-              // original field must stay connected; coloured ink need not
-              // remain confined to that field after deliberate transmission.
-              if (fieldCounts[c] > 4) {
-                _checkConnected(fieldLabels, width, height, c);
+              for (var c = 0; c < 4; c++) {
+                expect(counts[c], lessThan(width * height * .70));
+                // Free crossing can occlude/split a field's dominant region.
+                // Keep the coverage guard, without requiring a circular order.
               }
+              if (counts[0] == 0) continue;
+              minX = math.min(minX, redX / counts[0]);
+              maxX = math.max(maxX, redX / counts[0]);
+              minY = math.min(minY, redY / counts[0]);
+              maxY = math.max(maxY, redY / counts[0]);
             }
-            if (counts[0] == 0) continue;
-            final angle = math.atan2(
-              redY / counts[0] - .5,
-              redX / counts[0] - .5,
+            expect(maxX - minX, greaterThan(.45));
+            expect(maxY - minY, greaterThan(.45));
+            debugPrint(
+              'Crossing $size: centroid X=$minX..$maxX, Y=$minY..$maxY',
             );
-            if (previousAngle != null) {
-              var delta = angle - previousAngle;
-              while (delta < -math.pi) {
-                delta += math.pi * 2;
-              }
-              while (delta > math.pi) {
-                delta -= math.pi * 2;
-              }
-              rotation += delta;
-              minimumTurn = math.min(minimumTurn, delta);
-              maximumTurn = math.max(maximumTurn, delta);
-            }
-            previousAngle = angle;
           }
-          expect(rotation, greaterThan(5.5), reason: 'not a fixed stripe');
-          expect(rotation, lessThan(7));
-          // The source orbit is monotonic; a clipped, breathing physical colour
-          // region can move its centroid slightly backwards at the viewport edge.
-          expect(minimumTurn, greaterThan(-.10));
-          expect(
-            maximumTurn - minimumTurn,
-            greaterThan(.15),
-            reason: 'visible angular speed is not fixed',
-          );
-          debugPrint(
-            'Orbit $size: centroid rotation=$rotation, '
-            'angular step range=$minimumTurn..$maximumTurn',
-          );
+        } finally {
+          shader.dispose();
         }
-      } finally {
-        shader.dispose();
-      }
-    });
-  });
+      });
+    },
+  );
 
   testWidgets('colour joins stay broad and frames move without snapping', (
     tester,

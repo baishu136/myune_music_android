@@ -4,42 +4,7 @@ import 'dart:ui' as ui;
 
 import '../../models/fluid_background_state.dart';
 import 'fluid_colour_motion.dart';
-
-// Integral of a triangular speed ramp. Only the small windows around its
-// extrema round the acceleration; the remaining ~19 seconds are linear.
-double _orbitRamp(double phase) {
-  const strength = .4, corner = .12;
-  final cycle = phase % (2 * math.pi);
-  final x = cycle > math.pi ? cycle - math.pi : cycle;
-  double integral;
-  if (x < corner) {
-    integral =
-        -strength * x +
-        strength * corner * x / math.pi +
-        strength * x * x * x / (3 * math.pi * corner);
-  } else if (x > math.pi - corner) {
-    final z = x - math.pi;
-    integral =
-        (strength - strength * corner / math.pi) * z -
-        strength * z * z * z / (3 * math.pi * corner);
-  } else {
-    integral =
-        -strength * x +
-        strength * x * x / math.pi +
-        strength * corner * corner / (3 * math.pi);
-  }
-  return cycle > math.pi ? -integral : integral;
-}
-
-/// Positive, frame-rate independent speed with long linear ramps and no
-/// position or velocity discontinuity at the cycle seam.
-double fluidOrbitAngle(double orbit, int field, double amplitude) {
-  final offset = field * math.pi / 2;
-  final stagger = field * .20;
-  return orbit +
-      offset +
-      amplitude * (_orbitRamp(orbit + stagger) - _orbitRamp(stagger));
-}
+import 'fluid_field_travel.dart';
 
 /// Matches the shader: size(2), motion/dim(2), phases(2), centres(8),
 /// pigments(12), base(3), shape matrices(16). Reuses all buffers.
@@ -104,8 +69,6 @@ class FluidFrameUniforms {
     final phase2 =
         orbit + .26 * math.sin(orbit + 2.1) + .04 * math.sin(2 * orbit + .8);
     final amplitude = motion.clamp(0.0, 1.0);
-    final hubX = .5 + amplitude * .11 * math.sin(orbit + .9);
-    final hubY = .5 + amplitude * .10 * math.cos(orbit - .4);
     final shortSide = math.min(size.width, size.height);
     final radiusBase = math.min(.52, size.longestSide / shortSide / (3 * 1.16));
     values[0] = size.width;
@@ -116,14 +79,8 @@ class FluidFrameUniforms {
     values[5] = phase2;
     for (var field = 0; field < 4; field++) {
       final offset = field * math.pi / 2;
-      final angle = fluidOrbitAngle(orbit, field, amplitude);
-      final radius =
-          .46 +
-          amplitude *
-              (.26 * math.sin(orbit + offset + .7) +
-                  .06 * math.sin(2 * orbit - offset));
-      values[6 + field * 2] = hubX + radius * math.cos(angle);
-      values[7 + field * 2] = hubY + radius * math.sin(angle) * 1.08;
+      final colourPhase = fluidColourPhase(orbit, field) * 2 / math.pi;
+      writeFluidFieldPosition(values, field, time, colourPhase, amplitude);
       final radiusX =
           radiusBase *
           (1 + .16 * amplitude * math.sin(shapePhase + offset + .8));
@@ -137,7 +94,10 @@ class FluidFrameUniforms {
       values[shape + 1] = sine / radiusX;
       values[shape + 2] = -sine / radiusY;
       values[shape + 3] = cosine / radiusY;
-      final colourPosition = fluidColourPosition(time, field);
+      final wrappedPosition = colourPhase % fluidMotionColourCount;
+      final colourPosition = wrappedPosition >= fluidMotionColourCount
+          ? 0.0
+          : wrappedPosition;
       final variant = colourPosition.floor();
       final nextVariant = (variant + 1) % fluidMotionColourCount;
       // Quintic smoothstep gives zero endpoint velocity with continuously varying

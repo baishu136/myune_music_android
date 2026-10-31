@@ -27,7 +27,8 @@ float pigmentWeight(vec2 point, vec2 centre, vec4 shape) {
   // Bounded asymmetric curvature without extra pixel sine, noise or texture.
   float bend = uMotion / (1.0 + dot(delta, delta));
   delta += bend * vec2(0.20 * delta.y * delta.y, 0.16 * delta.x * delta.y);
-  float falloff = 1.0 / (1.0 + dot(delta, delta));
+  // Widen the overlap by 25% without changing centres, deformation or motion.
+  float falloff = 1.0 / (1.0 + 0.64 * dot(delta, delta));
   // Convex, open fields retain the wide edge while reducing distant pigment
   // contamination of dark centres; no additive whitening or layered enclosure.
   return falloff * falloff * (0.65 + 0.35 * falloff);

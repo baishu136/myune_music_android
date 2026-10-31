@@ -5,6 +5,34 @@ import 'package:myune_music/services/song_group_presentation.dart';
 import 'package:myune_music/widgets/song_collection_header.dart';
 
 void main() {
+  testWidgets(
+    'phone detail header is 25 percent smaller with adjacent metadata',
+    (tester) async {
+      tester.view.physicalSize = const Size(390, 844);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      const art = ValueKey('detail-cover-size');
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: SongCollectionHeader(
+              title: 'The Weeknd',
+              songCount: 45,
+              playCount: 782,
+              artwork: ColoredBox(key: art, color: Colors.teal),
+            ),
+          ),
+        ),
+      );
+      final cover = tester.getRect(find.byKey(art));
+      expect(cover.width, closeTo((390 - 32) * .44 * .75, .01));
+      expect(
+        tester.getTopLeft(find.text('The Weeknd')).dx,
+        greaterThan(cover.right),
+      );
+    },
+  );
   test('featured group uses combined listens and ignores prior pin order', () {
     Song song(String path) =>
         Song(title: path, artist: '', album: '', filePath: path);

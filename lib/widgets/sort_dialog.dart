@@ -47,42 +47,40 @@ class _SortDialogState extends State<SortDialog> {
                 _selectedCriterion = value ?? _selectedCriterion;
                 if (_usesFixedOrder) _isDescending = false;
               }),
-              child: Column(
+              child: const Column(
                 children: [
-                  const RadioListTile<SortCriterion>(
+                  RadioListTile<SortCriterion>(
                     title: Text('按歌曲名'),
                     value: SortCriterion.title,
                   ),
-                  const RadioListTile<SortCriterion>(
+                  RadioListTile<SortCriterion>(
                     title: Text('按文件名'),
                     value: SortCriterion.file,
                   ),
-                  const RadioListTile<SortCriterion>(
+                  RadioListTile<SortCriterion>(
                     title: Text('按歌手名'),
                     value: SortCriterion.artist,
                   ),
-                  const RadioListTile<SortCriterion>(
+                  RadioListTile<SortCriterion>(
                     title: Text('按修改日期'),
                     value: SortCriterion.dateModified,
                   ),
-                  const RadioListTile<SortCriterion>(
+                  RadioListTile<SortCriterion>(
                     title: Text('按播放次数排序'),
                     value: SortCriterion.playCount,
                   ),
-                  const RadioListTile<SortCriterion>(
+                  RadioListTile<SortCriterion>(
                     title: Text('按播放时间排序'),
                     value: SortCriterion.playTime,
                   ),
-                  const RadioListTile<SortCriterion>(
+                  RadioListTile<SortCriterion>(
                     title: Text('随机排序'),
                     value: SortCriterion.random,
                   ),
-                  // 仅在专辑视图中显示音轨号排序选项
-                  if (widget.isAlbumView)
-                    const RadioListTile<SortCriterion>(
-                      title: Text('按音轨号'),
-                      value: SortCriterion.trackNumber,
-                    ),
+                  RadioListTile<SortCriterion>(
+                    title: Text('按音轨号排序'),
+                    value: SortCriterion.trackNumber,
+                  ),
                 ],
               ),
             ),

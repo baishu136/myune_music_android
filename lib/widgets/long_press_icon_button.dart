@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart';
 import 'playback_interaction_guard.dart';
+import 'interaction_motion.dart';
 
 class LongPressIconButton extends StatefulWidget {
   const LongPressIconButton({
@@ -60,12 +61,14 @@ class _LongPressIconButtonState extends State<LongPressIconButton> {
                 },
               ),
         },
-        child: IconButton(
-          icon: widget.icon,
-          color: widget.color,
-          onPressed: () {
-            if (_guard.allows) widget.onPressed();
-          },
+        child: ButtonPressMotion(
+          child: IconButton(
+            icon: widget.icon,
+            color: widget.color,
+            onPressed: () {
+              if (_guard.allows) widget.onPressed();
+            },
+          ),
         ),
       ),
     ),

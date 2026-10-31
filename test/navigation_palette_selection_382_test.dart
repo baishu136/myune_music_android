@@ -11,7 +11,8 @@ import 'package:myune_music/widgets/android_system_bars.dart';
 import 'package:myune_music/widgets/home_glass_surface.dart';
 import 'package:myune_music/widgets/fullscreen_swipe_song_hint.dart';
 import 'package:myune_music/widgets/song_selection_actions.dart';
-import 'package:myune_music/widgets/playback_background/fluid_frame_uniforms.dart';
+import 'package:myune_music/models/fluid_background_state.dart';
+import 'package:myune_music/widgets/playback_background/fluid_field_travel.dart';
 
 void main() {
   testWidgets('hint handoff during fade-in retains its current translation', (
@@ -97,36 +98,26 @@ void main() {
     expect(visibility.restore(['/Music/A.flac'], ['a']), isFalse);
   });
 
-  test('each orbit varies speed gradually with continuous cycle velocity', () {
-    const h = .0001;
-    double velocity(double t, int field) =>
-        (fluidOrbitAngle(t + h, field, 1) - fluidOrbitAngle(t - h, field, 1)) /
-        (2 * h);
+  test('independent fields return from 3.5x to normal speed without steps', () {
     for (var field = 0; field < 4; field++) {
       var minimum = double.infinity, maximum = 0.0;
-      var previous = velocity(0, field);
-      for (var step = 1; step <= 1200; step++) {
-        final t = 2 * math.pi * step / 1200;
-        final current = velocity(t, field);
+      var previous = fluidTravelSpeed(0, field);
+      for (var step = 1; step <= 12000; step++) {
+        final t = fluidOrbitPeriod * step / 12000;
+        final current = fluidTravelSpeed(t, field);
         minimum = math.min(minimum, current);
         maximum = math.max(maximum, current);
-        // No speed step; at .15 radians/s this spans ~35ms per sample.
-        expect((current - previous).abs(), lessThan(.003));
+        expect((current - previous).abs(), lessThan(.02));
         previous = current;
       }
-      expect(minimum, greaterThan(.51));
-      expect(maximum, lessThan(1.49));
-      expect(maximum - minimum, greaterThan(.45));
+      expect(minimum, closeTo(1, .00001));
+      expect(maximum, closeTo(3.5, .00001));
       expect(
-        velocity(0, field),
-        closeTo(velocity(2 * math.pi, field), .000001),
-      );
-      expect(
-        fluidOrbitAngle(2 * math.pi, field, 1) - fluidOrbitAngle(0, field, 1),
-        closeTo(2 * math.pi, .000001),
+        fluidTravelSpeed(0, field),
+        closeTo(fluidTravelSpeed(fluidPhaseCycle, field), .000001),
       );
     }
-    expect(velocity(1, 0), isNot(closeTo(velocity(1, 1), .01)));
+    expect(fluidTravelSpeed(1, 0), isNot(closeTo(fluidTravelSpeed(1, 1), .01)));
   });
 
   testWidgets('selection toolbar independently dispatches hide and restore', (

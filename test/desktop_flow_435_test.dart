@@ -97,7 +97,7 @@ Future<void> _open(WidgetTester tester, _Library model) async {
 
 void main() {
   testWidgets(
-    'theme configuration keeps transparent card shells, a forty percent mask and theme foreground',
+    'theme configuration uses the saved mask, transparent app bar and theme foreground',
     (tester) async {
       late Directory temporary;
       late File background;
@@ -137,7 +137,8 @@ void main() {
       final surface = tester.widget<CustomThemeBackground>(
         find.byType(CustomThemeBackground),
       );
-      expect(surface.dim, .4);
+      expect(surface.dim, .8);
+      expect(tester.widget<AppBar>(find.byType(AppBar)).flexibleSpace, isNull);
       expect(surface.brightnessOverride, Brightness.dark);
       expect(
         tester
@@ -150,6 +151,14 @@ void main() {
         ThemeData(brightness: Brightness.light).colorScheme.onSurface,
       );
       expect(settings.homeThemeImageDim, .8);
+      await settings.setHomeThemeImageDim(.35);
+      await tester.pumpAndSettle();
+      expect(
+        tester
+            .widget<CustomThemeBackground>(find.byType(CustomThemeBackground))
+            .dim,
+        .35,
+      );
       await _capture(tester, capture, 'theme-configuration');
       await tester.pumpWidget(const SizedBox());
       settings.dispose();

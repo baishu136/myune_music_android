@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'playback_interaction_guard.dart';
+import 'interaction_motion.dart';
 
 class TransportSkipButton extends StatefulWidget {
   const TransportSkipButton({
@@ -25,6 +26,8 @@ class TransportSkipButton extends StatefulWidget {
 class _TransportSkipButtonState extends State<TransportSkipButton> {
   Timer? _repeat;
   bool _busy = false;
+  bool _holding = false, _disposing = false;
+  int _pulse = 0;
   VoidCallback? _releaseHold;
   late final PlaybackInteractionGuard _guard;
 
@@ -40,6 +43,10 @@ class _TransportSkipButtonState extends State<TransportSkipButton> {
     final release = _releaseHold;
     _releaseHold = null;
     release?.call();
+    if (_holding) {
+      _holding = false;
+      if (mounted && !_disposing) setState(() {});
+    }
   }
 
   Future<void> _skip() async {
@@ -49,6 +56,7 @@ class _TransportSkipButtonState extends State<TransportSkipButton> {
       return;
     }
     _busy = true;
+    if (!_holding) setState(() => _pulse++);
     try {
       await widget.onSkip();
     } catch (error, stack) {
@@ -71,6 +79,7 @@ class _TransportSkipButtonState extends State<TransportSkipButton> {
     if (!_guard.allows) return;
     _releaseHold = widget.onHoldStart?.call();
     _repeat = Timer.periodic(const Duration(milliseconds: 600), (_) => _skip());
+    setState(() => _holding = true);
     unawaited(_skip());
   }
 
@@ -82,6 +91,7 @@ class _TransportSkipButtonState extends State<TransportSkipButton> {
 
   @override
   void dispose() {
+    _disposing = true;
     _stop();
     _guard.dispose();
     super.dispose();
@@ -105,7 +115,20 @@ class _TransportSkipButtonState extends State<TransportSkipButton> {
         onLongPressStart: (_) => _start(),
         onLongPressEnd: (_) => _stop(),
         onLongPressCancel: _stop,
-        child: IconButton(icon: Icon(widget.icon, size: 38), onPressed: _skip),
+        child: ButtonPressMotion(
+          enabled: !_holding,
+          child: IconButton(
+            icon: ActionMotionIcon(
+              trigger: _pulse,
+              enabled: !_holding,
+              kind: widget.icon == Icons.skip_previous
+                  ? IconMotion.previous
+                  : IconMotion.next,
+              child: Icon(widget.icon, size: 38),
+            ),
+            onPressed: _skip,
+          ),
+        ),
       ),
     ),
   );
