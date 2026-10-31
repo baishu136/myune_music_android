@@ -27,6 +27,13 @@ mpv_audio_kit.md
 # is commented out by default.
 #.vscode/
 
+# Local collaboration notes and development history stay on this machine.
+/AGENTS.md
+/.vscode/
+/docs/*
+!/docs/github_release_catalog_*.json
+!/docs/github_release_notes_*.md
+
 # Flutter/Dart/Pub related
 **/doc/api/
 **/ios/Flutter/.last_build_id
