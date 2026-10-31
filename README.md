@@ -202,3 +202,12 @@ Windows 也可直接执行 `powershell -ExecutionPolicy Bypass -File tool/build_
 * 相关许可协议请查阅：[MiSans 字体知识产权使用许可协议](https://hyperos.mi.com/font-download/MiSans%E5%AD%97%E4%BD%93%E7%9F%A5%E8%AF%86%E4%BA%A7%E6%9D%83%E8%AE%B8%E5%8F%AF%E5%8D%8F%E8%AE%AE.pdf)
 * MiSans 官网：[https://hyperos.mi.com/font/](https://hyperos.mi.com/font/)
 
+## ☕ 赞助与支持
+
+如果您觉得 Myune Music Android 对您有所帮助，欢迎赞助支持作者！您的支持是项目持续维护与带来更多新特性的最大动力。
+
+| 微信支付 (WeChat Pay) | 支付宝 (Alipay) |
+| :---: | :---: |
+| <img src="screenshot/sponsor_wechat.jpg" width="260" alt="微信支付" /> | <img src="screenshot/sponsor_alipay.jpg" width="260" alt="支付宝" /> |
+
+
