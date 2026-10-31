@@ -10,12 +10,12 @@ void main() {
   test(
     'changelog covers the first Android release through the current build',
     () {
-      expect(projectChangelogEntries.first.version, '1.0.0-android.412');
+      expect(projectChangelogEntries.first.version, '1.0.0-android.441');
       expect(projectChangelogEntries.last.version, '0.9.2-android.1');
       expect(projectChangelogEntries.last.date, '2026-08-08');
-      expect(projectReleaseCount, 20);
-      expect(githubReleaseEffectiveChangeCounts, hasLength(20));
-      expect(projectEffectiveChangeCount, 169);
+      expect(projectReleaseCount, 21);
+      expect(githubReleaseEffectiveChangeCounts, hasLength(21));
+      expect(projectEffectiveChangeCount, 191);
       expect(projectChangeItemCount, greaterThan(0));
       expect(
         projectChangeItemCount,
@@ -53,7 +53,7 @@ void main() {
       );
 
       expect(boundary, greaterThanOrEqualTo(0));
-      expect(projectChangelogSince099.first.version, '1.0.0-android.412');
+      expect(projectChangelogSince099.first.version, '1.0.0-android.441');
       expect(projectChangelogSince099.last.version, projectChangelog099Version);
       expect(
         projectChangelogSince099,
@@ -94,7 +94,7 @@ void main() {
       final catalog =
           jsonDecode(
                 File(
-                  'docs/github_release_catalog_20261018.json',
+                  'docs/github_release_catalog_20261031.json',
                 ).readAsStringSync(),
               )
               as Map<String, dynamic>;
@@ -104,7 +104,7 @@ void main() {
         catalog['targetTag'],
         ...published.map((release) => release['tag']),
       ];
-      expect(published, hasLength(19));
+      expect(published, hasLength(20));
       expect(projectChangelogEntries.map((entry) => 'v${entry.version}'), tags);
       expect(tags.toSet(), hasLength(tags.length));
       expect(projectChangelogEntries.first.date, catalog['targetDate']);
@@ -114,7 +114,7 @@ void main() {
         );
         expect(entry.date, release['date']);
       }
-      expect(projectChangelogSince099, hasLength(5));
+      expect(projectChangelogSince099, hasLength(6));
       expect(projectEffectiveChangeCount, projectChangeItemCount);
     },
   );
@@ -124,16 +124,16 @@ void main() {
     () {
       final current = projectChangelogEntries.first;
       final notes = File(
-        'docs/github_release_notes_android_412.md',
+        'docs/github_release_notes_android_441.md',
       ).readAsStringSync();
       for (final item in current.allItems) {
         expect(notes, contains('- $item'));
       }
       final text = current.allItems.join('\n');
-      expect(text, contains('0.6秒'));
-      expect(text, contains('半秒'));
-      expect(text, contains('圆形选择按钮'));
-      expect(text, contains('20%'));
+      expect(text, contains('关闭后统一生效'));
+      expect(text, contains('最大字号提高至60'));
+      expect(text, contains('歌词同步校准'));
+      expect(text, contains('蓝牙'));
       expect(text, isNot(contains('128种')));
       expect(text, isNot(contains('72%')));
       expect(
@@ -147,6 +147,49 @@ void main() {
       );
       expect(patched325.date, '2026-09-22');
       expect(patched325.fixes.join(), contains('文件类型过滤器'));
+      final previous = projectChangelogEntries.singleWhere(
+        (entry) => entry.version == '1.0.0-android.412',
+      );
+      final oldNotes = File(
+        'docs/github_release_notes_android_412.md',
+      ).readAsStringSync();
+      for (final item in previous.allItems) {
+        expect(oldNotes, contains('- $item'));
+      }
+    },
+  );
+
+  test(
+    'new release notes describe user experience without engineering logs',
+    () {
+      final current = projectChangelogEntries.first;
+      final notes = File(
+        'docs/github_release_notes_android_441.md',
+      ).readAsStringSync();
+      final headings = RegExp(
+        r'^## (.+)$',
+        multiLine: true,
+      ).allMatches(notes).map((match) => match.group(1)).toList();
+      expect(headings, ['新功能', '修复', '优化']);
+      expect(
+        RegExp(r'^- ', multiLine: true).allMatches(notes),
+        hasLength(current.allItems.length),
+      );
+      for (final term in [
+        'Shader',
+        'Ticker',
+        'JNI',
+        'PCM',
+        '缓存',
+        '线程',
+        '单测',
+        '测试数量',
+        '构建耗时',
+        'SHA256',
+        '重构',
+      ]) {
+        expect(notes, isNot(contains(term)), reason: term);
+      }
     },
   );
 
@@ -155,7 +198,8 @@ void main() {
     (tester) async {
       await tester.pumpWidget(const MaterialApp(home: ProjectChangelogPage()));
       await tester.pumpAndSettle();
-      expect(find.text('1.0.0-android.412'), findsOneWidget);
+      expect(find.text('1.0.0-android.441'), findsOneWidget);
+      expect(find.text('1.0.0-android.440'), findsNothing);
       expect(find.text('1.0.0-android.411'), findsNothing);
       expect(find.text('1.0.0-android.410'), findsNothing);
       expect(tester.takeException(), isNull);
