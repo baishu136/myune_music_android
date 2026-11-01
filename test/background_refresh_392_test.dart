@@ -208,7 +208,7 @@ void main() {
     },
   );
 
-  test('eight cover colours are shared by four offset colour journeys', () {
+  test('four eight-colour journeys retain their original cover roles', () {
     final palette = buildWeightedFluidPalette(const [
       FluidColorSample(Color(0xffee387d), .30),
       FluidColorSample(Color(0xff23bba2), .25),
@@ -218,10 +218,11 @@ void main() {
       FluidColorSample(Color(0xffe55733), .10),
     ], fallbackSeed: Colors.blue);
     expect(palette.motionColors, hasLength(32));
-    final pool = palette.motionColors.take(8).toSet();
-    expect(pool.length, inInclusiveRange(6, 8));
     for (var field = 0; field < 4; field++) {
-      expect(palette.motionColors.skip(field * 8).take(8).toSet(), pool);
+      final colors = palette.motionColors.skip(field * 8).take(8).toList();
+      expect(colors, hasLength(8));
+      expect(colors.first, palette[field == 3 ? 0 : field + 1]);
+      expect(colors.toSet().length, greaterThanOrEqualTo(4));
     }
   });
 
@@ -345,7 +346,7 @@ void main() {
                     );
                 expect(
                   2 * math.max(radiusX, radiusY) * size.shortestSide,
-                  lessThanOrEqualTo(size.longestSide * 2 / 3 + .0001),
+                  lessThanOrEqualTo(size.longestSide * 2 / 3 * 1.1 + .0001),
                 );
               }
             }

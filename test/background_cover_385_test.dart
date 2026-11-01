@@ -157,7 +157,7 @@ void main() {
   );
 
   test(
-    'eight shared cover colours stay in gamut and preserve neutral artwork',
+    'eight variants per cover role stay in gamut and preserve neutral artwork',
     () {
       final variants = Float64List(96);
       final palette = buildFluidPalette(const [
@@ -173,7 +173,15 @@ void main() {
         expect(rgb.every((c) => c >= 0 && c <= 1), isTrue);
         colours.add(rgb.map((c) => c.toStringAsFixed(5)).join(','));
       }
-      expect(colours.length, inInclusiveRange(6, 8));
+      expect(colours.length, inInclusiveRange(6, 32));
+      for (var field = 0; field < 4; field++) {
+        final start = palette[field == 3 ? 0 : field + 1];
+        expect(variants.sublist(field * 24, field * 24 + 3), [
+          start.r,
+          start.g,
+          start.b,
+        ]);
+      }
       cacheFluidColourVariants(
         variants,
         const FluidPalette(Colors.grey, Colors.grey, Colors.grey, Colors.grey),

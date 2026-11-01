@@ -7,12 +7,14 @@ enum PlaybackArtworkBackgroundStyle { blurred, fluid }
 
 enum FluidBackgroundQuality { automatic, powerSaving, smooth }
 
-// Visible wall-clock seconds; frame uniforms convert to orbital radians.
-// Orbit, doubled colour and 1.6x shape clocks share a five-orbit wrap.
+// Colour time remains real-time. Geometry moves 50% faster independently.
 const fluidShaderTimeScale = .15;
 const fluidOrbitPeriod = math.pi * 2 / fluidShaderTimeScale;
-// Five orbits keep the 1.6x shape clock continuous when visible time wraps.
-const fluidPhaseCycle = fluidOrbitPeriod * 5;
+const fluidMotionSpeedScale = 1.5;
+const fluidGeometryCycle = fluidOrbitPeriod * 5;
+// Ten colour orbits contain three closed journeys at 1.5x, and whole shape/
+// warp/colour/relay cycles. Wrapping after five would jump half a route.
+const fluidPhaseCycle = fluidGeometryCycle * 2;
 const fluidMotionColourCount = 8;
 
 /// Apply once to generated palettes, never to interpolation or cached frames.
@@ -20,7 +22,9 @@ const fluidMotionColourCount = 8;
 Color fluidSaturationBoost(Color colour) {
   final hsl = HSLColor.fromColor(colour);
   if (hsl.saturation == 0) return colour;
-  return hsl.withSaturation((hsl.saturation * 1.21).clamp(0.0, 1.0)).toColor();
+  final knee = ((hsl.saturation - .72) / .28).clamp(0.0, 1.0);
+  final room = 1 - knee * knee * (3 - 2 * knee);
+  return hsl.withSaturation(hsl.saturation * (1 + .21 * room)).toColor();
 }
 
 bool fluidNeedsIntermediateColour(Color a, Color b) {
@@ -89,6 +93,10 @@ class FluidPalette {
     this.vividAccentLocked = false,
     this.layeredRolesLocked = false,
     this.motionColors = const [],
+    this.colorWeights = const [],
+    this.motionWeights = const [],
+    this.mixAnchor,
+    this.mixProtection = 0,
   });
 
   final Color first;
@@ -97,6 +105,19 @@ class FluidPalette {
   final Color fourth;
   // Eight cover-related colours per field, prepared only when artwork changes.
   final List<Color> motionColors;
+  // Bounded cover-area influence follows each colour, rather than remaining
+  // attached to a screen position as the fields cycle through their palettes.
+  final List<double> colorWeights;
+  final List<double> motionWeights;
+  final Color? mixAnchor;
+  final double mixProtection;
+
+  double colorWeight(int index) =>
+      colorWeights.length == 4 ? colorWeights[index] : 1;
+  double motionWeight(int field, int variant) =>
+      motionWeights.length == 4 * fluidMotionColourCount
+      ? motionWeights[field * fluidMotionColourCount + variant]
+      : colorWeight(field == 3 ? 0 : field + 1);
 
   bool stagesFieldTo(FluidPalette other, int field) =>
       other.motionColors.isNotEmpty &&
@@ -209,6 +230,29 @@ class FluidPalette {
           );
         }),
       ),
+      colorWeights: List<double>.unmodifiable(
+        List.generate(4, (i) {
+          final from = source.colorWeight(i), to = target.colorWeight(i);
+          return from + (to - from) * fieldBlend(i == 0 ? 3 : i - 1);
+        }),
+      ),
+      motionWeights: List<double>.unmodifiable(
+        List.generate(4 * fluidMotionColourCount, (i) {
+          final field = i ~/ fluidMotionColourCount,
+              variant = i % fluidMotionColourCount;
+          final from = source.motionWeight(field, variant),
+              to = target.motionWeight(field, variant);
+          return from + (to - from) * fieldBlend(field);
+        }),
+      ),
+      mixAnchor: Color.lerp(
+        source.mixAnchor ?? source.second,
+        target.mixAnchor ?? target.second,
+        t,
+      ),
+      mixProtection:
+          source.mixProtection +
+          (target.mixProtection - source.mixProtection) * t,
       baseColor: Color.lerp(source.baseColor, target.baseColor, t)!,
       glowStrength:
           source.glowStrength + (target.glowStrength - source.glowStrength) * t,
@@ -237,6 +281,10 @@ class FluidPalette {
           warmAccentLocked == other.warmAccentLocked &&
           vividAccentLocked == other.vividAccentLocked &&
           layeredRolesLocked == other.layeredRolesLocked &&
+          mixAnchor == other.mixAnchor &&
+          mixProtection == other.mixProtection &&
+          listEquals(colorWeights, other.colorWeights) &&
+          listEquals(motionWeights, other.motionWeights) &&
           listEquals(motionColors, other.motionColors);
 
   @override
@@ -251,6 +299,10 @@ class FluidPalette {
     vividAccentLocked,
     layeredRolesLocked,
     Object.hashAll(motionColors),
+    Object.hashAll(colorWeights),
+    Object.hashAll(motionWeights),
+    mixAnchor,
+    mixProtection,
   );
 }
 
@@ -309,6 +361,14 @@ FluidPalette alignFluidPaletteSlots(
     vividAccentLocked: incoming.vividAccentLocked,
     layeredRolesLocked: incoming.layeredRolesLocked,
     motionColors: incoming.motionColors,
+    colorWeights: incoming.colorWeights.isEmpty
+        ? const []
+        : List<double>.unmodifiable(
+            colors.map((c) => incoming.colorWeight(target.indexOf(c))),
+          ),
+    motionWeights: incoming.motionWeights,
+    mixAnchor: incoming.mixAnchor,
+    mixProtection: incoming.mixProtection,
   );
 }
 

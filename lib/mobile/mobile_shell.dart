@@ -40,6 +40,7 @@ import '../widgets/long_press_icon_button.dart';
 import '../widgets/playback_mode_glyph.dart';
 import '../widgets/home_header_page_transition.dart';
 import '../widgets/playback_control_sheet_surface.dart';
+import '../widgets/playback_bottom_sheet.dart';
 import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/now_playing_cover_hero.dart';
 import '../widgets/now_playing_immersive_layout.dart';
@@ -176,31 +177,35 @@ Future<Uint8List?> _pickAndCropCover(BuildContext context) async {
 Future<_CoverApplyTarget?> _chooseCoverApplyTarget(
   BuildContext context, {
   required bool group,
-}) => showModalBottomSheet<_CoverApplyTarget>(
-  context: context,
-  showDragHandle: true,
-  builder: (sheetContext) => SafeArea(
-    child: Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ListTile(
-          leading: const Icon(Icons.layers_outlined),
-          title: const Text('在播放器内更换'),
-          subtitle: const Text('不修改音频文件，可随时重置'),
-          onTap: () => Navigator.pop(sheetContext, _CoverApplyTarget.appOnly),
+}) =>
+    (group
+    ? showModalBottomSheet<_CoverApplyTarget>
+    : showPlaybackBottomSheet<_CoverApplyTarget>)(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.layers_outlined),
+              title: const Text('在播放器内更换'),
+              subtitle: const Text('不修改音频文件，可随时重置'),
+              onTap: () =>
+                  Navigator.pop(sheetContext, _CoverApplyTarget.appOnly),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_note_outlined),
+              title: Text(group ? '替换组内歌曲文件封面' : '替换文件封面'),
+              subtitle: Text(group ? '写入该歌手/专辑内所有可写音频文件' : '直接写入当前音频文件的标签'),
+              onTap: () =>
+                  Navigator.pop(sheetContext, _CoverApplyTarget.sourceFile),
+            ),
+            const SizedBox(height: 8),
+          ],
         ),
-        ListTile(
-          leading: const Icon(Icons.edit_note_outlined),
-          title: Text(group ? '替换组内歌曲文件封面' : '替换文件封面'),
-          subtitle: Text(group ? '写入该歌手/专辑内所有可写音频文件' : '直接写入当前音频文件的标签'),
-          onTap: () =>
-              Navigator.pop(sheetContext, _CoverApplyTarget.sourceFile),
-        ),
-        const SizedBox(height: 8),
-      ],
-    ),
-  ),
-);
+      ),
+    );
 
 Future<bool> _confirmSourceCoverWrite(
   BuildContext context, {
@@ -6471,7 +6476,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       MediaQuery.sizeOf(context),
     );
     double currentSize = settings.lyricFontSizeFor(MediaQuery.sizeOf(context));
-    await showModalBottomSheet<void>(
+    await showPlaybackBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       showDragHandle: !usePlaybackTheme,
@@ -6645,7 +6650,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       context.read<SettingsProvider>(),
       notifier,
     );
-    final choice = await showModalBottomSheet<String>(
+    final choice = await showPlaybackBottomSheet<String>(
       context: context,
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
@@ -6700,7 +6705,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       context.read<SettingsProvider>(),
       context.read<PlaylistContentNotifier>(),
     );
-    showModalBottomSheet<void>(
+    showPlaybackBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
@@ -6731,7 +6736,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     );
     var pitch = notifier.currentPitch;
     var playbackRate = notifier.currentPlaybackRate;
-    showModalBottomSheet<void>(
+    showPlaybackBottomSheet<void>(
       context: context,
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
@@ -6861,7 +6866,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       context.read<SettingsProvider>(),
       context.read<PlaylistContentNotifier>(),
     );
-    showModalBottomSheet<void>(
+    showPlaybackBottomSheet<void>(
       context: context,
       showDragHandle: false,
       isScrollControlled: true,
@@ -6887,7 +6892,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       context.read<SettingsProvider>(),
       context.read<PlaylistContentNotifier>(),
     );
-    showModalBottomSheet<void>(
+    showPlaybackBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -6920,7 +6925,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       context.read<SettingsProvider>(),
       context.read<PlaylistContentNotifier>(),
     );
-    return showModalBottomSheet<T>(
+    return showPlaybackBottomSheet<T>(
       context: context,
       isScrollControlled: true,
       useSafeArea: true,
@@ -7144,7 +7149,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     final candidates = notifier.allSongs
         .where((song) => notifier.displayCoverForSong(song)?.isNotEmpty == true)
         .toList();
-    return showModalBottomSheet<Uint8List>(
+    return showPlaybackBottomSheet<Uint8List>(
       context: context,
       showDragHandle: true,
       isScrollControlled: true,
@@ -7225,7 +7230,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       notifier,
     );
 
-    showModalBottomSheet<void>(
+    showPlaybackBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,

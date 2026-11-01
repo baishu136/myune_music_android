@@ -21,7 +21,12 @@ List<double> fluidReferenceWeights(Float32List values, double x, double y) {
     final bend = motion / (1 + ax * ax + ay * ay);
     final bx = ax + bend * .20 * ay * ay, by = ay + bend * .16 * ax * ay;
     final falloff = 1 / (1 + .64 * (bx * bx + by * by));
-    return falloff * falloff * (.65 + .35 * falloff);
+    final influence = values.length >= 49
+        ? (1 + values[45 + field]).clamp(.55, 1.65)
+        : 1;
+    final core = falloff * falloff * (.65 + .35 * falloff);
+    final diffuse = 1 / (1 + .28 * (bx * bx + by * by));
+    return (core * .8 + diffuse * diffuse * .2) * influence;
   });
 }
 

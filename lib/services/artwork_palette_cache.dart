@@ -1,10 +1,12 @@
 import 'dart:collection';
+import 'dart:math' as math;
 import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../models/fluid_background_state.dart';
+import '../models/fluid_color_perception.dart';
 
 final fluidArtworkPaletteCache = ArtworkPaletteCache();
 
@@ -153,13 +155,10 @@ class ArtworkPaletteCache {
     );
   }
   occupied.sort((a, b) => bins[b + 3].compareTo(bins[a + 3]));
-  // A warm region can be spread across many small histogram bins. Pool only
-  // real 20–55° pixels on the worker so its total area survives top-32 pruning;
-  // otherwise a sizeable golden gradient can disappear behind large cool bins.
-  var warmR = 0, warmG = 0, warmB = 0, warmPixels = 0;
-  int? warmRepresentative;
-  var warmScore = 0.0;
-  final warmSlots = <int>{};
+  // Aggregate EVERY colour family before pruning, not just warm accents.
+  // Fixed perceptual anchors prevent a chain of nearby bins drifting into a
+  // different hue. Counts still refer to the original visible-pixel area.
+  final families = <_ArtworkSampleFamily>[];
   for (final slot in occupied) {
     final count = bins[slot + 3];
     final color = Color.fromARGB(
@@ -168,73 +167,53 @@ class ArtworkPaletteCache {
       bins[slot + 1] ~/ count,
       bins[slot + 2] ~/ count,
     );
-    if (!_isWarmAccent(color)) continue;
-    warmSlots.add(slot);
-    warmR += bins[slot];
-    warmG += bins[slot + 1];
-    warmB += bins[slot + 2];
-    warmPixels += count;
-    final hsl = HSLColor.fromColor(color);
-    final score = count * hsl.saturation * hsl.lightness * (1 - hsl.lightness);
-    if (score > warmScore) {
-      warmScore = score;
-      warmRepresentative = slot;
+    final lab = fluidOklab(color);
+    final chromatic = lab.a * lab.a + lab.b * lab.b > .0025;
+    _ArtworkSampleFamily? closest;
+    var distance = .055 * .055;
+    for (final family in families) {
+      if (family.chromatic != chromatic) continue;
+      final next = fluidLabDistanceSquared(lab, family.anchor);
+      if (next < distance) {
+        closest = family;
+        distance = next;
+      }
+    }
+    if (closest == null) {
+      families.add(_ArtworkSampleFamily(color, lab, count, chromatic));
+    } else {
+      closest.add(color, count);
     }
   }
-  final poolWarm = warmPixels / pixels >= _significantWarmShare;
-  final samples = occupied
-      .where((slot) => !poolWarm || !warmSlots.contains(slot))
-      .take(poolWarm ? 30 : 32)
-      .map((slot) {
-        final count = bins[slot + 3];
-        return FluidColorSample(
-          Color.fromARGB(
-            255,
-            bins[slot] ~/ count,
-            bins[slot + 1] ~/ count,
-            bins[slot + 2] ~/ count,
-          ),
-          count / pixels,
-        );
-      })
-      .toList(growable: true);
-  if (poolWarm) {
-    // Keep the substantial, chromatic warm bin itself (e.g. gold printing).
-    // Pool ONLY its remaining neighbours, with their own area. Averaging all
-    // warm pixels together let pale skin/antialiasing bleach a real gold accent.
-    final slot = warmRepresentative!;
-    final count = bins[slot + 3];
-    samples.add(
-      FluidColorSample(
-        Color.fromARGB(
-          255,
-          bins[slot] ~/ count,
-          bins[slot + 1] ~/ count,
-          bins[slot + 2] ~/ count,
-        ),
-        count / pixels,
-      ),
-    );
-    warmR -= bins[slot];
-    warmG -= bins[slot + 1];
-    warmB -= bins[slot + 2];
-    warmPixels -= count;
-    if (warmPixels > 0) {
-      samples.add(
-        FluidColorSample(
-          Color.fromARGB(
-            255,
-            warmR ~/ warmPixels,
-            warmG ~/ warmPixels,
-            warmB ~/ warmPixels,
-          ),
-          warmPixels / pixels,
-        ),
-      );
-    }
-    samples.sort((a, b) => b.proportion.compareTo(a.proportion));
-  }
+  families.sort((a, b) => b.pixels.compareTo(a.pixels));
+  final samples = families
+      .take(32)
+      .map((family) => FluidColorSample(family.color, family.pixels / pixels))
+      .toList(growable: false);
   return (colors: samples, lightness: lightnessSum / pixels);
+}
+
+class _ArtworkSampleFamily {
+  _ArtworkSampleFamily(this.color, this.anchor, this.pixels, this.chromatic)
+    : _bestScore = _score(color, pixels);
+  final FluidLab anchor;
+  final bool chromatic;
+  Color color;
+  int pixels;
+  double _bestScore;
+  static double _score(Color c, int count) {
+    final hsl = HSLColor.fromColor(c);
+    return count * (.5 + .5 * hsl.saturation);
+  }
+
+  void add(Color next, int count) {
+    pixels += count;
+    final score = _score(next, count);
+    if (score > _bestScore) {
+      color = next;
+      _bestScore = score;
+    }
+  }
 }
 
 const _significantWarmShare = .03;
@@ -339,7 +318,7 @@ FluidPalette buildWeightedFluidPalette(
     profile: profile,
     maximumColors: 4,
   );
-  // Occupancy selects/classifies the palette, never scales per-frame fields.
+  // Retain colour roles; bounded area influence is attached to each pigment.
   final retained = selected.take(4).toList(growable: true);
   while (retained.length < 4) {
     retained.add(retained[retained.length % selected.length]);
@@ -438,6 +417,22 @@ FluidPalette buildWeightedFluidPalette(
                   : (baseHsl.lightness * .32).clamp(.01, .14),
             )
             .toColor();
+  final motionColors = _buildMotionColors(
+    retained,
+    extracted,
+    profile,
+    fallbackSeed,
+  );
+  Color? anchor;
+  var anchorScore = 0.0;
+  for (final sample in extracted) {
+    final hsl = HSLColor.fromColor(sample.color);
+    final score = sample.proportion * hsl.saturation;
+    if (hsl.saturation > .12 && score > anchorScore) {
+      anchor = _normalizeFluidColor(sample.color, profile);
+      anchorScore = score;
+    }
+  }
   return FluidPalette(
     fluidSaturationBoost(retained[0]),
     fluidSaturationBoost(retained[1]),
@@ -448,17 +443,62 @@ FluidPalette buildWeightedFluidPalette(
     vividAccentLocked: vividAccentLocked,
     layeredRolesLocked: true,
     motionColors: List<Color>.unmodifiable(
-      _buildMotionColors(
-        retained,
-        extracted,
-        profile,
-        fallbackSeed,
-      ).map(fluidSaturationBoost),
+      motionColors.map(fluidSaturationBoost),
     ),
+    colorWeights: _coverColorWeights(retained, extracted, profile),
+    motionWeights: _coverColorWeights(motionColors, extracted, profile),
+    mixAnchor: anchor == null ? null : fluidSaturationBoost(anchor),
+    mixProtection: profile.monochrome || anchor == null ? 0 : .20,
     glowStrength: profile.dark
         ? (profile.monochrome ? .28 : (profile.vivid ? .70 : .55))
         // Legacy snapshot/uniform metadata, not additive light energy.
         : (profile.monochrome ? .30 : .50),
+  );
+}
+
+List<double> _coverColorWeights(
+  List<Color> colors,
+  List<FluidColorSample> samples,
+  _FluidArtworkProfile profile,
+) {
+  final labs = samples
+      .map((s) => fluidOklab(_normalizeFluidColor(s.color, profile)))
+      .toList(growable: false);
+  final total = samples.fold<double>(0, (sum, s) => sum + s.proportion);
+  if (total <= 0) {
+    return List<double>.unmodifiable(List.filled(colors.length, 1));
+  }
+  final weights = colors
+      .map((color) {
+        final lab = fluidOklab(color);
+        final chroma = math.sqrt(lab.a * lab.a + lab.b * lab.b);
+        var share = 0.0;
+        for (var i = 0; i < labs.length; i++) {
+          final other = labs[i];
+          final otherChroma = math.sqrt(other.a * other.a + other.b * other.b);
+          double similarity;
+          if (chroma < .025 || otherChroma < .025) {
+            final dl = lab.l - other.l;
+            similarity = chroma < .025 && otherChroma < .025
+                ? math.exp(-dl * dl / .02)
+                : 0;
+          } else {
+            // Area belongs to the hue family, not only the representative's
+            // exact brightness. A bright selected teal still represents the
+            // many darker teal pixels in the original artwork.
+            final cosine =
+                ((lab.a * other.a + lab.b * other.b) / (chroma * otherChroma))
+                    .clamp(-1.0, 1.0);
+            similarity = math.exp(-(1 - cosine) / .04);
+          }
+          share += samples[i].proportion * similarity;
+        }
+        return .55 + 1.1 * math.sqrt((share / total).clamp(0.0, 1.0));
+      })
+      .toList(growable: false);
+  final mean = weights.reduce((a, b) => a + b) / weights.length;
+  return List<double>.unmodifiable(
+    weights.map((w) => (w / mean).clamp(.55, 1.65)),
   );
 }
 
@@ -540,14 +580,45 @@ List<Color> _buildMotionColors(
       if (!pool.contains(candidate)) pool[i] = candidate;
     }
   }
-  // Each field starts from its assigned pigment and visits the same cover pool
-  // in a different order. No spatial rainbow or per-frame colour extraction.
-  const path = [0, 4, 1, 5, 2, 6, 3, 7];
+  // Build a short perceptual cycle, including its closing edge, rather than
+  // jumping between unrelated pool indices. Each field retains its own start.
+  final labs = pool.map(fluidOklab).toList(growable: false);
+  final distances = List.generate(
+    pool.length,
+    (a) => List.generate(
+      pool.length,
+      (b) => math.sqrt(fluidLabDistanceSquared(labs[a], labs[b])),
+    ),
+  );
+  final path = <int>[0];
+  final remaining = <int>{for (var i = 1; i < pool.length; i++) i};
+  while (remaining.isNotEmpty) {
+    var best = -1, insert = 0;
+    var cost = double.infinity;
+    for (final candidate in remaining) {
+      for (var edge = 0; edge < path.length; edge++) {
+        final a = path[edge], b = path[(edge + 1) % path.length];
+        final next =
+            distances[a][candidate] + distances[candidate][b] - distances[a][b];
+        if (next < cost) {
+          cost = next;
+          best = candidate;
+          insert = edge + 1;
+        }
+      }
+    }
+    path.insert(insert, best);
+    remaining.remove(best);
+  }
   return List<Color>.unmodifiable(
     List.generate(4 * fluidMotionColourCount, (i) {
       final field = i ~/ fluidMotionColourCount,
           variant = i % fluidMotionColourCount;
-      return pool[path[(variant + field * 2) % fluidMotionColourCount]];
+      final candidate =
+          pool[path[(variant + path.indexOf(field)) % fluidMotionColourCount]];
+      // Keep the cover's colour roles present throughout the cycle, with a
+      // smaller excursion for its lead. Neighbour transmission stays active.
+      return Color.lerp(pool[field], candidate, field == 0 ? .18 : .28)!;
     }),
   );
 }
@@ -795,11 +866,13 @@ List<Color> _selectDominantFluidColors(
 }) {
   final candidates = <Color>[];
   final candidateChroma = <double>[];
+  final candidateLabs = <FluidLab>[];
   for (final color in extracted) {
     if (!_isUsableFluidColor(color) && !profile.monochrome) continue;
     final normalized = _normalizeFluidColor(color, profile);
-    final duplicate = candidates.indexWhere(
-      (other) => _colorDistance(other, normalized) <= .10,
+    final lab = fluidOklab(normalized);
+    final duplicate = candidateLabs.indexWhere(
+      (other) => fluidLabDistanceSquared(other, lab) <= .01,
     );
     final chroma =
         [color.r, color.g, color.b].reduce((a, b) => a > b ? a : b) -
@@ -807,12 +880,14 @@ List<Color> _selectDominantFluidColors(
     if (duplicate < 0) {
       candidates.add(normalized);
       candidateChroma.add(chroma);
+      candidateLabs.add(lab);
     } else if (profile.vivid && chroma > candidateChroma[duplicate]) {
       // The first bin can be pale paper/skin of the same hue. Keep the real
       // higher-chroma pigment, rather than discarding it after L clamping made
       // both candidates appear similar. This is cover work, never paint work.
       candidates[duplicate] = normalized;
       candidateChroma[duplicate] = chroma;
+      candidateLabs[duplicate] = lab;
     }
   }
   final fallback = FluidPalette.fallback(fallbackSeed);
@@ -823,18 +898,26 @@ List<Color> _selectDominantFluidColors(
   }
 
   final selected = <Color>[candidates.first];
+  final selectedIndices = <int>[0];
   // Select the four shader slots BEFORE hue ordering; sorting six candidates
   // then taking four systematically discarded magenta/purple at high hues.
   while (selected.length < maximumColors &&
       selected.length < candidates.length) {
-    Color? best;
+    var best = -1;
     var bestDistance = -1.0;
     for (var index = 0; index < candidates.length; index++) {
       final candidate = candidates[index];
-      if (selected.contains(candidate)) continue;
-      final nearest = selected
-          .map((color) => _colorDistance(color, candidate))
-          .reduce((first, second) => first < second ? first : second);
+      if (selectedIndices.contains(index)) continue;
+      final nearest = math.sqrt(
+        selectedIndices
+            .map(
+              (other) => fluidLabDistanceSquared(
+                candidateLabs[other],
+                candidateLabs[index],
+              ),
+            )
+            .reduce(math.min),
+      );
       // A small occupancy-rank penalty rejects isolated noise. On vivid covers
       // favour real chroma so grey face/shadow bins do not crowd out pink/teal.
       final chroma = profile.vivid
@@ -843,11 +926,12 @@ List<Color> _selectDominantFluidColors(
       final score = nearest + chroma - index * .012;
       if (score > bestDistance) {
         bestDistance = score;
-        best = candidate;
+        best = index;
       }
     }
-    if (best == null) break;
-    selected.add(best);
+    if (best < 0) break;
+    selected.add(candidates[best]);
+    selectedIndices.add(best);
   }
 
   while (selected.length < 3) {
@@ -877,11 +961,5 @@ List<Color> _selectDominantFluidColors(
 }
 
 double _colorDistance(Color first, Color second) {
-  final a = HSLColor.fromColor(first);
-  final b = HSLColor.fromColor(second);
-  final rawHue = (a.hue - b.hue).abs();
-  final hue = (rawHue > 180 ? 360 - rawHue : rawHue) / 180;
-  return hue * (.2 + .8 * (a.saturation + b.saturation) / 2) * .55 +
-      (a.saturation - b.saturation).abs() * .25 +
-      (a.lightness - b.lightness).abs() * .20;
+  return fluidPerceptualDistance(first, second);
 }

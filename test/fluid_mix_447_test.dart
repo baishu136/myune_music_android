@@ -27,7 +27,7 @@ void main() {
           'shaders/fluid_background.frag',
         )).fragmentShader();
         try {
-          final values = Float32List(45);
+          final values = Float32List(57);
           values[0] = 320;
           values[1] = 160;
           for (var field = 0; field < 4; field++) {
@@ -37,7 +37,7 @@ void main() {
             values[29 + field * 4] = 1 / .42;
             values[32 + field * 4] = 1 / .42;
           }
-          for (var i = 0; i < 45; i++) {
+          for (var i = 0; i < values.length; i++) {
             shader.setFloat(i, values[i]);
           }
           final image = await _image(shader, const Size(320, 160));

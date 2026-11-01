@@ -47,7 +47,12 @@ void main() {
         );
         expect(
           actual.saturation,
-          closeTo(math.min(1, original.saturation * 1.21), .006),
+          closeTo(
+            HSLColor.fromColor(
+              fluidSaturationBoost(original.toColor()),
+            ).saturation,
+            .006,
+          ),
         );
         expect(actual.lightness, closeTo(original.lightness, .004));
         expect((actual.hue - original.hue).abs(), lessThan(1));

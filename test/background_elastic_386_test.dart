@@ -58,12 +58,12 @@ void main() {
         try {
           sample(0);
           final first = frame.values.toList();
-          expect(first, hasLength(45));
+          expect(first, hasLength(57));
           sample(5);
           final later = frame.values.toList();
           expect(later.sublist(29), isNot(first.sublist(29)));
           sample(fluidPhaseCycle);
-          for (var i = 6; i < 45; i++) {
+          for (var i = 6; i < first.length; i++) {
             expect(frame.values[i], closeTo(first[i], 2e-6));
           }
           sample(fluidPhaseCycle - .00001);

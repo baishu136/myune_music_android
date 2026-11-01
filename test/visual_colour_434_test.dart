@@ -1,5 +1,3 @@
-import 'dart:math' as math;
-
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/models/fluid_background_state.dart';
@@ -22,25 +20,26 @@ class _Player extends ChangeNotifier implements PlaylistContentNotifier {
 }
 
 void main() {
-  test('fluid saturation gains another ten percent over the current boost', () {
-    for (final saturation in [.08, .3, .6, .95]) {
-      final original = HSLColor.fromAHSL(1, 205, saturation, .43).toColor();
-      final before = HSLColor.fromColor(original);
-      final after = HSLColor.fromColor(fluidSaturationBoost(original));
-      expect(
-        after.saturation,
-        closeTo(math.min(1, before.saturation * 1.21), .006),
-      );
-      expect(after.lightness, closeTo(before.lightness, .004));
-      expect(
-        fluidSaturationBoost(original),
-        before.withSaturation(math.min(1, before.saturation * 1.21)).toColor(),
-      );
-    }
-    for (final neutral in [Colors.black, Colors.white, Colors.grey]) {
-      expect(fluidSaturationBoost(neutral), neutral);
-    }
-  });
+  test(
+    'fluid saturation retains its boost with a protected high-saturation knee',
+    () {
+      for (final saturation in [.08, .3, .6, .95]) {
+        final original = HSLColor.fromAHSL(1, 205, saturation, .43).toColor();
+        final before = HSLColor.fromColor(original);
+        final after = HSLColor.fromColor(fluidSaturationBoost(original));
+        expect(
+          after.saturation,
+          saturation <= .7
+              ? closeTo(before.saturation * 1.21, .006)
+              : inInclusiveRange(before.saturation, .985),
+        );
+        expect(after.lightness, closeTo(before.lightness, .004));
+      }
+      for (final neutral in [Colors.black, Colors.white, Colors.grey]) {
+        expect(fluidSaturationBoost(neutral), neutral);
+      }
+    },
+  );
 
   const neutral = Color(0xffa0a0a0),
       blue = Color(0xff4285df),

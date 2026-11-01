@@ -67,13 +67,22 @@ double fluidTravelTime(double time, int field, {double? colourPosition}) {
       2.5 * _integralScale * (_smoothedPosition(u) - _initialPositions[field]);
 }
 
-// Forty colour intervals elapse during the existing five-orbit clock wrap.
-// Match its integrated distance exactly: no extra persistent clock or seam.
-final _travelCycle = fluidPhaseCycle + 2.5 * _integralScale * 40;
+// Keep the original route's base distance. The shared ten-orbit clock now
+// closes three routes at 1.5x, without speeding up the colour changes.
+final _travelCycle = fluidGeometryCycle + 2.5 * _integralScale * 40;
 final _route = _FluidRoute();
 // Stagger along the folded route to keep fields distributed over its complete
 // loop. Equal quarter offsets repeatedly bunch up at the centre crossings.
 const _routeOffsets = [0.0, .816, .898, .723];
+
+double fluidFieldTravelDistance(
+  double time,
+  int field, {
+  double? colourPosition,
+}) =>
+    fluidMotionSpeedScale *
+    fluidTravelTime(time, field, colourPosition: colourPosition) /
+    _travelCycle;
 
 /// Write straight into the painter's existing buffer; no per-frame objects.
 void writeFluidFieldPosition(
@@ -84,8 +93,7 @@ void writeFluidFieldPosition(
   double amplitude,
 ) {
   final distance =
-      (fluidTravelTime(time, field, colourPosition: colourPosition) /
-              _travelCycle +
+      (fluidFieldTravelDistance(time, field, colourPosition: colourPosition) +
           _routeOffsets[field]) %
       1;
   _route.write(values, 6 + field * 2, distance);
