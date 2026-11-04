@@ -9,10 +9,13 @@ import 'fluid_field_travel.dart';
 /// Matches the shader: size(2), motion/dim(2), phases(2), centres(8),
 /// pigments(12), base(3), shape matrices(16), weight deltas(4), protection(4),
 /// pigment chroma(4), computed once per frame instead of once per pixel.
-/// The original 45 floats retain their offsets; reuses all buffers.
+/// Two optional children append 20 floats; all prior offsets are retained.
+/// Palette analysis is cached and all frame buffers are reused.
 class FluidFrameUniforms {
-  final values = Float32List(57);
-  final _written = Float32List(57)..fillRange(0, 57, double.nan);
+  final values = Float32List(77);
+  final _written = Float32List(77)..fillRange(0, 77, double.nan);
+  final _sourceCompanions = Float64List(8);
+  final _targetCompanions = Float64List(8);
   final _source = Float64List(19);
   final _target = Float64List(19);
   final _mixed = Float64List(19);
@@ -55,6 +58,9 @@ class FluidFrameUniforms {
       _sourcePalette = source;
       _cachePalette(_source, source);
       cacheFluidColourVariants(_sourceVariants, source);
+      for (var i = 0; i < 8; i++) {
+        _sourceCompanions[i] = source.companionWeight(i ~/ 4, i % 4);
+      }
       for (var i = 0; i < _sourceWeights.length; i++) {
         _sourceWeights[i] = source.motionWeight(
           i ~/ fluidMotionColourCount,
@@ -72,6 +78,9 @@ class FluidFrameUniforms {
       _targetPalette = target;
       _cachePalette(_target, target);
       cacheFluidColourVariants(_targetVariants, target);
+      for (var i = 0; i < 8; i++) {
+        _targetCompanions[i] = target.companionWeight(i ~/ 4, i % 4);
+      }
       for (var i = 0; i < _targetWeights.length; i++) {
         _targetWeights[i] = target.motionWeight(
           i ~/ fluidMotionColourCount,
@@ -178,6 +187,47 @@ class FluidFrameUniforms {
       values[49 + channel] = _mixed[15 + channel];
     }
     values[52] = _mixed[18].clamp(0.0, .20);
+    for (var child = 0; child < 2; child++) {
+      final base = 57 + child * 10;
+      for (var i = 0; i < 10; i++) {
+        values[base + i] = 0;
+      }
+      var strength = 0.0;
+      for (var slot = 0; slot < 4; slot++) {
+        final index = child * 4 + slot;
+        final weight =
+            _sourceCompanions[index] +
+            (_targetCompanions[index] - _sourceCompanions[index]) * blend;
+        strength += weight;
+        final field = slot == 0 ? 3 : slot - 1;
+        for (var axis = 0; axis < 2; axis++) {
+          values[base + axis] += values[6 + field * 2 + axis] * weight;
+        }
+        for (var i = 0; i < 4; i++) {
+          values[base + 2 + i] += values[29 + field * 4 + i] * weight;
+        }
+        for (var c = 0; c < 3; c++) {
+          values[base + 6 + c] += values[14 + field * 3 + c] * weight;
+        }
+      }
+      if (strength > 0) {
+        for (var i = 0; i < 9; i++) {
+          values[base + i] /= strength;
+        }
+        // A broad satellite stays beside its moving parent, never an isolated
+        // tiny dot. RGB scaling retains the live parent's hue/relative chroma.
+        final angle = orbit * .4 + child * 2.2;
+        values[base] += .13 * math.cos(angle) * shortSide / size.width;
+        values[base + 1] += .13 * math.sin(angle) * shortSide / size.height;
+        for (var i = 2; i < 6; i++) {
+          values[base + i] *= 1.35;
+        }
+        for (var i = 6; i < 9; i++) {
+          values[base + i] *= .64;
+        }
+      }
+      values[base + 9] = strength.clamp(0.0, 1.0);
+    }
     final changedShader = !identical(shader, _lastShader);
     for (var i = 0; i < values.length; i++) {
       if (changedShader || _written[i] != values[i]) {

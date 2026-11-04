@@ -97,6 +97,7 @@ class FluidPalette {
     this.motionWeights = const [],
     this.mixAnchor,
     this.mixProtection = 0,
+    this.companionMix = const [],
   });
 
   final Color first;
@@ -111,6 +112,11 @@ class FluidPalette {
   final List<double> motionWeights;
   final Color? mixAnchor;
   final double mixProtection;
+  // Two child fields, each a mixture of the four palette slots. Usually one
+  // parent per child; continuous mixtures preserve fast-song retarget snapshots.
+  final List<double> companionMix;
+  double companionWeight(int child, int slot) =>
+      companionMix.length == 8 ? companionMix[child * 4 + slot] : 0;
 
   double colorWeight(int index) =>
       colorWeights.length == 4 ? colorWeights[index] : 1;
@@ -253,6 +259,15 @@ class FluidPalette {
       mixProtection:
           source.mixProtection +
           (target.mixProtection - source.mixProtection) * t,
+      companionMix: source.companionMix.isEmpty && target.companionMix.isEmpty
+          ? const []
+          : List<double>.unmodifiable(
+              List.generate(8, (i) {
+                final from = source.companionWeight(i ~/ 4, i % 4);
+                return from +
+                    (target.companionWeight(i ~/ 4, i % 4) - from) * t;
+              }),
+            ),
       baseColor: Color.lerp(source.baseColor, target.baseColor, t)!,
       glowStrength:
           source.glowStrength + (target.glowStrength - source.glowStrength) * t,
@@ -283,6 +298,7 @@ class FluidPalette {
           layeredRolesLocked == other.layeredRolesLocked &&
           mixAnchor == other.mixAnchor &&
           mixProtection == other.mixProtection &&
+          listEquals(companionMix, other.companionMix) &&
           listEquals(colorWeights, other.colorWeights) &&
           listEquals(motionWeights, other.motionWeights) &&
           listEquals(motionColors, other.motionColors);
@@ -303,6 +319,7 @@ class FluidPalette {
     Object.hashAll(motionWeights),
     mixAnchor,
     mixProtection,
+    Object.hashAll(companionMix),
   );
 }
 
@@ -369,6 +386,17 @@ FluidPalette alignFluidPaletteSlots(
     motionWeights: incoming.motionWeights,
     mixAnchor: incoming.mixAnchor,
     mixProtection: incoming.mixProtection,
+    companionMix: incoming.companionMix.isEmpty
+        ? const []
+        : List<double>.unmodifiable(
+            List.generate(
+              8,
+              (i) => incoming.companionWeight(
+                i ~/ 4,
+                target.indexOf(colors[i % 4]),
+              ),
+            ),
+          ),
   );
 }
 

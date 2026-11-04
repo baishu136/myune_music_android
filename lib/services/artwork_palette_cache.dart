@@ -245,6 +245,120 @@ class FluidColorSample {
   final double proportion;
 }
 
+/// Cover-related tones, rather than many brightness variants or isolated
+/// saturated pixels. Runs only when artwork changes, never during painting.
+List<FluidColorSample> selectFluidTonalSamples(List<FluidColorSample> samples) {
+  final ordered =
+      samples.where((s) => s.proportion > 0 && s.proportion.isFinite).toList()
+        ..sort((a, b) {
+          final area = b.proportion.compareTo(a.proportion);
+          return area != 0
+              ? area
+              : a.color.toARGB32().compareTo(b.color.toARGB32());
+        });
+  if (ordered.isEmpty) return const [];
+  final groups = <_FluidToneFamily>[];
+  for (final sample in ordered) {
+    final hsl = HSLColor.fromColor(sample.color);
+    final neutral = hsl.saturation < .10 || hsl.lightness < .035;
+    final index = groups.indexWhere(
+      (g) =>
+          g.neutral == neutral &&
+          (neutral
+              ? (hsl.lightness - g.lightness).abs() <= .18
+              : _toneHueGap(hsl.hue, g.hue) <= 24),
+    );
+    if (index < 0) {
+      groups.add(_FluidToneFamily(sample, hsl, neutral));
+    } else {
+      groups[index].add(sample, hsl);
+    }
+  }
+  final total = ordered.fold<double>(0, (sum, s) => sum + s.proportion);
+  groups.sort((a, b) => b.share.compareTo(a.share));
+  final lead = groups.first;
+  double score(_FluidToneFamily g) {
+    final distance = g.neutral || lead.neutral
+        ? 0.0
+        : _toneHueGap(g.hue, lead.hue) / 180;
+    // Area carries most of the score. Tonal affinity only breaks close ranks;
+    // a substantial contrasting region still represents the actual artwork.
+    return g.share * (.90 + .10 * math.exp(-distance * distance / .16));
+  }
+
+  final eligible = groups.where((g) => g.share / total >= .02).toList()
+    ..sort((a, b) => score(b).compareTo(score(a)));
+  if (eligible.isEmpty) eligible.add(lead);
+  final chosen = eligible.take(5).toList(growable: false);
+  final result = chosen
+      .map((g) => FluidColorSample(g.representative, g.share))
+      .toList();
+  if (result.length == 1) {
+    final family = chosen.first;
+    final first = result.first;
+    final hsl = HSLColor.fromColor(first.color);
+    // A truly single-hue/neutral image gets depth in that same hue; never
+    // fabricate a complementary colour just to meet the two-slot minimum.
+    var second = hsl.withLightness(hsl.lightness * .78).toColor();
+    var separation = .035;
+    for (final sample in family.samples) {
+      final delta = (HSLColor.fromColor(sample.color).lightness - hsl.lightness)
+          .abs();
+      if (sample.proportion >= family.share * .03 && delta > separation) {
+        separation = delta;
+        second = sample.color;
+      }
+    }
+    result[0] = FluidColorSample(first.color, first.proportion * .82);
+    result.add(FluidColorSample(second, first.proportion * .18));
+  }
+  return List.unmodifiable(result);
+}
+
+double _toneHueGap(double a, double b) {
+  final delta = (a - b).abs();
+  return math.min(delta, 360 - delta);
+}
+
+class _FluidToneFamily {
+  _FluidToneFamily(FluidColorSample sample, HSLColor hsl, this.neutral)
+    : hue = hsl.hue,
+      lightness = hsl.lightness {
+    add(sample, hsl);
+  }
+  final double hue;
+  final double lightness;
+  final bool neutral;
+  final samples = <FluidColorSample>[];
+  double share = 0, _lightness = 0, _saturation = 0;
+  void add(FluidColorSample sample, HSLColor hsl) {
+    samples.add(sample);
+    share += sample.proportion;
+    _lightness += hsl.lightness * sample.proportion;
+    _saturation += hsl.saturation * sample.proportion;
+  }
+
+  Color get representative {
+    var best = samples.first.color;
+    var nearest = double.infinity;
+    for (final sample in samples) {
+      final hsl = HSLColor.fromColor(sample.color);
+      final distance =
+          (hsl.lightness - _lightness / share).abs() * .45 +
+          (hsl.saturation - _saturation / share).abs() * .20 -
+          .03 * sample.proportion / share -
+          (sample.proportion >= share * .15
+              ? .12 * hsl.saturation * (1 - (2 * hsl.lightness - 1).abs())
+              : 0);
+      if (distance < nearest) {
+        best = sample.color;
+        nearest = distance;
+      }
+    }
+    return best;
+  }
+}
+
 FluidPalette buildFluidPalette(
   List<Color> extracted, {
   required Color fallbackSeed,
@@ -312,6 +426,7 @@ FluidPalette buildWeightedFluidPalette(
         .toList();
     if (chromatic.isNotEmpty) extracted = chromatic;
   }
+  extracted = selectFluidTonalSamples(extracted);
   final selected = _selectDominantFluidColors(
     extracted.map((sample) => sample.color).toList(growable: false),
     fallbackSeed: fallbackSeed,
@@ -449,11 +564,76 @@ FluidPalette buildWeightedFluidPalette(
     motionWeights: _coverColorWeights(motionColors, extracted, profile),
     mixAnchor: anchor == null ? null : fluidSaturationBoost(anchor),
     mixProtection: profile.monochrome || anchor == null ? 0 : .20,
+    companionMix: _companionParents(retained, extracted),
     glowStrength: profile.dark
         ? (profile.monochrome ? .28 : (profile.vivid ? .70 : .55))
         // Legacy snapshot/uniform metadata, not additive light energy.
         : (profile.monochrome ? .30 : .50),
   );
+}
+
+// Cover-time work only. Count meaningful hue families by their real area, not
+// every dark/light shade as a new main colour. Small accents (<12%) do not
+// suppress depth; three substantial families already supply enough variation.
+List<double> _companionParents(
+  List<Color> parents,
+  List<FluidColorSample> samples,
+) {
+  final families = <({HSLColor anchor, double share})>[];
+  bool chromatic(HSLColor c) => c.saturation >= .12 && c.lightness > .055;
+  double hueGap(HSLColor a, HSLColor b) {
+    final gap = (a.hue - b.hue).abs();
+    return math.min(gap, 360 - gap);
+  }
+
+  var total = 0.0;
+  for (final sample in samples) {
+    final c = HSLColor.fromColor(sample.color);
+    total += sample.proportion;
+    final index = families.indexWhere(
+      (f) =>
+          chromatic(c) == chromatic(f.anchor) &&
+          (!chromatic(c) || hueGap(c, f.anchor) <= 32),
+    );
+    if (index < 0) {
+      families.add((anchor: c, share: sample.proportion));
+    } else {
+      families[index] = (
+        anchor: families[index].anchor,
+        share: families[index].share + sample.proportion,
+      );
+    }
+  }
+  final major =
+      families.where((f) => total > 0 && f.share / total >= .12).toList()
+        ..sort((a, b) => b.share.compareTo(a.share));
+  final result = List<double>.filled(8, 0);
+  if (major.isEmpty || major.length >= 3) return List.unmodifiable(result);
+  final used = <int>{};
+  for (var child = 0; child < major.length; child++) {
+    final family = major[child].anchor;
+    var best = -1, bestDistance = double.infinity;
+    for (var slot = 0; slot < 4; slot++) {
+      final parent = HSLColor.fromColor(parents[slot]);
+      if (used.contains(slot) || chromatic(family) != chromatic(parent)) {
+        continue;
+      }
+      final gap = hueGap(family, parent);
+      if (chromatic(family) && gap > 40) continue;
+      final score =
+          (chromatic(family) ? gap / 180 : 0) +
+          (family.lightness - parent.lightness).abs() * .25;
+      if (score < bestDistance) {
+        bestDistance = score;
+        best = slot;
+      }
+    }
+    if (best >= 0) {
+      result[child * 4 + best] = 1;
+      used.add(best);
+    }
+  }
+  return List.unmodifiable(result);
 }
 
 List<double> _coverColorWeights(
@@ -871,9 +1051,22 @@ List<Color> _selectDominantFluidColors(
     if (!_isUsableFluidColor(color) && !profile.monochrome) continue;
     final normalized = _normalizeFluidColor(color, profile);
     final lab = fluidOklab(normalized);
-    final duplicate = candidateLabs.indexWhere(
-      (other) => fluidLabDistanceSquared(other, lab) <= .01,
-    );
+    final normalizedHsl = HSLColor.fromColor(normalized);
+    var duplicate = -1;
+    for (var index = 0; index < candidateLabs.length; index++) {
+      final hsl = HSLColor.fromColor(candidates[index]);
+      final neutral = hsl.saturation < .10 || hsl.lightness < .035;
+      final nextNeutral =
+          normalizedHsl.saturation < .10 || normalizedHsl.lightness < .035;
+      if (neutral == nextNeutral &&
+          (neutral
+              ? (hsl.lightness - normalizedHsl.lightness).abs() < .08
+              : _toneHueGap(hsl.hue, normalizedHsl.hue) <= 24) &&
+          fluidLabDistanceSquared(candidateLabs[index], lab) <= .01) {
+        duplicate = index;
+        break;
+      }
+    }
     final chroma =
         [color.r, color.g, color.b].reduce((a, b) => a > b ? a : b) -
         [color.r, color.g, color.b].reduce((a, b) => a < b ? a : b);

@@ -262,15 +262,19 @@ void main() {
             oldChroma += chroma(original);
             newChroma += chroma(improved);
             brightnessDifference +=
-                ((original[i] + original[i + 1] + original[i + 2]) -
-                        (improved[i] + improved[i + 1] + improved[i + 2]))
+                ((.2126 * original[i] +
+                            .7152 * original[i + 1] +
+                            .0722 * original[i + 2]) -
+                        (.2126 * improved[i] +
+                            .7152 * improved[i + 1] +
+                            .0722 * improved[i + 2]))
                     .abs() /
-                (3 * 255);
+                255;
             expect(improved[i + 3], 255);
           }
           expect(oldChroma, 0);
           expect(newChroma / (96 * 160), greaterThan(.12));
-          expect(brightnessDifference / (96 * 160), lessThan(.025));
+          expect(brightnessDifference / (96 * 160), lessThan(1.1 / 255));
           expect(protectedGrey, orderedEquals(grey));
         } finally {
           shader.dispose();

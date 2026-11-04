@@ -6,7 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 
 void main() {
   testWidgets(
-    'mixing protects moderate chroma loss without lifting lightness or tinting grey',
+    'mixing protects moderate chroma loss without lifting display-luma or tinting grey',
     (tester) async {
       await tester.runAsync(() async {
         final shader = (await ui.FragmentProgram.fromAsset(
@@ -18,7 +18,7 @@ void main() {
           double share, {
           bool protect = true,
         }) async {
-          final values = Float32List(57);
+          final values = Float32List(77);
           values[0] = values[1] = 32;
           for (var field = 0; field < 4; field++) {
             final c = field.isEven ? a : b;
@@ -62,7 +62,7 @@ void main() {
         double chroma(List<double> c) =>
             c.reduce(math.max) - c.reduce(math.min);
         double lightness(List<double> c) =>
-            (c.reduce(math.max) + c.reduce(math.min)) / 2;
+            .2126 * c[0] + .7152 * c[1] + .0722 * c[2];
         try {
           const blue = Color(0xFF3366B3), warm = Color(0xFFB3661A);
           final raw = await sample(blue, warm, .7, protect: false);

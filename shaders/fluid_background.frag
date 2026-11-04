@@ -22,10 +22,25 @@ uniform vec4 uShape3;
 uniform vec4 uWeightDelta;
 uniform vec4 uMixProtection;
 uniform vec4 uPigmentChroma;
+uniform vec2 uChildCentre0;
+uniform vec4 uChildShape0;
+uniform vec3 uChildColor0;
+uniform float uChildStrength0;
+uniform vec2 uChildCentre1;
+uniform vec4 uChildShape1;
+uniform vec3 uChildColor1;
+uniform float uChildStrength1;
 out vec4 fragColor;
 
 float chroma(vec3 color) {
   return max(color.r, max(color.g, color.b)) - min(color.r, min(color.g, color.b));
+}
+
+// Display-luma in encoded RGB, not physical linear-light luminance. Keep its
+// original spatial field while restoring colour; HSL midpoint preservation
+// can instead brighten/darken the join as the largest RGB channel changes.
+float displayLuma(vec3 color) {
+  return dot(color, vec3(0.2126, 0.7152, 0.0722));
 }
 
 float pigmentWeight(vec2 point, vec2 centre, vec4 shape) {
@@ -57,10 +72,25 @@ void main() {
       pigmentWeight(point, uCentre3, uShape3));
   weights *= clamp(vec4(1.0) + uWeightDelta, vec4(0.55), vec4(1.65));
   float mass = dot(weights, vec4(1.0));
-  weights /= max(mass, 0.00001);
   vec3 pigment = uPigment0 * weights.x + uPigment1 * weights.y +
       uPigment2 * weights.z + uPigment3 * weights.w;
   float expectedChroma = dot(weights, uPigmentChroma);
+  // Optional related darker pigments join the same non-additive mixture. Their
+  // strengths fade with the cover transition; no new light layer or hard edge.
+  if (uChildStrength0 > 0.0) {
+    float w = 0.38 * uChildStrength0 * pigmentWeight(point, uChildCentre0, uChildShape0);
+    mass += w;
+    pigment += uChildColor0 * w;
+    expectedChroma += chroma(uChildColor0) * w;
+  }
+  if (uChildStrength1 > 0.0) {
+    float w = 0.38 * uChildStrength1 * pigmentWeight(point, uChildCentre1, uChildShape1);
+    mass += w;
+    pigment += uChildColor1 * w;
+    expectedChroma += chroma(uChildColor1) * w;
+  }
+  pigment /= max(mass, 0.00001);
+  expectedChroma /= max(mass, 0.00001);
   // Protect partially cancelled colour too, while leaving low-chroma artwork
   // alone. The stable cover axis steers deep cancellation without picking a
   // per-pixel winner, which would form a seam as fields cross.
@@ -68,21 +98,20 @@ void main() {
       smoothstep(0.04, 0.18, expectedChroma);
   float cancellation = 1.0 - smoothstep(0.22, 0.78,
       chroma(pigment) / max(expectedChroma, 0.0001));
-  float midpoint = (max(pigment.r, max(pigment.g, pigment.b)) +
-      min(pigment.r, min(pigment.g, pigment.b))) * 0.5;
-  float anchorMidpoint = (max(uMixProtection.r, max(uMixProtection.g, uMixProtection.b)) +
-      min(uMixProtection.r, min(uMixProtection.g, uMixProtection.b))) * 0.5;
-  vec3 corrected = pigment + (uMixProtection.rgb - vec3(anchorMidpoint)) *
+  float level = displayLuma(pigment);
+  vec3 axis = pigment - vec3(level) +
+      (uMixProtection.rgb - vec3(displayLuma(uMixProtection.rgb))) *
       (0.20 * strength * cancellation);
-  float correctedMidpoint = (max(corrected.r, max(corrected.g, corrected.b)) +
-      min(corrected.r, min(corrected.g, corrected.b))) * 0.5;
-  float correctedChroma = chroma(corrected);
+  float correctedChroma = chroma(axis);
   float loss = max(expectedChroma - correctedChroma, 0.0) / max(expectedChroma, 0.0001);
   float gain = 1.0 + 0.45 * strength * smoothstep(0.0, 0.50, loss);
-  // Keep the original HSL lightness and fit within gamut instead of clipping
-  // bright channels. Colour restoration does not add a lighting layer.
-  gain = min(gain, 2.0 * min(midpoint, 1.0 - midpoint) / max(correctedChroma, 0.0001));
-  pigment = vec3(midpoint) + (corrected - vec3(correctedMidpoint)) * gain;
+  // Fit the complete zero-luma colour direction inside the available channel
+  // headroom. Per-channel clipping would change brightness again at the edge.
+  float upper = max(axis.r, max(axis.g, axis.b));
+  float lower = -min(axis.r, min(axis.g, axis.b));
+  gain = min(gain, min((1.0 - level) / max(upper, 0.0001),
+      level / max(lower, 0.0001)));
+  pigment = vec3(level) + axis * gain;
   // Do not reinforce a rounded outline with a distance-dependent colour veil.
   float coverage = 0.84;
   vec3 color = mix(uBase, pigment, coverage);

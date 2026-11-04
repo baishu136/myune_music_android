@@ -27,7 +27,7 @@ void main() {
           'shaders/fluid_background.frag',
         )).fragmentShader();
         try {
-          final values = Float32List(57);
+          final values = Float32List(77);
           values[0] = 320;
           values[1] = 160;
           for (var field = 0; field < 4; field++) {

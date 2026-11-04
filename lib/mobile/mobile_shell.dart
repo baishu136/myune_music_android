@@ -43,6 +43,7 @@ import '../widgets/playback_control_sheet_surface.dart';
 import '../widgets/playback_bottom_sheet.dart';
 import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/now_playing_cover_hero.dart';
+import '../widgets/now_playing_route.dart';
 import '../widgets/now_playing_immersive_layout.dart';
 import '../widgets/fullscreen_lyrics_double_tap.dart';
 import '../widgets/fullscreen_swipe_song_hint.dart';
@@ -3932,7 +3933,7 @@ void _openNowPlaying(BuildContext context) {
   );
   unawaited(
     Navigator.of(context).push(
-      _GentleNowPlayingRoute(
+      NowPlayingRoute(
         // Snapshotting is allowed where the active Flutter/backend transition
         // supports it; current Cupertino slide implementations may still paint
         // routes live, so correctness and performance do not depend on it.
@@ -3942,16 +3943,6 @@ void _openNowPlaying(BuildContext context) {
       ),
     ),
   );
-}
-
-class _GentleNowPlayingRoute extends CupertinoPageRoute<void> {
-  _GentleNowPlayingRoute({required super.builder, super.allowSnapshotting});
-
-  @override
-  Duration get transitionDuration => nowPlayingRouteTransitionDuration;
-
-  @override
-  Duration get reverseTransitionDuration => const Duration(milliseconds: 460);
 }
 
 class _NowPlayingArtworkWarmup extends StatelessWidget {
