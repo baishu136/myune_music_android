@@ -5,6 +5,8 @@
 ![Rust](https://img.shields.io/badge/lang-Rust-orange)
 [![License](https://img.shields.io/badge/License-Apache%202.0-lightgrey)](LICENSE)
 
+![软件截图](screenshot/screenshot.jpg)
+
 一个基于 **Flutter (Dart)** 实现的 Android 本地音乐播放器。
 
 > [!IMPORTANT]
@@ -114,21 +116,6 @@ Android 使用独立的触控界面：底部导航（音乐库、歌单、歌手
 参阅 [media-kit](https://github.com/media-kit/media-kit#supported-formats)
 
 > 部分格式需在设置启用 **允许添加任何格式的文件**
-
-
-## 📸 软件截图
-
-### 音乐库
-
-![安卓音乐库与歌曲列表](screenshot/android-library-overview.png)
-
-### 播放页
-
-![安卓播放页：封面、歌曲信息与播放控制](screenshot/android-playback-overview.png)
-
-### 全屏歌词
-
-![安卓全屏歌词与逐字高亮](screenshot/android-lyrics-overview.png)
 
 
 ## 🚀 快速开始
