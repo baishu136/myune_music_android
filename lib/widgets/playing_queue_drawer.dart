@@ -19,10 +19,12 @@ class PlayingQueueDrawer extends StatefulWidget {
     super.key,
     this.transparentBackground = false,
     this.syncHomeBackground = true,
+    this.compactLandscapeNavigation = false,
   });
 
   final bool transparentBackground;
   final bool syncHomeBackground;
+  final bool compactLandscapeNavigation;
 
   @override
   State<PlayingQueueDrawer> createState() => PlayingQueueDrawerState();
@@ -179,150 +181,228 @@ class PlayingQueueDrawerState extends State<PlayingQueueDrawer>
           _QueueScope.playlists => playlistSongs,
         };
 
-        final queueContent = Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        final landscape =
+            MediaQuery.orientationOf(context) == Orientation.landscape &&
+            !widget.compactLandscapeNavigation;
+        final queueContent = Flex(
+          direction: landscape ? Axis.horizontal : Axis.vertical,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-              child: Row(
+            if (widget.compactLandscapeNavigation &&
+                _scope == _QueueScope.search &&
+                MediaQuery.viewInsetsOf(context).bottom > 0)
+              const SizedBox.shrink()
+            else if (widget.compactLandscapeNavigation)
+              SingleChildScrollView(
+                key: const ValueKey('landscape-song-scopes'),
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                child: Row(
+                  children: [
+                    for (final entry in [
+                      (
+                        _QueueScope.library,
+                        Icons.library_music_outlined,
+                        '音乐库',
+                        true,
+                      ),
+                      (
+                        _QueueScope.artist,
+                        Icons.person_outline,
+                        '歌手',
+                        artists.isNotEmpty,
+                      ),
+                      (
+                        _QueueScope.album,
+                        Icons.album_outlined,
+                        '专辑',
+                        drawerAlbum.trim().isNotEmpty,
+                      ),
+                      (_QueueScope.search, Icons.search, '搜索', true),
+                      (_QueueScope.playlists, Icons.playlist_play, '歌单', true),
+                    ])
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: ChoiceChip(
+                          showCheckmark: false,
+                          avatar: Icon(entry.$2, size: 18),
+                          label: Text(entry.$3),
+                          selected: _scope == entry.$1,
+                          onSelected: entry.$4
+                              ? (_) => _setSongScope(entry.$1)
+                              : null,
+                        ),
+                      ),
+                  ],
+                ),
+              )
+            else
+              SizedBox(
+                width: landscape ? 100 : null,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 10,
+                  ),
+                  child: Flex(
+                    direction: landscape ? Axis.vertical : Axis.horizontal,
+                    children: [
+                      Expanded(
+                        child: _QueueScopeButton(
+                          label: '音乐库',
+                          icon: Icons.library_music_outlined,
+                          selected: _scope == _QueueScope.library,
+                          onTap: () => _setSongScope(_QueueScope.library),
+                        ),
+                      ),
+                      Expanded(
+                        child: _QueueScopeButton(
+                          label: '歌手',
+                          icon: Icons.person_outline,
+                          selected: _scope == _QueueScope.artist,
+                          enabled: artists.isNotEmpty,
+                          onTap: () => _setSongScope(_QueueScope.artist),
+                        ),
+                      ),
+                      Expanded(
+                        child: _QueueScopeButton(
+                          label: '专辑',
+                          icon: Icons.album_outlined,
+                          selected: _scope == _QueueScope.album,
+                          enabled: drawerAlbum.trim().isNotEmpty,
+                          onTap: () => _setSongScope(_QueueScope.album),
+                        ),
+                      ),
+                      Expanded(
+                        child: _QueueScopeButton(
+                          label: '搜索',
+                          icon: Icons.search,
+                          selected: _scope == _QueueScope.search,
+                          onTap: () => _setSongScope(_QueueScope.search),
+                        ),
+                      ),
+                      IconButton(
+                        tooltip: '歌单',
+                        color: _scope == _QueueScope.playlists
+                            ? Theme.of(context).colorScheme.primary
+                            : Theme.of(context).colorScheme.onSurfaceVariant,
+                        icon: const Icon(Icons.playlist_play),
+                        onPressed: () => _setSongScope(_QueueScope.playlists),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Expanded(
-                    child: _QueueScopeButton(
-                      label: '音乐库',
-                      icon: Icons.library_music_outlined,
-                      selected: _scope == _QueueScope.library,
-                      onTap: () => _setSongScope(_QueueScope.library),
+                  const Divider(height: 1),
+                  if (_scope == _QueueScope.search)
+                    Padding(
+                      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+                      child: TextField(
+                        key: const ValueKey('queue-library-search'),
+                        controller: _searchController,
+                        autofocus: true,
+                        decoration: InputDecoration(
+                          hintText: '搜索音乐库',
+                          prefixIcon: const Icon(Icons.search),
+                          suffixIcon: _searchController.text.isEmpty
+                              ? null
+                              : IconButton(
+                                  tooltip: '清除搜索',
+                                  icon: const Icon(Icons.clear),
+                                  onPressed: () {
+                                    setState(_searchController.clear);
+                                    _remember();
+                                  },
+                                ),
+                        ),
+                        onChanged: (_) {
+                          setState(() {});
+                          _remember();
+                        },
+                      ),
                     ),
-                  ),
-                  Expanded(
-                    child: _QueueScopeButton(
-                      label: '歌手',
-                      icon: Icons.person_outline,
-                      selected: _scope == _QueueScope.artist,
-                      enabled: artists.isNotEmpty,
-                      onTap: () => _setSongScope(_QueueScope.artist),
+
+                  if (_scope == _QueueScope.playlists &&
+                      _selectedPlaylist == null)
+                    Expanded(child: _buildPlaylistList(context, notifier))
+                  else if (songs.isEmpty)
+                    Expanded(child: Center(child: Text(_emptyMessage)))
+                  else
+                    Expanded(
+                      child: Column(
+                        children: [
+                          if (_scope == _QueueScope.playlists)
+                            ListTile(
+                              leading: const Icon(Icons.arrow_back),
+                              title: Text(_selectedPlaylist?.name ?? '歌单'),
+                              onTap: () {
+                                setState(() => _selectedPlaylist = null);
+                                _remember(offset: 0);
+                                _restartEntrance();
+                              },
+                            ),
+                          Expanded(
+                            child: Padding(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 8,
+                              ),
+                              child: SilkyScroll(
+                                controller: scrollController,
+                                silkyScrollDuration: ScrollConfig.duration,
+                                scrollSpeed: ScrollConfig.speed,
+                                animationCurve: ScrollConfig.curve,
+                                builder: (context, controller, physics, _) =>
+                                    ListView.builder(
+                                      controller: controller,
+                                      physics: physics,
+                                      itemCount: songs.length,
+                                      itemBuilder: (context, index) {
+                                        final song = songs[index];
+                                        return _QueueEntranceItem(
+                                          key: ValueKey(song.filePath),
+                                          index: index,
+                                          animation: _scopeEntranceController,
+                                          child: SongTileWidget(
+                                            song: song,
+                                            index: index,
+                                            enableContextMenu: false,
+                                            queueActions: true,
+                                            onQueueChanged: () {
+                                              _originalSource = notifier
+                                                  .capturePlaybackSource();
+                                            },
+                                            contextPlaylist:
+                                                _scope ==
+                                                        _QueueScope.playlists &&
+                                                    _selectedPlaylist != null
+                                                ? _selectedPlaylist!
+                                                : notifier
+                                                      .allSongsVirtualPlaylist,
+                                            onTap: () => _playSong(
+                                              notifier,
+                                              songs,
+                                              index,
+                                            ),
+                                          ),
+                                        );
+                                      },
+                                    ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
                     ),
-                  ),
-                  Expanded(
-                    child: _QueueScopeButton(
-                      label: '专辑',
-                      icon: Icons.album_outlined,
-                      selected: _scope == _QueueScope.album,
-                      enabled: drawerAlbum.trim().isNotEmpty,
-                      onTap: () => _setSongScope(_QueueScope.album),
-                    ),
-                  ),
-                  Expanded(
-                    child: _QueueScopeButton(
-                      label: '搜索',
-                      icon: Icons.search,
-                      selected: _scope == _QueueScope.search,
-                      onTap: () => _setSongScope(_QueueScope.search),
-                    ),
-                  ),
-                  IconButton(
-                    tooltip: '歌单',
-                    color: _scope == _QueueScope.playlists
-                        ? Theme.of(context).colorScheme.primary
-                        : Theme.of(context).colorScheme.onSurfaceVariant,
-                    icon: const Icon(Icons.playlist_play),
-                    onPressed: () => _setSongScope(_QueueScope.playlists),
-                  ),
                 ],
               ),
             ),
-            const Divider(height: 1),
-            if (_scope == _QueueScope.search)
-              Padding(
-                padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-                child: TextField(
-                  key: const ValueKey('queue-library-search'),
-                  controller: _searchController,
-                  autofocus: true,
-                  decoration: InputDecoration(
-                    hintText: '搜索音乐库',
-                    prefixIcon: const Icon(Icons.search),
-                    suffixIcon: _searchController.text.isEmpty
-                        ? null
-                        : IconButton(
-                            tooltip: '清除搜索',
-                            icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              setState(_searchController.clear);
-                              _remember();
-                            },
-                          ),
-                  ),
-                  onChanged: (_) {
-                    setState(() {});
-                    _remember();
-                  },
-                ),
-              ),
-
-            if (_scope == _QueueScope.playlists && _selectedPlaylist == null)
-              Expanded(child: _buildPlaylistList(context, notifier))
-            else if (songs.isEmpty)
-              Expanded(child: Center(child: Text(_emptyMessage)))
-            else
-              Expanded(
-                child: Column(
-                  children: [
-                    if (_scope == _QueueScope.playlists)
-                      ListTile(
-                        leading: const Icon(Icons.arrow_back),
-                        title: Text(_selectedPlaylist?.name ?? '歌单'),
-                        onTap: () {
-                          setState(() => _selectedPlaylist = null);
-                          _remember(offset: 0);
-                          _restartEntrance();
-                        },
-                      ),
-                    Expanded(
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        child: SilkyScroll(
-                          controller: scrollController,
-                          silkyScrollDuration: ScrollConfig.duration,
-                          scrollSpeed: ScrollConfig.speed,
-                          animationCurve: ScrollConfig.curve,
-                          builder: (context, controller, physics, _) =>
-                              ListView.builder(
-                                controller: controller,
-                                physics: physics,
-                                itemCount: songs.length,
-                                itemBuilder: (context, index) {
-                                  final song = songs[index];
-                                  return _QueueEntranceItem(
-                                    key: ValueKey(song.filePath),
-                                    index: index,
-                                    animation: _scopeEntranceController,
-                                    child: SongTileWidget(
-                                      song: song,
-                                      index: index,
-                                      enableContextMenu: false,
-                                      queueActions: true,
-                                      onQueueChanged: () {
-                                        _originalSource = notifier
-                                            .capturePlaybackSource();
-                                      },
-                                      contextPlaylist:
-                                          _scope == _QueueScope.playlists &&
-                                              _selectedPlaylist != null
-                                          ? _selectedPlaylist!
-                                          : notifier.allSongsVirtualPlaylist,
-                                      onTap: () =>
-                                          _playSong(notifier, songs, index),
-                                    ),
-                                  );
-                                },
-                              ),
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
           ],
         );
         final embeddedCover = currentSong?.albumArt;

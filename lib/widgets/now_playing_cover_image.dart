@@ -1,6 +1,8 @@
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart';
+import 'artwork_image.dart';
 
 const nowPlayingCoverReplacementDuration = Duration(milliseconds: 320);
 
@@ -56,6 +58,8 @@ class NowPlayingCoverImage extends StatelessWidget {
                         image: true,
                         child: _DecodedCoverTransition(
                           image: (child as RawImage).image,
+                          content: _coverContent(image),
+                          ready: frame != null,
                           invertColors: child.invertColors,
                           size: size,
                           enabled:
@@ -87,11 +91,15 @@ class NowPlayingCoverImage extends StatelessWidget {
 class _DecodedCoverTransition extends StatefulWidget {
   const _DecodedCoverTransition({
     required this.image,
+    required this.content,
+    required this.ready,
     required this.invertColors,
     required this.size,
     required this.enabled,
   });
   final ui.Image? image;
+  final Object? content;
+  final bool ready;
   final bool invertColors;
   final double size;
   final bool enabled;
@@ -112,14 +120,22 @@ class _DecodedCoverTransitionState extends State<_DecodedCoverTransition>
     parent: _controller,
     curve: Curves.easeInOutCubic,
   );
+  late final Animation<double> _incomingScale = _opacity.drive(
+    Tween(begin: 1.16, end: 1.0),
+  );
+  late final Animation<double> _outgoingScale = _opacity.drive(
+    Tween(begin: 1.0, end: .84),
+  );
   ui.Image? _current;
   ui.Image? _previous;
   ui.Image? _queued;
+  Object? _currentContent, _queuedContent;
 
   @override
   void initState() {
     super.initState();
     _current = widget.image?.clone();
+    _currentContent = widget.ready ? widget.content : null;
   }
 
   bool _same(ui.Image? a, ui.Image? b) =>
@@ -139,27 +155,49 @@ class _DecodedCoverTransitionState extends State<_DecodedCoverTransition>
         _current?.dispose();
         _current = image?.clone();
       }
+      _currentContent = widget.ready ? widget.content : _currentContent;
+      _queuedContent = null;
       _controller.value = 1;
       return;
     }
-    // Gapless pending frames and source/cache notifications don't restart it.
-    if (_same(image, _current)) {
-      _queued?.dispose();
-      _queued = null;
+    if (!widget.ready) {
+      // A newer pending request invalidates an obsolete decoded queue entry.
+      // Never label gapless old pixels as the new requested artwork.
+      if (widget.content != _queuedContent) {
+        _queued?.dispose();
+        _queued = null;
+        _queuedContent = null;
+      }
       return;
     }
-    if (image == null || _same(image, _queued)) {
+    // Gapless pending frames and source/cache notifications don't restart it.
+    if (_same(image, _current) || widget.content == _currentContent) {
+      if (!_same(image, _current)) {
+        _current?.dispose();
+        _current = image?.clone();
+      }
+      _currentContent = widget.content;
+      _queued?.dispose();
+      _queued = null;
+      _queuedContent = null;
+      return;
+    }
+    if (image == null ||
+        _same(image, _queued) ||
+        widget.content == _queuedContent) {
       return;
     }
     if (_controller.isAnimating) {
       _queued?.dispose();
       _queued = image.clone();
+      _queuedContent = widget.content;
     } else {
-      _replace(image.clone());
+      _replace(image.clone(), widget.content);
     }
   }
 
-  void _replace(ui.Image image) {
+  void _replace(ui.Image image, Object? content) {
+    _currentContent = content;
     _previous?.dispose();
     _previous = _current;
     _current = image;
@@ -176,7 +214,9 @@ class _DecodedCoverTransitionState extends State<_DecodedCoverTransition>
     _previous = null;
     final queued = _queued;
     _queued = null;
-    if (queued != null) _replace(queued);
+    final content = _queuedContent;
+    _queuedContent = null;
+    if (queued != null) _replace(queued, content);
     if (mounted) setState(() {});
   }
 
@@ -207,19 +247,49 @@ class _DecodedCoverTransitionState extends State<_DecodedCoverTransition>
       fit: StackFit.expand,
       children: [
         if (_previous != null)
-          RepaintBoundary(
-            child: _pixels(_previous, 'now-playing-cover-previous'),
+          ScaleTransition(
+            key: const ValueKey('now-playing-cover-outgoing-scale'),
+            scale: _outgoingScale,
+            child: RepaintBoundary(
+              child: _pixels(_previous, 'now-playing-cover-previous'),
+            ),
           ),
         // Keep the old cover opaque below the incoming fade. Two opposing alpha
         // fades would darken the midpoint. No layout or per-frame source reads.
         FadeTransition(
           key: const ValueKey('now-playing-cover-fade'),
           opacity: _opacity,
-          child: RepaintBoundary(
-            child: _pixels(_current, 'now-playing-cover-current'),
+          child: ScaleTransition(
+            key: const ValueKey('now-playing-cover-incoming-scale'),
+            scale: _incomingScale,
+            child: RepaintBoundary(
+              child: _pixels(_current, 'now-playing-cover-current'),
+            ),
           ),
         ),
       ],
     );
   }
+}
+
+final _coverHashes = Expando<int>();
+Object _coverContent(ImageProvider image) {
+  if (image is ResizeImage) return _coverContent(image.imageProvider);
+  if (image is CoverMemoryImage) return _CoverContent(image.bytes);
+  if (image is MemoryImage) return _CoverContent(image.bytes);
+  return image;
+}
+
+class _CoverContent {
+  _CoverContent(this.bytes)
+    : hash = _coverHashes[bytes] ??= Object.hashAll(bytes);
+  final List<int> bytes;
+  final int hash;
+  @override
+  int get hashCode => hash;
+  @override
+  bool operator ==(Object other) =>
+      other is _CoverContent &&
+      hash == other.hash &&
+      (identical(bytes, other.bytes) || listEquals(bytes, other.bytes));
 }

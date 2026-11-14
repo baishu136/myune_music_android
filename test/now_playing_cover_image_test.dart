@@ -71,6 +71,24 @@ void main() {
       await resolve(a, Colors.red);
       await resolve(b, Colors.blue);
       await tester.pump(const Duration(milliseconds: 100));
+      expect(
+        tester
+            .widget<ScaleTransition>(
+              find.byKey(const ValueKey('now-playing-cover-incoming-scale')),
+            )
+            .scale
+            .value,
+        greaterThan(1),
+      );
+      expect(
+        tester
+            .widget<ScaleTransition>(
+              find.byKey(const ValueKey('now-playing-cover-outgoing-scale')),
+            )
+            .scale
+            .value,
+        lessThan(1),
+      );
       final blend = opacity();
       final bFrame = current().clone();
       addTearDown(bFrame.dispose);

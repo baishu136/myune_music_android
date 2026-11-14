@@ -9,10 +9,12 @@ class CopyableSongDetailRow extends StatelessWidget {
     super.key,
     required this.label,
     required this.value,
+    this.labelWidth = 104,
   });
 
   final String label;
   final String value;
+  final double labelWidth;
 
   Future<void> _copy(BuildContext context) async {
     try {
@@ -48,7 +50,7 @@ class CopyableSongDetailRow extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             SizedBox(
-              width: 104,
+              width: labelWidth,
               child: Text(label, style: Theme.of(context).textTheme.labelLarge),
             ),
             Expanded(

@@ -1348,6 +1348,7 @@ class _MobileLyricsListState extends State<MobileLyricsList>
           _prewarm.clear();
           _prewarm.identity = identity;
           _prewarm.cache = _KaraokePaintCache(
+            fullWidthAlignment: true,
             text: effective.texts.join('\n'),
             ranges: _karaokeRanges(effective),
             synthetic: !timed,
@@ -3128,6 +3129,7 @@ class _LyricLineItem extends StatelessWidget {
                       child: _CachedMobileLyricGlow(
                         relativeDistance: relativeDistance,
                         painter: MobileLyricGlowPainter(
+                          fullWidthAlignment: true,
                           text: line.texts.join('\n'),
                           style: glowStyle,
                           color: glowColor,
@@ -3530,6 +3532,7 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow>
       final config = widget.painter;
       final elastic = _LyricElasticScope.of(context);
       final geometry = MobileLyricGlowPainter(
+        fullWidthAlignment: config.fullWidthAlignment,
         text: config.text,
         style: config.style,
         color: Colors.white.withValues(
@@ -3625,6 +3628,7 @@ class _CachedMobileLyricGlowState extends State<_CachedMobileLyricGlow>
         isComplex: true,
         willChange: false,
         painter: MobileLyricGlowPainter(
+          fullWidthAlignment: true,
           text: config.text,
           style: config.style,
           color: config.color,
@@ -3677,6 +3681,7 @@ class MobileLyricGlowPainter extends CustomPainter {
     required this.textScaler,
     required this.locale,
     this.primaryRowOnly = false,
+    this.fullWidthAlignment = false,
     this.preparedLayout,
     this.preparedRaster,
     this.preparedRasterSource,
@@ -3693,6 +3698,7 @@ class MobileLyricGlowPainter extends CustomPainter {
   final TextScaler textScaler;
   final Locale? locale;
   final bool primaryRowOnly;
+  final bool fullWidthAlignment;
   final TextPainter? preparedLayout;
   final ui.Image? preparedRaster;
   final Rect? preparedRasterSource;
@@ -3757,7 +3763,7 @@ class MobileLyricGlowPainter extends CustomPainter {
       textDirection: textDirection,
       textScaler: textScaler,
       locale: locale,
-    )..layout(maxWidth: width);
+    )..layout(minWidth: fullWidthAlignment ? width : 0, maxWidth: width);
   }
 
   @override
@@ -3767,6 +3773,7 @@ class MobileLyricGlowPainter extends CustomPainter {
       oldDelegate.color != color ||
       oldDelegate.blurRadius != blurRadius ||
       oldDelegate.textAlign != textAlign ||
+      oldDelegate.fullWidthAlignment != fullWidthAlignment ||
       oldDelegate.textDirection != textDirection ||
       oldDelegate.textScaler != textScaler ||
       oldDelegate.locale != locale ||
@@ -4216,6 +4223,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
           final prepared =
               widget.prewarm.take(widget.cacheIdentity) ??
               _KaraokePaintCache(
+                fullWidthAlignment: true,
                 text: _text,
                 ranges: _ranges,
                 synthetic: widget.synthetic,
@@ -4283,6 +4291,7 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
           );
         }
         if (cache == null ||
+            !cache.fullWidthAlignment ||
             !cache.matches(
               maxWidth,
               inheritedStyle,
@@ -4295,19 +4304,21 @@ class _KaraokeLyricTextState extends State<_KaraokeLyricText>
           cache?.dispose();
           cache = widget.prewarm.take(widget.cacheIdentity);
           if (cache != null &&
-              !cache.matches(
-                maxWidth,
-                inheritedStyle,
-                widget.textAlign,
-                textDirection,
-                textScaler,
-                locale,
-                pixelRatio,
-              )) {
+              (!cache.fullWidthAlignment ||
+                  !cache.matches(
+                    maxWidth,
+                    inheritedStyle,
+                    widget.textAlign,
+                    textDirection,
+                    textScaler,
+                    locale,
+                    pixelRatio,
+                  ))) {
             cache.dispose();
             cache = null;
           }
           cache ??= _KaraokePaintCache(
+            fullWidthAlignment: true,
             text: _text,
             ranges: _ranges,
             synthetic: widget.synthetic,

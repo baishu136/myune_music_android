@@ -20,3 +20,9 @@
 - 移除托盘、独占输出设备等不适用于手机的桌面功能入口
 
 如需了解原始项目、提交上游问题或支持原作者，请访问上游仓库。
+
+插件脚本运行时包含 Fabrice Bellard、Charlie Gordon 等作者的 QuickJS
+2026-06-04，使用 MIT 许可证。未修改的引擎源码及许可证位于
+`third_party/quickjs/`；仅编译核心引擎，不编译标准文件/系统模块。
+来源：https://bellard.org/quickjs/quickjs-2026-06-04.tar.xz
+上游压缩包 SHA256：`b376e839b322978313d929fd20663b11ba58b75df5a46c126dd19ea2fa70ad2a`。

@@ -1,3 +1,9 @@
+import '../widgets/playback_actions_menu.dart';
+import '../plugins/plugin_manager_page.dart';
+import '../widgets/playback_system_ui.dart';
+import '../widgets/library_entrance_motion.dart';
+export '../widgets/library_entrance_motion.dart';
+import '../widgets/playback_orientation.dart';
 import 'dart:async';
 import 'dart:io';
 import 'dart:developer' as developer;
@@ -36,6 +42,7 @@ import '../widgets/transport_skip_button.dart';
 import '../widgets/playback_mode_page.dart';
 import '../widgets/song_playlist_sheet.dart';
 import '../widgets/playlist_created_label.dart';
+import '../widgets/playlist_entrance_motion.dart';
 import '../widgets/long_press_icon_button.dart';
 import '../widgets/playback_mode_glyph.dart';
 import '../widgets/home_header_page_transition.dart';
@@ -45,6 +52,9 @@ import '../widgets/mobile_lyrics_list.dart';
 import '../widgets/now_playing_cover_hero.dart';
 import '../widgets/now_playing_route.dart';
 import '../widgets/now_playing_immersive_layout.dart';
+import '../widgets/landscape_playback_surface.dart';
+import '../widgets/compact_playback_lyrics.dart';
+import '../widgets/landscape_tools_panel.dart';
 import '../widgets/fullscreen_lyrics_double_tap.dart';
 import '../widgets/fullscreen_swipe_song_hint.dart';
 import '../widgets/song_selection_actions.dart';
@@ -284,13 +294,6 @@ bool shouldStartLibraryEntrance({
 }) =>
     enabled && libraryLoaded && hasSongs && !alreadyStarted && !alreadyClaimed;
 
-enum LibraryEntranceStyle { list, indexed }
-
-int libraryEntranceItemLimit(LibraryEntranceStyle style) => switch (style) {
-  LibraryEntranceStyle.list => 6,
-  LibraryEntranceStyle.indexed => 10,
-};
-
 class _MobileShellState extends State<MobileShell>
     with SingleTickerProviderStateMixin {
   static const _notificationPromptedKey = 'notification_permission_prompted';
@@ -494,20 +497,26 @@ class _MobileShellState extends State<MobileShell>
     // that State on every shell selection. Reuse the bounded five page widgets
     // until THEIR inputs change; their own provider subscriptions stay live.
     final page = switch (index) {
-      0 => _LibraryTab(
-        query: _query,
-        entranceAnimation: _libraryEntranceController,
-        topEdgeFadeEnabled: useHomeTheme,
-        onEntranceReady: _scheduleLibraryEntrance,
-        selectionMode: _librarySelectionMode,
-        selectedPaths: _selectedLibrarySongPaths,
-        onToggleSelection: _toggleLibrarySongSelection,
+      0 => LibraryEntranceMotion(
+        animation: _libraryEntranceController,
+        child: _LibraryTab(
+          query: _query,
+          entranceAnimation: _libraryEntranceController,
+          topEdgeFadeEnabled: useHomeTheme,
+          onEntranceReady: _scheduleLibraryEntrance,
+          selectionMode: _librarySelectionMode,
+          selectedPaths: _selectedLibrarySongPaths,
+          onToggleSelection: _toggleLibrarySongSelection,
+        ),
       ),
-      1 => _PlaylistsTab(
-        topEdgeFadeEnabled: useHomeTheme,
-        onCreateFromLibrary: _startPlaylistSelection,
-        onAddFromLibrary: _startExistingPlaylistSelection,
-        onImportSongs: _showImportOptions,
+      1 => PlaylistEntranceMotion(
+        navigation: _homePageController,
+        child: _PlaylistsTab(
+          topEdgeFadeEnabled: useHomeTheme,
+          onCreateFromLibrary: _startPlaylistSelection,
+          onAddFromLibrary: _startExistingPlaylistSelection,
+          onImportSongs: _showImportOptions,
+        ),
       ),
       2 => SongGroupTab(kind: '歌手', useHomeTheme: useHomeTheme),
       3 => SongGroupTab(kind: '专辑', useHomeTheme: useHomeTheme),
@@ -1599,54 +1608,58 @@ class _PlaylistsTab extends StatelessWidget {
                           itemBuilder: (context, index) {
                             final playlist = notifier.playlists[index];
                             final selected = index == view.selectedIndex;
-                            return Padding(
-                              padding: const EdgeInsets.only(bottom: 7),
-                              child: HomePlaylistSurface(
-                                selected: selected,
-                                cornerRadius: 12,
-                                child: InkWell(
-                                  borderRadius: BorderRadius.circular(12),
-                                  onTap: () => notifier.setSelectedIndex(index),
-                                  onLongPress: () => _showPlaylistActions(
-                                    context,
-                                    index: index,
-                                    playlist: playlist,
-                                  ),
-                                  child: Padding(
-                                    padding: const EdgeInsets.symmetric(
-                                      horizontal: 10,
-                                      vertical: 12,
+                            return PlaylistEntranceItem(
+                              index: index,
+                              child: Padding(
+                                padding: const EdgeInsets.only(bottom: 7),
+                                child: HomePlaylistSurface(
+                                  selected: selected,
+                                  cornerRadius: 12,
+                                  child: InkWell(
+                                    borderRadius: BorderRadius.circular(12),
+                                    onTap: () =>
+                                        notifier.setSelectedIndex(index),
+                                    onLongPress: () => _showPlaylistActions(
+                                      context,
+                                      index: index,
+                                      playlist: playlist,
                                     ),
-                                    child: Column(
-                                      crossAxisAlignment:
-                                          CrossAxisAlignment.start,
-                                      children: [
-                                        Text(
-                                          playlist.name,
-                                          maxLines: 2,
-                                          overflow: TextOverflow.ellipsis,
-                                          style: Theme.of(context)
-                                              .textTheme
-                                              .labelLarge
-                                              ?.copyWith(
-                                                fontWeight: selected
-                                                    ? FontWeight.w700
-                                                    : FontWeight.w500,
-                                                color: selected
-                                                    ? Theme.of(context)
-                                                          .colorScheme
-                                                          .onSecondaryContainer
-                                                    : null,
-                                              ),
-                                        ),
-                                        const SizedBox(height: 2),
-                                        Text(
-                                          '${playlist.isLibrary ? notifier.allSongs.length : playlist.songFilePaths.length} 首',
-                                          style: Theme.of(
-                                            context,
-                                          ).textTheme.labelSmall,
-                                        ),
-                                      ],
+                                    child: Padding(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 10,
+                                        vertical: 12,
+                                      ),
+                                      child: Column(
+                                        crossAxisAlignment:
+                                            CrossAxisAlignment.start,
+                                        children: [
+                                          Text(
+                                            playlist.name,
+                                            maxLines: 2,
+                                            overflow: TextOverflow.ellipsis,
+                                            style: Theme.of(context)
+                                                .textTheme
+                                                .labelLarge
+                                                ?.copyWith(
+                                                  fontWeight: selected
+                                                      ? FontWeight.w700
+                                                      : FontWeight.w500,
+                                                  color: selected
+                                                      ? Theme.of(context)
+                                                            .colorScheme
+                                                            .onSecondaryContainer
+                                                      : null,
+                                                ),
+                                          ),
+                                          const SizedBox(height: 2),
+                                          Text(
+                                            '${playlist.isLibrary ? notifier.allSongs.length : playlist.songFilePaths.length} 首',
+                                            style: Theme.of(
+                                              context,
+                                            ).textTheme.labelSmall,
+                                          ),
+                                        ],
+                                      ),
                                     ),
                                   ),
                                 ),
@@ -1681,27 +1694,33 @@ class _PlaylistsTab extends StatelessWidget {
             itemCount: notifier.playlists.length + 1,
             itemBuilder: (context, index) {
               if (index == notifier.playlists.length) {
-                return _PlaylistCard(
-                  name: '新建歌单',
-                  icon: Icons.add,
-                  onTap: () => _newPlaylist(context),
+                return PlaylistEntranceItem(
+                  index: index,
+                  child: _PlaylistCard(
+                    name: '新建歌单',
+                    icon: Icons.add,
+                    onTap: () => _newPlaylist(context),
+                  ),
                 );
               }
               final playlist = notifier.playlists[index];
-              return _PlaylistCard(
-                name: playlist.name,
-                createdAt: playlist.createdAt,
-                icon: playlist.isLibrary
-                    ? Icons.library_music_outlined
-                    : Icons.queue_music,
-                selected: index == view.selectedIndex,
-                subtitle:
-                    '${playlist.isLibrary ? notifier.allSongs.length : playlist.songFilePaths.length} 首',
-                onTap: () => notifier.setSelectedIndex(index),
-                onLongPress: () => _showPlaylistActions(
-                  context,
-                  index: index,
-                  playlist: playlist,
+              return PlaylistEntranceItem(
+                index: index,
+                child: _PlaylistCard(
+                  name: playlist.name,
+                  createdAt: playlist.createdAt,
+                  icon: playlist.isLibrary
+                      ? Icons.library_music_outlined
+                      : Icons.queue_music,
+                  selected: index == view.selectedIndex,
+                  subtitle:
+                      '${playlist.isLibrary ? notifier.allSongs.length : playlist.songFilePaths.length} 首',
+                  onTap: () => notifier.setSelectedIndex(index),
+                  onLongPress: () => _showPlaylistActions(
+                    context,
+                    index: index,
+                    playlist: playlist,
+                  ),
                 ),
               );
             },
@@ -3127,39 +3146,6 @@ class _SongCollectionPageState extends State<SongCollectionPage> {
   }
 }
 
-Widget buildLibrarySongEntranceTransition({
-  required Animation<double>? animation,
-  required int order,
-  required Widget child,
-  LibraryEntranceStyle style = LibraryEntranceStyle.list,
-}) {
-  final limit = libraryEntranceItemLimit(style);
-  if (animation == null || order >= limit) return child;
-  final startStep = style == LibraryEntranceStyle.indexed ? .038 : .055;
-  final start = order * startStep;
-  final end = (start + (style == LibraryEntranceStyle.indexed ? .48 : .58))
-      .clamp(0.0, 1.0);
-  final progress = CurvedAnimation(
-    parent: animation,
-    curve: Interval(start, end, curve: const Cubic(.16, 1, .3, 1)),
-  );
-  Widget transition = SlideTransition(
-    position: Tween<Offset>(
-      begin: Offset(0, style == LibraryEntranceStyle.indexed ? .10 : .18),
-      end: Offset.zero,
-    ).animate(progress),
-    child: RepaintBoundary(child: child),
-  );
-  if (style == LibraryEntranceStyle.indexed) {
-    transition = ScaleTransition(
-      scale: Tween<double>(begin: .965, end: 1).animate(progress),
-      alignment: Alignment.topCenter,
-      child: transition,
-    );
-  }
-  return FadeTransition(opacity: progress, child: transition);
-}
-
 // The standard phone list keeps a 48dp cover and a 48dp action target with
 // Average of the pre-337 (78dp) and compact (56dp) rows: 19dp between covers.
 // Keep prefetch geometry in sync without constraining larger accessibility text.
@@ -3938,8 +3924,9 @@ void _openNowPlaying(BuildContext context) {
         // supports it; current Cupertino slide implementations may still paint
         // routes live, so correctness and performance do not depend on it.
         allowSnapshotting: true,
-        builder: (_) =>
-            _NowPlayingPage(initialCoverHeroReady: initialCoverHeroReady),
+        builder: (_) => PlaybackOrientationScope(
+          child: _NowPlayingPage(initialCoverHeroReady: initialCoverHeroReady),
+        ),
       ),
     ),
   );
@@ -4645,6 +4632,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   static const _lyricsContentExitDuration = Duration(milliseconds: 100);
 
   bool _showLyrics = false;
+  Orientation? _visualOrientation;
+  LandscapeCoverMode _landscapeCoverMode = LandscapeCoverMode.standard;
   bool _lyricBrowseTapHandled = false;
   bool _coverLayerBuilt = true;
   bool _lyricsLayerBuilt = false;
@@ -4793,6 +4782,25 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   void didChangeDependencies() {
     super.didChangeDependencies();
     final routeAnimation = ModalRoute.of(context)?.animation;
+    final orientation = MediaQuery.orientationOf(context);
+    if (_visualOrientation != null && _visualOrientation != orientation) {
+      _visualTransitionRevision++;
+      _lyricsEntryRevision++;
+      _cancelVisualTransitionTimers();
+      _coverTransitionController.stop(canceled: false);
+      _lyricsContentTransitionController.stop(canceled: false);
+      if (orientation == Orientation.portrait) {
+        _landscapeCoverMode = LandscapeCoverMode.standard;
+      }
+      _coverTransitionController.value = _showLyrics ? 1 : 0;
+      _lyricsContentTransitionController.value =
+          _showLyrics || _landscapeCoverMode == LandscapeCoverMode.duet ? 1 : 0;
+      _lyricsEntryPreparing = false;
+      _lyricsRealtimeVisualsEnabled =
+          (_showLyrics || _landscapeCoverMode == LandscapeCoverMode.duet) &&
+          !_routeTransitionActive;
+    }
+    _visualOrientation = orientation;
     if (identical(routeAnimation, _routeAnimation)) return;
     _routeAnimation?.removeStatusListener(_handleRouteAnimationStatus);
     _routeAnimation = routeAnimation;
@@ -4806,7 +4814,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       _schedulePlaybackGlassRestore();
     }
     _lyricsRealtimeVisualsEnabled = shouldRunNowPlayingLyricsRealtime(
-      showLyrics: _showLyrics,
+      showLyrics: _showLyrics || _landscapeCoverMode == LandscapeCoverMode.duet,
       routeTransitionActive: _routeTransitionActive,
     );
     routeAnimation?.addStatusListener(_handleRouteAnimationStatus);
@@ -4840,7 +4848,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         _renderedPlaybackBackground = pendingBackground;
       }
       _lyricsRealtimeVisualsEnabled = shouldRunNowPlayingLyricsRealtime(
-        showLyrics: _showLyrics,
+        showLyrics:
+            _showLyrics || _landscapeCoverMode == LandscapeCoverMode.duet,
         routeTransitionActive: _routeTransitionActive,
       );
     });
@@ -5439,10 +5448,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
 
     final mediaSize = MediaQuery.sizeOf(context);
     final isTablet = mediaSize.shortestSide >= 600;
-    final useSplitLayout =
-        isTablet &&
-        mediaSize.width >= 840 &&
-        mediaSize.width > mediaSize.height;
+    final useSplitLayout = mediaSize.width > mediaSize.height;
     final visual = _buildNowPlayingVisual(
       context,
       notifier: notifier,
@@ -5470,7 +5476,9 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       useFluidBackground: useFluidBackground,
     );
 
-    final immersive = settings.playbackImmersiveEnabled && _showLyrics;
+    final immersive =
+        (settings.playbackImmersiveEnabled && _showLyrics) ||
+        (useSplitLayout && _landscapeCoverMode != LandscapeCoverMode.standard);
     final framedControls = isTablet
         ? Center(
             heightFactor: 1,
@@ -5480,83 +5488,155 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             ),
           )
         : controls;
-    final scaffold = Scaffold(
-      backgroundColor: renderedPlaybackTheme ? Colors.transparent : null,
-      body: SafeArea(
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            NowPlayingImmersiveLayout(
-              immersive: immersive,
-              tablet: isTablet,
-              split: useSplitLayout,
-              visual: visual,
-              controls: framedControls,
-              header: AppBar(
-                primary: false,
-                backgroundColor: renderedPlaybackTheme
-                    ? Colors.transparent
-                    : null,
-                scrolledUnderElevation: renderedPlaybackTheme ? 0 : null,
-                title: PlaybackProgressHeader(
-                  positionListenable: notifier.positionListenable,
-                  previewPositionListenable: _seekPosition,
-                  totalDuration: playback.totalDuration,
+    final scaffold = PlaybackSystemUi(
+      child: Scaffold(
+        backgroundColor: renderedPlaybackTheme ? Colors.transparent : null,
+        body: SafeArea(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              NowPlayingImmersiveLayout(
+                immersive: immersive,
+                tablet: isTablet,
+                split: useSplitLayout,
+                stableLandscapeCanvas: true,
+                landscapeFooter: ValueListenableBuilder<int>(
+                  valueListenable: notifier.lyricLineIndexListenable,
+                  builder: (_, active, _) => CompactPlaybackLyrics(
+                    lines: notifier.currentLyrics,
+                    position: notifier.lyricPositionListenable,
+                    active: active,
+                    karaokeEnabled: settings.enableKaraokeLyrics,
+                    karaokeMode: settings.karaokeLyricsMode,
+                    smoothMotion: settings.smoothKaraokeMotion,
+                    isPlaying:
+                        notifier.isPlaying && !notifier.isContinuousSkipping,
+                    playbackRate: notifier.currentPlaybackRate,
+                    actualPlayback: notifier.actualPlaybackListenable,
+                    rate: notifier.actualPlaybackRateListenable,
+                    seek: notifier.lyricSeekListenable,
+                    seekIntent: notifier.lyricSeekIntentListenable,
+                    enabled:
+                        useSplitLayout && !immersive && !_routeTransitionActive,
+                  ),
                 ),
-                actions: [
-                  IconButton(
-                    key: const ValueKey('playback-immersive-toggle'),
-                    tooltip: settings.playbackImmersiveEnabled
-                        ? '关闭沉浸模式'
-                        : '开启沉浸模式',
-                    isSelected: settings.playbackImmersiveEnabled,
-                    icon: const Icon(Icons.fullscreen),
-                    selectedIcon: const Icon(Icons.fullscreen_exit),
-                    onPressed: () => settings.setPlaybackImmersiveEnabled(
-                      !settings.playbackImmersiveEnabled,
+                visual: visual,
+                controls: framedControls,
+                header: AppBar(
+                  primary: false,
+                  backgroundColor: renderedPlaybackTheme
+                      ? Colors.transparent
+                      : null,
+                  scrolledUnderElevation: renderedPlaybackTheme ? 0 : null,
+                  title: useSplitLayout
+                      ? Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              tooltip: '队列',
+                              icon: const Icon(Icons.queue_music),
+                              onPressed: () => _showQueue(context),
+                            ),
+                            const NowPlayingChromeFade(
+                              order: 1,
+                              child: PlaybackOrientationButton(),
+                            ),
+                            NowPlayingChromeFade(
+                              order: 1,
+                              child: IconButton(
+                                key: const ValueKey(
+                                  'playback-immersive-toggle',
+                                ),
+                                tooltip: settings.playbackImmersiveEnabled
+                                    ? '关闭沉浸模式'
+                                    : '开启沉浸模式',
+                                isSelected: settings.playbackImmersiveEnabled,
+                                icon: const Icon(Icons.fullscreen),
+                                selectedIcon: const Icon(Icons.fullscreen_exit),
+                                onPressed: () =>
+                                    settings.setPlaybackImmersiveEnabled(
+                                      !settings.playbackImmersiveEnabled,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        )
+                      : NowPlayingChromeFade(
+                          order: 0,
+                          child: PlaybackProgressHeader(
+                            positionListenable: notifier.positionListenable,
+                            previewPositionListenable: _seekPosition,
+                            totalDuration: playback.totalDuration,
+                          ),
+                        ),
+                  actions: [
+                    if (!useSplitLayout) ...[
+                      const NowPlayingChromeFade(
+                        order: 1,
+                        child: PlaybackOrientationButton(),
+                      ),
+                      NowPlayingChromeFade(
+                        order: 1,
+                        child: IconButton(
+                          key: const ValueKey('playback-immersive-toggle'),
+                          tooltip: settings.playbackImmersiveEnabled
+                              ? '关闭沉浸模式'
+                              : '开启沉浸模式',
+                          isSelected: settings.playbackImmersiveEnabled,
+                          icon: const Icon(Icons.fullscreen),
+                          selectedIcon: const Icon(Icons.fullscreen_exit),
+                          onPressed: () => settings.setPlaybackImmersiveEnabled(
+                            !settings.playbackImmersiveEnabled,
+                          ),
+                        ),
+                      ),
+                      NowPlayingChromeFade(
+                        order: 2,
+                        child: IconButton(
+                          tooltip: '歌曲详情',
+                          icon: const Icon(Icons.info_outline),
+                          onPressed: () =>
+                              _showSongDetails(context, notifier, song),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              Positioned(
+                top: 8,
+                left: isTablet ? 28 : 16,
+                right: isTablet ? 28 : 16,
+                child: Align(
+                  alignment: Alignment.topLeft,
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 420),
+                    child: ValueListenableBuilder<bool>(
+                      valueListenable: _routeTransitionSignal,
+                      builder: (context, transitioning, _) =>
+                          FullscreenSwipeSongHint(
+                            enabled: immersive && _showLyrics && !transitioning,
+                            currentSongIdentity: song.normalizedPath,
+                            songChanges: _fullscreenSwipeSong,
+                            lyricHighlightChanges:
+                                notifier.lyricLineIndexListenable,
+                            readHighlightedSongIdentity: () {
+                              if (!hasHighlightedLyricLine(
+                                lines: notifier.currentLyrics,
+                                activeIndex: notifier.currentLyricLineIndex,
+                                position: notifier.lyricVisualPosition,
+                              )) {
+                                return null;
+                              }
+                              return notifier.currentSong?.normalizedPath;
+                            },
+                          ),
                     ),
                   ),
-                  IconButton(
-                    tooltip: '歌曲详情',
-                    icon: const Icon(Icons.info_outline),
-                    onPressed: () => _showSongDetails(context, notifier, song),
-                  ),
-                ],
-              ),
-            ),
-            Positioned(
-              top: 8,
-              left: isTablet ? 28 : 16,
-              right: isTablet ? 28 : 16,
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: ConstrainedBox(
-                  constraints: const BoxConstraints(maxWidth: 420),
-                  child: ValueListenableBuilder<bool>(
-                    valueListenable: _routeTransitionSignal,
-                    builder: (context, transitioning, _) =>
-                        FullscreenSwipeSongHint(
-                          enabled: immersive && !transitioning,
-                          currentSongIdentity: song.normalizedPath,
-                          songChanges: _fullscreenSwipeSong,
-                          lyricHighlightChanges:
-                              notifier.lyricLineIndexListenable,
-                          readHighlightedSongIdentity: () {
-                            if (!hasHighlightedLyricLine(
-                              lines: notifier.currentLyrics,
-                              activeIndex: notifier.currentLyricLineIndex,
-                              position: notifier.lyricVisualPosition,
-                            )) {
-                              return null;
-                            }
-                            return notifier.currentSong?.normalizedPath;
-                          },
-                        ),
-                  ),
                 ),
               ),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -5675,7 +5755,8 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       lineBlurEnabled: settings.enableLyricBlur,
       highlightActiveLine: settings.highlightActiveLyric,
       isPlaying:
-          _lyricsRealtimeVisualsEnabled &&
+          (_lyricsRealtimeVisualsEnabled ||
+              _landscapeCoverMode == LandscapeCoverMode.duet) &&
           !notifier.isContinuousSkipping &&
           notifier.isPlaying,
       entryPreparing: _lyricsEntryPreparing,
@@ -5686,273 +5767,358 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       onBrowseTargetSelected: (target) =>
           unawaited(_seekToBrowsedLyric(target, notifier)),
     );
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTapDown: (details) {
-        _lyricBrowseTapHandled =
-            _showLyrics &&
-            _lyricsListController.isBrowseTargetAtGlobalPosition(
-              details.globalPosition,
-            );
-      },
-      onTapCancel: () => _lyricBrowseTapHandled = false,
-      onTap: () {
-        if (_lyricBrowseTapHandled) {
-          _lyricBrowseTapHandled = false;
-          _lyricsListController.selectBrowseTarget();
-          return;
-        }
-        final showLyrics = !_showLyrics;
-        final entryRevision = ++_lyricsEntryRevision;
-        _frozenLyricLineIndex.value = notifier.lyricLineIndexListenable.value;
-        if (showLyrics) _stageCompleteLyricsEntry();
-        setState(() {
-          _showLyrics = showLyrics;
-          _lyricsEntryPreparing = showLyrics;
-          _lyricsRealtimeVisualsEnabled = showLyrics && !_routeTransitionActive;
-          if (showLyrics) {
-            _lyricsLayerBuilt = true;
-          } else {
-            _coverLayerBuilt = true;
-          }
-        });
+    void toggleVisual() {
+      if (_lyricBrowseTapHandled) {
+        _lyricBrowseTapHandled = false;
+        _lyricsListController.selectBrowseTarget();
+        return;
+      }
+      final showLyrics = !_showLyrics;
+      _landscapeCoverMode = LandscapeCoverMode.standard;
+      final entryRevision = ++_lyricsEntryRevision;
+      _frozenLyricLineIndex.value = notifier.lyricLineIndexListenable.value;
+      if (showLyrics) _stageCompleteLyricsEntry();
+      setState(() {
+        _showLyrics = showLyrics;
+        _lyricsEntryPreparing = showLyrics;
+        _lyricsRealtimeVisualsEnabled = showLyrics && !_routeTransitionActive;
         if (showLyrics) {
-          // Center the retained lyric list while it is still fully transparent,
-          // then start the visual transition on the next frame. This keeps the
-          // expensive positioned-list jump out of the animation's first frame.
-          _lyricsListController.recenter();
-          _scheduleLyricsEntryHandoff(entryRevision);
+          _lyricsLayerBuilt = true;
         } else {
-          _runVisualTransition(showLyrics: false);
+          _coverLayerBuilt = true;
         }
-        if (showLyrics) {
-          if (!settings.preferExternalLyrics && settings.enableOnlineLyrics) {
-            unawaited(notifier.refreshCurrentNetworkLyrics());
-          } else if (notifier.currentLyrics.isEmpty) {
-            unawaited(notifier.refreshCurrentLyricsIfEmpty());
-          }
+      });
+      if (showLyrics) {
+        // Center the retained lyric list while it is still fully transparent,
+        // then start the visual transition on the next frame. This keeps the
+        // expensive positioned-list jump out of the animation's first frame.
+        _lyricsListController.recenter();
+        _scheduleLyricsEntryHandoff(entryRevision);
+      } else {
+        _runVisualTransition(showLyrics: false);
+      }
+      if (showLyrics) {
+        if (!settings.preferExternalLyrics && settings.enableOnlineLyrics) {
+          unawaited(notifier.refreshCurrentNetworkLyrics());
+        } else if (notifier.currentLyrics.isEmpty) {
+          unawaited(notifier.refreshCurrentLyricsIfEmpty());
         }
-      },
-      onLongPressStart: !_showLyrics
-          ? null
-          : (details) {
-              if (_lyricPointers.length > 1 || _lyricCopyGestureTriggered) {
-                return;
-              }
-              final visualWidth = MediaQuery.sizeOf(context).width;
-              final edgeWidth = (visualWidth * .16)
-                  .clamp(58.0, 108.0)
-                  .toDouble();
-              if (details.localPosition.dx <= edgeWidth) {
-                _startEdgeSeek(-1, notifier);
-              } else if (details.localPosition.dx >= visualWidth - edgeWidth) {
-                _startEdgeSeek(1, notifier);
-              } else {
-                _showLyricsFontSizeSheet(context, settings);
-              }
-            },
-      onLongPressEnd: !_showLyrics
-          ? null
-          : (_) => unawaited(_stopEdgeSeek(notifier)),
-      onLongPressCancel: !_showLyrics
-          ? null
-          : () => unawaited(_stopEdgeSeek(notifier)),
-      child: Listener(
-        onPointerDown: _showLyrics ? _onLyricPointerDown : null,
-        onPointerMove: _showLyrics ? _onLyricPointerMove : null,
-        onPointerUp: _showLyrics
-            ? (event) => _onLyricPointerEnd(event, settings)
-            : null,
-        onPointerCancel: _showLyrics
-            ? (event) => _onLyricPointerEnd(event, settings)
-            : null,
-        child: FullscreenLyricsDoubleTap(
-          enabled: settings.playbackImmersiveEnabled && _showLyrics,
-          onTogglePlayback: () => unawaited(_toggleLyricsPlayback(notifier)),
-          child: Stack(
-            fit: StackFit.expand,
-            children: [
-              if (_coverLayerBuilt)
-                IgnorePointer(
-                  ignoring: _showLyrics,
-                  child: ExcludeSemantics(
-                    excluding: _showLyrics,
-                    child: AnimatedBuilder(
-                      animation: _coverTransitionController,
-                      builder: (context, child) {
-                        final progress = _coverTransitionController.value;
-                        final opacity = 1 - (progress / 0.74).clamp(0.0, 1.0);
-                        return Opacity(
-                          opacity: opacity,
-                          child: Transform.scale(
-                            scale: 1 - 0.08 * progress,
-                            alignment: Alignment.center,
-                            child: child,
-                          ),
-                        );
-                      },
-                      child: RepaintBoundary(
-                        child: LayoutBuilder(
-                          builder: (context, constraints) {
-                            final size =
-                                constraints.biggest.shortestSide
-                                    .clamp(180.0, maxCoverSize)
-                                    .toDouble() *
-                                settings.playbackCoverScale;
-                            return Center(
-                              child: GestureDetector(
-                                onLongPress: () => _showSongCoverActions(
-                                  context,
-                                  notifier,
-                                  song,
-                                ),
-                                child: NowPlayingCoverHero(
-                                  normalizedSongPath: song.normalizedPath,
-                                  enabled: shouldEnableNowPlayingCoverHero(
-                                    showLyrics: _showLyrics,
-                                    routeTransitionComplete:
-                                        _routeTransitionComplete,
-                                    initialCoverHeroReady:
-                                        widget.initialCoverHeroReady,
-                                  ),
-                                  child: _AtomicNowPlayingCover(
-                                    songPath: song.normalizedPath,
-                                    size: size,
-                                    transitionsEnabled:
-                                        !_showLyrics && !_routeTransitionActive,
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              if (_lyricsLayerBuilt)
-                IgnorePointer(
-                  ignoring: !_showLyrics,
-                  child: ExcludeSemantics(
-                    excluding: !_showLyrics,
-                    child: AnimatedBuilder(
-                      animation: _lyricsContentTransitionController,
-                      builder: (context, child) {
-                        final progress =
-                            _lyricsContentTransitionController.value;
-                        return Opacity(
-                          opacity: progress,
-                          child: Transform.scale(
-                            scale: 0.98 + 0.02 * progress,
-                            alignment: Alignment.center,
-                            filterQuality: FilterQuality.low,
-                            child: child,
-                          ),
-                        );
-                      },
-                      child: LyricsSongSwipeTransition(
-                        enabled:
-                            settings.playbackImmersiveEnabled && _showLyrics,
-                        songIdentity: notifier.isContinuousSkipping
-                            ? (_heldLyricSong ?? song).normalizedPath
-                            : song.normalizedPath,
-                        onSwitchStart: (next) =>
-                            _fullscreenSwipeSong.beginSwitch(next: next),
-                        onSwitchCompleted: (previousIdentity) {
-                          final current = notifier.currentSong;
-                          if (mounted &&
-                              _showLyrics &&
-                              settings.playbackImmersiveEnabled &&
-                              !_routeTransitionActive &&
-                              _playbackForeground &&
-                              current != null &&
-                              current.normalizedPath != previousIdentity) {
-                            _fullscreenSwipeSong.show(current);
-                          }
-                        },
-                        onError: (error, _) {
-                          context.read<NotificationService>().error(
-                            '切歌失败：$error',
-                          );
-                        },
-                        onNext: () async {
-                          _resetSeekTracking();
-                          await notifier.playNext();
-                        },
-                        onPrevious: () async {
-                          _resetSeekTracking();
-                          await notifier.playPrevious();
-                        },
-                        child: ValueListenableBuilder<bool>(
-                          valueListenable: _routeTransitionSignal,
-                          builder: (context, routeTransitionActive, _) {
-                            final realtime =
-                                _lyricsRealtimeVisualsEnabled &&
-                                !notifier.isContinuousSkipping &&
-                                !routeTransitionActive;
-                            return TickerMode(
-                              enabled: realtime,
-                              child: RepaintBoundary(
-                                child: ClipRRect(
-                                  borderRadius: BorderRadius.circular(12),
-                                  // Keep one stable bridge around the lyric list.
-                                  // Only this isolated subtree observes route state,
-                                  // so a pop never rebuilds the whole playback page.
-                                  child: ValueListenableBuilder<int>(
-                                    key: const ValueKey(
-                                      'now_playing_lyric_index_bridge',
-                                    ),
-                                    valueListenable: realtime
-                                        ? notifier.lyricLineIndexListenable
-                                        : _frozenLyricLineIndex,
-                                    builder: (context, activeLyric, _) =>
-                                        Selector<
-                                          PlaylistContentNotifier,
-                                          (bool, double)
-                                        >(
-                                          selector: (_, value) => (
-                                            value.isPlaying,
-                                            value.currentPlaybackRate,
-                                          ),
-                                          builder: (_, playback, _) =>
-                                              buildLyricsList(activeLyric),
-                                        ),
-                                  ),
-                                ),
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              if (_showLyrics && _edgeSeekDirection != 0)
-                LayoutBuilder(
-                  builder: (context, constraints) {
-                    final edgeWidth = (constraints.maxWidth * .16)
-                        .clamp(58.0, 108.0)
-                        .toDouble();
-                    return Stack(
-                      children: [
-                        _buildLyricsEdgeSeekZone(
-                          context,
-                          notifier: notifier,
-                          direction: -1,
-                          width: edgeWidth,
-                        ),
-                        _buildLyricsEdgeSeekZone(
-                          context,
-                          notifier: notifier,
-                          direction: 1,
-                          width: edgeWidth,
-                        ),
-                      ],
-                    );
+      }
+    }
+
+    return LayoutBuilder(
+      builder: (visualContext, visualConstraints) => GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTapDown: (details) {
+          _lyricBrowseTapHandled =
+              _showLyrics &&
+              _lyricsListController.isBrowseTargetAtGlobalPosition(
+                details.globalPosition,
+              );
+        },
+        onTapCancel: () => _lyricBrowseTapHandled = false,
+        onTap: toggleVisual,
+        onLongPressStart: !_showLyrics
+            ? null
+            : (details) {
+                if (_lyricPointers.length > 1 || _lyricCopyGestureTriggered) {
+                  return;
+                }
+                final visualWidth = visualConstraints.maxWidth;
+                final edgeWidth = (visualWidth * .16)
+                    .clamp(58.0, 108.0)
+                    .toDouble();
+                if (details.localPosition.dx <= edgeWidth) {
+                  _startEdgeSeek(-1, notifier);
+                } else if (details.localPosition.dx >=
+                    visualWidth - edgeWidth) {
+                  _startEdgeSeek(1, notifier);
+                } else {
+                  _showLyricsFontSizeSheet(context, settings);
+                }
+              },
+        onLongPressEnd: !_showLyrics
+            ? null
+            : (_) => unawaited(_stopEdgeSeek(notifier)),
+        onLongPressCancel: !_showLyrics
+            ? null
+            : () => unawaited(_stopEdgeSeek(notifier)),
+        child: Listener(
+          onPointerDown: _showLyrics ? _onLyricPointerDown : null,
+          onPointerMove: _showLyrics ? _onLyricPointerMove : null,
+          onPointerUp: _showLyrics
+              ? (event) => _onLyricPointerEnd(event, settings)
+              : null,
+          onPointerCancel: _showLyrics
+              ? (event) => _onLyricPointerEnd(event, settings)
+              : null,
+          child: FullscreenLyricsDoubleTap(
+            enabled: settings.playbackImmersiveEnabled && _showLyrics,
+            onTogglePlayback: () => unawaited(_toggleLyricsPlayback(notifier)),
+            child: Stack(
+              fit: StackFit.expand,
+              children: [
+                LandscapePlaybackSurface(
+                  landscape:
+                      MediaQuery.orientationOf(context) ==
+                      Orientation.landscape,
+                  mode: _landscapeCoverMode,
+                  coverScale: settings.playbackCoverScale,
+                  maxCoverSize: maxCoverSize,
+                  onFullscreenLyrics: () {
+                    _lyricBrowseTapHandled = false;
+                    _showLyrics = false;
+                    toggleVisual();
                   },
+                  information: _landscapeInformation(context, notifier, song),
+                  title: song.title,
+                  artist: song.artist,
+                  showLyrics: _showLyrics,
+                  expandedLyrics:
+                      settings.playbackImmersiveEnabled && _showLyrics,
+                  onModeChanged: (mode) {
+                    setState(() => _landscapeCoverMode = mode);
+                    _lyricsRealtimeVisualsEnabled =
+                        mode == LandscapeCoverMode.duet &&
+                        !_routeTransitionActive;
+                    if (mode == LandscapeCoverMode.duet) {
+                      _lyricsLayerBuilt = true;
+                      _lyricsRealtimeVisualsEnabled = !_routeTransitionActive;
+                      _lyricsEntryPreparing = false;
+                      _coverTransitionController.value = 0;
+                      _lyricsContentTransitionController.value = 1;
+                    }
+                  },
+                  cover: _coverLayerBuilt
+                      ? IgnorePointer(
+                          ignoring:
+                              _showLyrics &&
+                              _landscapeCoverMode ==
+                                  LandscapeCoverMode.standard,
+                          child: ExcludeSemantics(
+                            excluding:
+                                _showLyrics &&
+                                _landscapeCoverMode ==
+                                    LandscapeCoverMode.standard,
+                            child: AnimatedBuilder(
+                              animation: _coverTransitionController,
+                              builder: (context, child) {
+                                final progress =
+                                    _landscapeCoverMode !=
+                                        LandscapeCoverMode.standard
+                                    ? 0.0
+                                    : _coverTransitionController.value;
+                                final opacity =
+                                    1 - (progress / 0.74).clamp(0.0, 1.0);
+                                return Opacity(
+                                  opacity: opacity,
+                                  child: Transform.scale(
+                                    scale: 1 - 0.08 * progress,
+                                    alignment: Alignment.center,
+                                    child: child,
+                                  ),
+                                );
+                              },
+                              child: RepaintBoundary(
+                                child: LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final available =
+                                        constraints.biggest.shortestSide;
+                                    final landscape =
+                                        MediaQuery.orientationOf(context) ==
+                                        Orientation.landscape;
+                                    final size = landscape
+                                        ? math.min(
+                                            available,
+                                            math.min(available, maxCoverSize) *
+                                                settings.playbackCoverScale,
+                                          )
+                                        : available
+                                                  .clamp(180.0, maxCoverSize)
+                                                  .toDouble() *
+                                              settings.playbackCoverScale;
+                                    return Center(
+                                      child: GestureDetector(
+                                        onLongPress: () =>
+                                            _showSongCoverActions(
+                                              context,
+                                              notifier,
+                                              song,
+                                            ),
+                                        child: NowPlayingCoverHero(
+                                          normalizedSongPath:
+                                              song.normalizedPath,
+                                          enabled:
+                                              shouldEnableNowPlayingCoverHero(
+                                                showLyrics: _showLyrics,
+                                                routeTransitionComplete:
+                                                    _routeTransitionComplete,
+                                                initialCoverHeroReady: widget
+                                                    .initialCoverHeroReady,
+                                              ),
+                                          child: _AtomicNowPlayingCover(
+                                            songPath: song.normalizedPath,
+                                            size: size,
+                                            transitionsEnabled:
+                                                !_showLyrics &&
+                                                !_routeTransitionActive,
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ),
+                            ),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
+                  lyrics: _lyricsLayerBuilt
+                      ? IgnorePointer(
+                          ignoring:
+                              !_showLyrics &&
+                              _landscapeCoverMode != LandscapeCoverMode.duet,
+                          child: ExcludeSemantics(
+                            excluding:
+                                !_showLyrics &&
+                                _landscapeCoverMode != LandscapeCoverMode.duet,
+                            child: AnimatedBuilder(
+                              animation: _lyricsContentTransitionController,
+                              builder: (context, child) {
+                                final progress =
+                                    _lyricsContentTransitionController.value;
+                                return Opacity(
+                                  opacity: progress,
+                                  child: Transform.scale(
+                                    scale: 0.98 + 0.02 * progress,
+                                    alignment: Alignment.center,
+                                    filterQuality: FilterQuality.low,
+                                    child: child,
+                                  ),
+                                );
+                              },
+                              child: FullscreenLyricsDoubleTap(
+                                enabled:
+                                    _landscapeCoverMode ==
+                                    LandscapeCoverMode.duet,
+                                onTogglePlayback: () =>
+                                    unawaited(_toggleLyricsPlayback(notifier)),
+                                child: LyricsSongSwipeTransition(
+                                  enabled:
+                                      (settings.playbackImmersiveEnabled &&
+                                          _showLyrics) ||
+                                      _landscapeCoverMode ==
+                                          LandscapeCoverMode.duet,
+                                  songIdentity: notifier.isContinuousSkipping
+                                      ? (_heldLyricSong ?? song).normalizedPath
+                                      : song.normalizedPath,
+                                  onSwitchStart: (next) => _fullscreenSwipeSong
+                                      .beginSwitch(next: next),
+                                  onSwitchCompleted: (previousIdentity) {
+                                    final current = notifier.currentSong;
+                                    if (mounted &&
+                                        _showLyrics &&
+                                        settings.playbackImmersiveEnabled &&
+                                        !_routeTransitionActive &&
+                                        _playbackForeground &&
+                                        current != null &&
+                                        current.normalizedPath !=
+                                            previousIdentity) {
+                                      _fullscreenSwipeSong.show(current);
+                                    }
+                                  },
+                                  onError: (error, _) {
+                                    context.read<NotificationService>().error(
+                                      '切歌失败：$error',
+                                    );
+                                  },
+                                  onNext: () async {
+                                    _resetSeekTracking();
+                                    await notifier.playNext();
+                                  },
+                                  onPrevious: () async {
+                                    _resetSeekTracking();
+                                    await notifier.playPrevious();
+                                  },
+                                  child: ValueListenableBuilder<bool>(
+                                    valueListenable: _routeTransitionSignal,
+                                    builder: (context, routeTransitionActive, _) {
+                                      final realtime =
+                                          _lyricsRealtimeVisualsEnabled &&
+                                          !notifier.isContinuousSkipping &&
+                                          !routeTransitionActive;
+                                      return TickerMode(
+                                        enabled: realtime,
+                                        child: RepaintBoundary(
+                                          child: ClipRRect(
+                                            borderRadius: BorderRadius.circular(
+                                              12,
+                                            ),
+                                            // Keep one stable bridge around the lyric list.
+                                            // Only this isolated subtree observes route state,
+                                            // so a pop never rebuilds the whole playback page.
+                                            child: ValueListenableBuilder<int>(
+                                              key: const ValueKey(
+                                                'now_playing_lyric_index_bridge',
+                                              ),
+                                              valueListenable: realtime
+                                                  ? notifier
+                                                        .lyricLineIndexListenable
+                                                  : _frozenLyricLineIndex,
+                                              builder: (context, activeLyric, _) =>
+                                                  Selector<
+                                                    PlaylistContentNotifier,
+                                                    (bool, double)
+                                                  >(
+                                                    selector: (_, value) => (
+                                                      value.isPlaying,
+                                                      value.currentPlaybackRate,
+                                                    ),
+                                                    builder: (_, playback, _) =>
+                                                        buildLyricsList(
+                                                          activeLyric,
+                                                        ),
+                                                  ),
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    },
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        )
+                      : const SizedBox.shrink(),
                 ),
-              PlaybackJumpFeedback(pending: _jumpPending),
-            ],
+                if (_showLyrics && _edgeSeekDirection != 0)
+                  LayoutBuilder(
+                    builder: (context, constraints) {
+                      final edgeWidth = (constraints.maxWidth * .16)
+                          .clamp(58.0, 108.0)
+                          .toDouble();
+                      return Stack(
+                        children: [
+                          _buildLyricsEdgeSeekZone(
+                            context,
+                            notifier: notifier,
+                            direction: -1,
+                            width: edgeWidth,
+                          ),
+                          _buildLyricsEdgeSeekZone(
+                            context,
+                            notifier: notifier,
+                            direction: 1,
+                            width: edgeWidth,
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+                PlaybackJumpFeedback(pending: _jumpPending),
+              ],
+            ),
           ),
         ),
       ),
@@ -6044,134 +6210,171 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     required bool usePlaybackTheme,
     required bool useFluidBackground,
   }) {
+    final landscape =
+        MediaQuery.orientationOf(context) == Orientation.landscape;
     final colorScheme = Theme.of(context).colorScheme;
-    final timelineControls = Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        SizedBox(
-          height: tablet ? 42 : 34,
-          child: PlaybackProgressSlider(
-            position: notifier.positionListenable,
-            preview: _seekPosition,
-            totalMs: totalMs,
-            onStart: _beginSeek,
-            onChanged: _updateSeek,
-            onEnd: (value) => _commitSeek(value, notifier),
-          ),
-        ),
-        PlaybackClockBuilder(
-          positionListenable: notifier.positionListenable,
-          previewPositionListenable: _seekPosition,
-          totalDuration: Duration(milliseconds: totalMs.round()),
-          builder: (context, clock) => Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            child: Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [Text(clock.elapsed), Text(clock.total)],
+    final timelineControls = NowPlayingChromeFade(
+      order: 2,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          SizedBox(
+            height: tablet ? 42 : 34,
+            child: SliderTheme(
+              data: SliderTheme.of(context).copyWith(
+                trackHeight: landscape ? 2 : null,
+                thumbShape: landscape
+                    ? const RoundSliderThumbShape(enabledThumbRadius: 6)
+                    : null,
+              ),
+              child: PlaybackProgressSlider(
+                position: notifier.positionListenable,
+                preview: _seekPosition,
+                totalMs: totalMs,
+                onStart: _beginSeek,
+                onChanged: _updateSeek,
+                onEnd: (value) => _commitSeek(value, notifier),
+              ),
             ),
           ),
-        ),
-      ],
+          PlaybackClockBuilder(
+            positionListenable: notifier.positionListenable,
+            previewPositionListenable: _seekPosition,
+            totalDuration: Duration(milliseconds: totalMs.round()),
+            builder: (context, clock) => Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [Text(clock.elapsed), Text(clock.total)],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
     final transportControls = SizedBox(
-      height: tablet ? 80 : 72,
+      height: landscape
+          ? 56
+          : tablet
+          ? 80
+          : 72,
       child: Row(
         children: [
           Expanded(
-            child: Center(
-              child: Selector<PlaylistContentNotifier, bool>(
-                selector: (_, value) => value.isFavorite(song),
-                builder: (context, favorite, _) => LongPressIconButton(
-                  onLongPress: () => showSongPlaylistWindow(
-                    context,
-                    song,
-                    fluid: _hasResolvedFluidPlaybackBackground(
-                      context.read<SettingsProvider>(),
-                      notifier,
+            child: NowPlayingChromeFade(
+              order: 3,
+              child: Center(
+                child: Selector<PlaylistContentNotifier, bool>(
+                  selector: (_, value) => value.isFavorite(song),
+                  builder: (context, favorite, _) => LongPressIconButton(
+                    onLongPress: () => showSongPlaylistWindow(
+                      context,
+                      song,
+                      fluid: _hasResolvedFluidPlaybackBackground(
+                        context.read<SettingsProvider>(),
+                        notifier,
+                      ),
                     ),
-                  ),
-                  tooltip: favorite ? '取消收藏' : '收藏',
-                  icon: ActionMotionIcon(
-                    trigger: favorite,
-                    active: favorite,
-                    kind: IconMotion.heart,
-                    child: Icon(
-                      favorite ? Icons.favorite : Icons.favorite_border,
+                    tooltip: favorite ? '取消收藏' : '收藏',
+                    icon: ActionMotionIcon(
+                      trigger: favorite,
+                      active: favorite,
+                      kind: IconMotion.heart,
+                      child: Icon(
+                        favorite ? Icons.favorite : Icons.favorite_border,
+                      ),
                     ),
+                    color: favorite ? colorScheme.primary : null,
+                    onPressed: () => notifier.toggleFavorite(song),
                   ),
-                  color: favorite ? colorScheme.primary : null,
-                  onPressed: () => notifier.toggleFavorite(song),
                 ),
               ),
             ),
           ),
           Expanded(
-            child: Center(
-              child: TransportSkipButton(
-                tooltip: '上一首',
-                onHoldStart: () => _beginContinuousSkip(notifier, song),
-                icon: Icons.skip_previous,
-                onSkip: () async {
-                  _resetSeekTracking();
-                  await notifier.playPrevious();
-                },
-              ),
-            ),
-          ),
-          Expanded(
-            child: Center(
-              child: Selector<PlaylistContentNotifier, bool>(
-                selector: (_, value) => value.isPlaying,
-                builder: (context, playing, _) => PlayPauseButton(
-                  isPlaying: playing,
-                  size: 42,
-                  padding: const EdgeInsets.all(8),
-                  tooltip: playing ? '暂停' : '播放',
-                  color: colorScheme.onSurface,
-                  onPressed: () {
-                    if (notifier.isPlaying) {
-                      notifier.pause();
-                    } else {
-                      _resetSeekTracking();
-                      notifier.play();
-                    }
+            child: NowPlayingChromeFade(
+              order: 4,
+              child: Center(
+                child: TransportSkipButton(
+                  tooltip: '上一首',
+                  onHoldStart: () => _beginContinuousSkip(notifier, song),
+                  icon: Icons.skip_previous,
+                  iconSize: landscape ? 30 : 38,
+                  onSkip: () async {
+                    _resetSeekTracking();
+                    await notifier.playPrevious();
                   },
                 ),
               ),
             ),
           ),
           Expanded(
-            child: Center(
-              child: TransportSkipButton(
-                tooltip: '下一首',
-                onHoldStart: () => _beginContinuousSkip(notifier, song),
-                icon: Icons.skip_next,
-                onSkip: () async {
-                  _resetSeekTracking();
-                  await notifier.playNext();
-                },
+            child: NowPlayingChromeFade(
+              order: 5,
+              child: Center(
+                child: Selector<PlaylistContentNotifier, bool>(
+                  selector: (_, value) => value.isPlaying,
+                  builder: (context, playing, _) => PlayPauseButton(
+                    isPlaying: playing,
+                    size: landscape ? 34 : 42,
+                    padding: EdgeInsets.all(landscape ? 6 : 8),
+                    tooltip: playing ? '暂停' : '播放',
+                    color: colorScheme.onSurface,
+                    onPressed: () {
+                      if (notifier.isPlaying) {
+                        notifier.pause();
+                      } else {
+                        _resetSeekTracking();
+                        notifier.play();
+                      }
+                    },
+                  ),
+                ),
               ),
             ),
           ),
           Expanded(
-            child: Center(
-              child: Selector<PlaylistContentNotifier, PlayMode>(
-                selector: (_, value) => value.playMode,
-                builder: (context, mode, _) => LongPressIconButton(
-                  onLongPress: () => _showPlaybackControlSheet<void>(
-                    context,
-                    builder: (_) => const FractionallySizedBox(
-                      heightFactor: .82,
-                      child: PlaybackModePage(asSheet: true),
+            child: NowPlayingChromeFade(
+              order: 6,
+              child: Center(
+                child: TransportSkipButton(
+                  tooltip: '下一首',
+                  onHoldStart: () => _beginContinuousSkip(notifier, song),
+                  icon: Icons.skip_next,
+                  iconSize: landscape ? 30 : 38,
+                  onSkip: () async {
+                    _resetSeekTracking();
+                    await notifier.playNext();
+                  },
+                ),
+              ),
+            ),
+          ),
+          Expanded(
+            child: NowPlayingChromeFade(
+              order: 7,
+              child: Center(
+                child: Selector<PlaylistContentNotifier, PlayMode>(
+                  selector: (_, value) => value.playMode,
+                  builder: (context, mode, _) => LongPressIconButton(
+                    onLongPress: () => _showPlaybackControlSheet<void>(
+                      context,
+                      builder: (_) => const FractionallySizedBox(
+                        heightFactor: .82,
+                        child: PlaybackModePage(asSheet: true),
+                      ),
                     ),
+                    tooltip: _modeLabel(mode),
+                    icon: ActionMotionIcon(
+                      trigger: mode,
+                      kind: IconMotion.mode,
+                      child: PlaybackModeGlyph(
+                        mode: mode,
+                        size: landscape ? 24 : 28,
+                      ),
+                    ),
+                    onPressed: notifier.togglePlayMode,
                   ),
-                  tooltip: _modeLabel(mode),
-                  icon: ActionMotionIcon(
-                    trigger: mode,
-                    kind: IconMotion.mode,
-                    child: PlaybackModeGlyph(mode: mode, size: 28),
-                  ),
-                  onPressed: notifier.togglePlayMode,
                 ),
               ),
             ),
@@ -6205,6 +6408,78 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
               transportControls,
             ],
           );
+    if (landscape) {
+      return Column(
+        key: const ValueKey('landscape-control-panel'),
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  song.title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+              PlaybackActionsMenu(
+                showPlugins: true,
+                showQueue: false,
+                compact: true,
+                showAnalysis: settings.showAudioAnalysis,
+                onSelected: (action) {
+                  switch (action) {
+                    case PlaybackMenuAction.queue:
+                      _showQueue(context);
+                      break;
+                    case PlaybackMenuAction.effects:
+                      _showAudioEffects(context);
+                      break;
+                    case PlaybackMenuAction.lyrics:
+                      _showLyricSource(context);
+                      break;
+                    case PlaybackMenuAction.preset:
+                      _showPresetPicker(context, notifier);
+                      break;
+                    case PlaybackMenuAction.analysis:
+                      Navigator.of(context).push(
+                        CupertinoPageRoute<void>(
+                          builder: (_) => const AudioAnalysisPage(),
+                        ),
+                      );
+                      break;
+                    case PlaybackMenuAction.plugins:
+                      Navigator.of(context).push(
+                        CupertinoPageRoute<void>(
+                          builder: (_) => const PluginManagerPage(),
+                        ),
+                      );
+                      break;
+                  }
+                },
+              ),
+            ],
+          ),
+          const SizedBox(height: 2),
+          Text(
+            song.artist,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 8),
+          timelineControls,
+          transportControls,
+          const SizedBox(height: 4),
+        ],
+      );
+    }
     return BackdropGroup(
       child: Column(
         mainAxisSize: MainAxisSize.min,
@@ -6215,31 +6490,40 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      song.title,
-                      maxLines: tablet ? 2 : 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: tablet
-                          ? Theme.of(context).textTheme.headlineSmall
-                          : Theme.of(context).textTheme.titleLarge,
+                    NowPlayingChromeFade(
+                      order: 0,
+                      child: Text(
+                        song.title,
+                        maxLines: tablet ? 2 : 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: tablet
+                            ? Theme.of(context).textTheme.headlineSmall
+                            : Theme.of(context).textTheme.titleLarge,
+                      ),
                     ),
-                    Text(
-                      song.artist,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: Theme.of(context).textTheme.bodyLarge,
+                    NowPlayingChromeFade(
+                      order: 1,
+                      child: Text(
+                        song.artist,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodyLarge,
+                      ),
                     ),
                   ],
                 ),
               ),
               const SizedBox(width: 8),
-              Selector<PlaylistContentNotifier, String>(
-                selector: (_, value) => value.equalizerPresetName,
-                builder: (context, preset, _) => _buildEqualizerPresetButton(
-                  context,
-                  notifier: notifier,
-                  usePlaybackTheme: usePlaybackTheme,
-                  useFluidBackground: useFluidBackground,
+              NowPlayingChromeFade(
+                order: 1,
+                child: Selector<PlaylistContentNotifier, String>(
+                  selector: (_, value) => value.equalizerPresetName,
+                  builder: (context, preset, _) => _buildEqualizerPresetButton(
+                    context,
+                    notifier: notifier,
+                    usePlaybackTheme: usePlaybackTheme,
+                    useFluidBackground: useFluidBackground,
+                  ),
                 ),
               ),
             ],
@@ -6247,65 +6531,74 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           SizedBox(height: tablet ? 10 : 4),
           primaryControls,
           SizedBox(height: tablet ? 12 : 10),
-          _playbackThemePanel(
-            context,
-            enabled: usePlaybackTheme,
-            blurEnabled: false,
-            child: Material(
-              color: usePlaybackTheme
-                  ? Colors.transparent
-                  : Theme.of(context).colorScheme.surfaceContainer,
-              shape: const StadiumBorder(),
-              clipBehavior: Clip.antiAlias,
-              child: Row(
-                children: [
-                  Expanded(
-                    child: ButtonPressMotion(
-                      child: IconButton(
-                        tooltip: '歌词源',
-                        icon: const Icon(Icons.lyrics_outlined),
-                        onPressed: () => _showLyricSource(context),
+          NowPlayingChromeFade(
+            order: 8,
+            child: _playbackThemePanel(
+              context,
+              enabled: usePlaybackTheme,
+              blurEnabled: false,
+              child: Material(
+                color: usePlaybackTheme
+                    ? Colors.transparent
+                    : Theme.of(context).colorScheme.surfaceContainer,
+                shape: const StadiumBorder(),
+                clipBehavior: Clip.antiAlias,
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: ButtonPressMotion(
+                        child: IconButton(
+                          tooltip: '歌词源',
+                          icon: const Icon(Icons.lyrics_outlined),
+                          onPressed: () => _showLyricSource(context),
+                        ),
                       ),
                     ),
-                  ),
-                  const SizedBox(height: 30, child: VerticalDivider(width: 1)),
-                  Expanded(
-                    child: ButtonPressMotion(
-                      child: IconButton(
-                        tooltip: '歌曲列表',
-                        icon: const Icon(Icons.queue_music),
-                        onPressed: () => _showQueue(context),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 30, child: VerticalDivider(width: 1)),
-                  Expanded(
-                    child: ButtonPressMotion(
-                      child: IconButton(
-                        tooltip: '音频效果',
-                        icon: const Icon(Icons.tune),
-                        onPressed: () => _showAudioEffects(context),
-                      ),
-                    ),
-                  ),
-                  if (settings.showAudioAnalysis) ...[
                     const SizedBox(
                       height: 30,
                       child: VerticalDivider(width: 1),
                     ),
                     Expanded(
-                      child: IconButton(
-                        tooltip: '音频分析',
-                        icon: const Icon(Icons.graphic_eq),
-                        onPressed: () => Navigator.of(context).push(
-                          CupertinoPageRoute<void>(
-                            builder: (_) => const AudioAnalysisPage(),
-                          ),
+                      child: ButtonPressMotion(
+                        child: IconButton(
+                          tooltip: '歌曲列表',
+                          icon: const Icon(Icons.queue_music),
+                          onPressed: () => _showQueue(context),
                         ),
                       ),
                     ),
+                    const SizedBox(
+                      height: 30,
+                      child: VerticalDivider(width: 1),
+                    ),
+                    Expanded(
+                      child: ButtonPressMotion(
+                        child: IconButton(
+                          tooltip: '音频效果',
+                          icon: const Icon(Icons.tune),
+                          onPressed: () => _showAudioEffects(context),
+                        ),
+                      ),
+                    ),
+                    if (settings.showAudioAnalysis) ...[
+                      const SizedBox(
+                        height: 30,
+                        child: VerticalDivider(width: 1),
+                      ),
+                      Expanded(
+                        child: IconButton(
+                          tooltip: '音频分析',
+                          icon: const Icon(Icons.graphic_eq),
+                          onPressed: () => Navigator.of(context).push(
+                            CupertinoPageRoute<void>(
+                              builder: (_) => const AudioAnalysisPage(),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ],
                   ],
-                ],
+                ),
               ),
             ),
           ),
@@ -6474,6 +6767,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      surfaceBuilder: usePlaybackTheme
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
       builder: (sheetContext) {
         final content = SafeArea(
           child: SingleChildScrollView(
@@ -6539,9 +6836,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             ),
           ),
         );
-        return usePlaybackTheme
-            ? _playbackThemeSheetSurface(sheetContext, child: content)
-            : content;
+        return content;
       },
     );
   }
@@ -6646,6 +6941,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      surfaceBuilder: usePlaybackTheme
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
       builder: (sheetContext) {
         final content = SafeArea(
           child: Column(
@@ -6665,9 +6964,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             ],
           ),
         );
-        return usePlaybackTheme
-            ? _playbackThemeSheetSurface(sheetContext, child: content)
-            : content;
+        return content;
       },
     );
     if (!mounted || choice == null) return;
@@ -6691,7 +6988,52 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     );
   }
 
+  void _showLandscapeTools(BuildContext context, PlaybackMenuAction initial) {
+    final notifier = context.read<PlaylistContentNotifier>();
+    final themed = _hasResolvedPlaybackTheme(
+      context.read<SettingsProvider>(),
+      notifier,
+    );
+    showPlaybackBottomSheet<void>(
+      context: context,
+      fromRight: true,
+      isScrollControlled: true,
+      showDragHandle: false,
+      backgroundColor: themed ? Colors.transparent : null,
+      surfaceBuilder: themed
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
+      builder: (sheetContext) => SizedBox(
+        height: MediaQuery.sizeOf(sheetContext).height,
+        child: LandscapeToolsPanel(
+          initial: initial,
+          builder: (context, selected) => switch (selected) {
+            PlaybackMenuAction.queue => const PlayingQueueDrawer(
+              transparentBackground: true,
+              syncHomeBackground: false,
+              compactLandscapeNavigation: true,
+            ),
+            PlaybackMenuAction.effects => _AudioEffectsSheet(
+              transparentBackground: themed,
+            ),
+            PlaybackMenuAction.lyrics => _LyricSettingsSheet(
+              transparentBackground: themed,
+            ),
+            _ => SingleChildScrollView(
+              child: _presetPanel(sheetContext, notifier, themed),
+            ),
+          },
+        ),
+      ),
+    );
+  }
+
   void _showQueue(BuildContext context) {
+    if (MediaQuery.orientationOf(context) == Orientation.landscape) {
+      _showLandscapeTools(context, PlaybackMenuAction.queue);
+      return;
+    }
     final usePlaybackTheme = _hasResolvedPlaybackTheme(
       context.read<SettingsProvider>(),
       context.read<PlaylistContentNotifier>(),
@@ -6702,6 +7044,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      surfaceBuilder: usePlaybackTheme
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
       builder: (sheetContext) {
         final content = FractionallySizedBox(
           heightFactor: .82,
@@ -6710,9 +7056,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             syncHomeBackground: false,
           ),
         );
-        return usePlaybackTheme
-            ? _playbackThemeSheetSurface(sheetContext, child: content)
-            : content;
+        return content;
       },
     );
   }
@@ -6721,101 +7065,111 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     BuildContext context,
     PlaylistContentNotifier notifier,
   ) {
+    if (MediaQuery.orientationOf(context) == Orientation.landscape) {
+      _showLandscapeTools(context, PlaybackMenuAction.preset);
+      return;
+    }
     final usePlaybackTheme = _hasResolvedPlaybackTheme(
       context.read<SettingsProvider>(),
       notifier,
     );
-    var pitch = notifier.currentPitch;
-    var playbackRate = notifier.currentPlaybackRate;
     showPlaybackBottomSheet<void>(
       context: context,
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      surfaceBuilder: usePlaybackTheme
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
       builder: (sheetContext) {
-        final content = SafeArea(
-          child: StatefulBuilder(
-            builder: (context, setSheetState) => Padding(
-              padding: const EdgeInsets.all(20),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text('均衡器预设', style: Theme.of(context).textTheme.titleLarge),
-                  const SizedBox(height: 14),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: notifier.availableEqualizerPresets
-                        .skip(1)
-                        .map(
-                          (preset) => TransparentChipSurface(
-                            enabled: usePlaybackTheme,
-                            child: ChoiceChip(
-                              label: Text(preset.name),
-                              selected:
-                                  preset.name == notifier.equalizerPresetName,
-                              backgroundColor: usePlaybackTheme
-                                  ? Colors.transparent
-                                  : null,
-                              selectedColor: usePlaybackTheme
-                                  ? Colors.transparent
-                                  : null,
-                              side: usePlaybackTheme
-                                  ? BorderSide(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.outline,
-                                    )
-                                  : null,
-                              onSelected: (_) {
-                                notifier.applyEqualizerPreset(preset);
-                                Navigator.pop(sheetContext);
-                              },
-                            ),
-                          ),
-                        )
-                        .toList(),
-                  ),
-                  const SizedBox(height: 18),
-                  _audioControlSlider(
-                    context,
-                    icon: Icons.music_note,
-                    label: '音高',
-                    value: pitch,
-                    valueLabel: pitch.toStringAsFixed(2),
-                    min: .5,
-                    max: 1.5,
-                    divisions: 20,
-                    onChanged: (value) {
-                      setSheetState(() => pitch = value);
-                      unawaited(notifier.setPitch(value));
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  _audioControlSlider(
-                    context,
-                    icon: Icons.speed,
-                    label: '倍速',
-                    value: playbackRate,
-                    valueLabel: '${playbackRate.toStringAsFixed(2)}x',
-                    min: .5,
-                    max: 2,
-                    divisions: 30,
-                    onChanged: (value) {
-                      setSheetState(() => playbackRate = value);
-                      unawaited(notifier.setPlaybackRate(value));
-                    },
-                  ),
-                ],
-              ),
-            ),
-          ),
-        );
-        return usePlaybackTheme
-            ? _playbackThemeSheetSurface(sheetContext, child: content)
-            : content;
+        return _presetPanel(sheetContext, notifier, usePlaybackTheme);
       },
+    );
+  }
+
+  Widget _presetPanel(
+    BuildContext sheetContext,
+    PlaylistContentNotifier notifier,
+    bool usePlaybackTheme,
+  ) {
+    var pitch = notifier.currentPitch;
+    var playbackRate = notifier.currentPlaybackRate;
+    return SafeArea(
+      child: StatefulBuilder(
+        builder: (context, setSheetState) => Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('均衡器预设', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 14),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: notifier.availableEqualizerPresets
+                    .skip(1)
+                    .map(
+                      (preset) => TransparentChipSurface(
+                        enabled: usePlaybackTheme,
+                        child: ChoiceChip(
+                          label: Text(preset.name),
+                          selected: preset.name == notifier.equalizerPresetName,
+                          backgroundColor: usePlaybackTheme
+                              ? Colors.transparent
+                              : null,
+                          selectedColor: usePlaybackTheme
+                              ? Colors.transparent
+                              : null,
+                          side: usePlaybackTheme
+                              ? BorderSide(
+                                  color: Theme.of(context).colorScheme.outline,
+                                )
+                              : null,
+                          onSelected: (_) {
+                            notifier.applyEqualizerPreset(preset);
+                            Navigator.pop(sheetContext);
+                          },
+                        ),
+                      ),
+                    )
+                    .toList(),
+              ),
+              const SizedBox(height: 18),
+              _audioControlSlider(
+                context,
+                icon: Icons.music_note,
+                label: '音高',
+                value: pitch,
+                valueLabel: pitch.toStringAsFixed(2),
+                min: .5,
+                max: 1.5,
+                divisions: 20,
+                onChanged: (value) {
+                  setSheetState(() => pitch = value);
+                  unawaited(notifier.setPitch(value));
+                },
+              ),
+              const SizedBox(height: 8),
+              _audioControlSlider(
+                context,
+                icon: Icons.speed,
+                label: '倍速',
+                value: playbackRate,
+                valueLabel: '${playbackRate.toStringAsFixed(2)}x',
+                min: .5,
+                max: 2,
+                divisions: 30,
+                onChanged: (value) {
+                  setSheetState(() => playbackRate = value);
+                  unawaited(notifier.setPlaybackRate(value));
+                },
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
@@ -6853,6 +7207,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
   }
 
   void _showLyricSource(BuildContext context) {
+    if (MediaQuery.orientationOf(context) == Orientation.landscape) {
+      _showLandscapeTools(context, PlaybackMenuAction.lyrics);
+      return;
+    }
     final usePlaybackTheme = _hasResolvedPlaybackTheme(
       context.read<SettingsProvider>(),
       context.read<PlaylistContentNotifier>(),
@@ -6866,19 +7224,25 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      surfaceBuilder: usePlaybackTheme
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
       builder: (sheetContext) {
         final content = FractionallySizedBox(
           heightFactor: .62,
           child: _LyricSettingsSheet(transparentBackground: usePlaybackTheme),
         );
-        return usePlaybackTheme
-            ? _playbackThemeSheetSurface(sheetContext, child: content)
-            : content;
+        return content;
       },
     );
   }
 
   void _showAudioEffects(BuildContext context) {
+    if (MediaQuery.orientationOf(context) == Orientation.landscape) {
+      _showLandscapeTools(context, PlaybackMenuAction.effects);
+      return;
+    }
     final usePlaybackTheme = _hasResolvedPlaybackTheme(
       context.read<SettingsProvider>(),
       context.read<PlaylistContentNotifier>(),
@@ -6894,6 +7258,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: Clip.antiAlias,
+      surfaceBuilder: usePlaybackTheme
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
       builder: (sheetContext) {
         final content = FractionallySizedBox(
           heightFactor: .92,
@@ -6901,9 +7269,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             child: _AudioEffectsSheet(transparentBackground: usePlaybackTheme),
           ),
         );
-        return usePlaybackTheme
-            ? _playbackThemeSheetSurface(sheetContext, child: content)
-            : content;
+        return content;
       },
     );
   }
@@ -6932,6 +7298,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
         duration: Duration(milliseconds: 260),
         reverseDuration: Duration(milliseconds: 220),
       ),
+      surfaceBuilder: themed
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
       builder: (sheetContext) {
         final content = Padding(
           key: const ValueKey('playback-control-sheet-body'),
@@ -6940,9 +7310,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
           ),
           child: builder(sheetContext),
         );
-        return themed
-            ? _playbackThemeSheetSurface(sheetContext, child: content)
-            : content;
+        return content;
       },
     );
   }
@@ -7190,6 +7558,108 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
     );
   }
 
+  Widget _landscapeInformation(
+    BuildContext context,
+    PlaylistContentNotifier notifier,
+    Song song,
+  ) {
+    return FutureBuilder<FileStat?>(
+      key: ValueKey(song.normalizedPath),
+      future: _informationStats.putIfAbsent(song.normalizedPath, () async {
+        try {
+          return song.filePath.startsWith('content://')
+              ? null
+              : await File(song.filePath).stat();
+        } catch (_) {
+          return null;
+        }
+      }),
+      builder: (context, snapshot) {
+        final stat = snapshot.data;
+        final playCount =
+            context
+                .read<StatisticsManager>()
+                .getSongStatByPath(song.filePath)
+                ?.playCount ??
+            0;
+        final state = notifier.mediaPlayer.state;
+        final bitrate = state.audioBitrate;
+        final sampleRate = state.audioParams.sampleRate;
+        final duration = song.duration ?? notifier.totalDuration;
+        final estimatedListening = Duration(
+          milliseconds: duration.inMilliseconds * playCount,
+        );
+        return ListView(
+          padding: const EdgeInsets.all(12),
+          children: [
+            Text('歌曲信息', style: Theme.of(context).textTheme.titleLarge),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '歌曲名',
+              value: song.title,
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '歌手',
+              value: song.artist,
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '专辑',
+              value: song.album,
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '收听次数',
+              value: '$playCount 次',
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '累计收听时间',
+              value: '${_longDuration(estimatedListening)}（估算）',
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '比特率',
+              value: bitrate == null
+                  ? '未知'
+                  : '${(bitrate / 1000).round()} kbps',
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '采样率',
+              value: sampleRate == null
+                  ? '未知'
+                  : '${(sampleRate / 1000).toStringAsFixed(1)} kHz',
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '时长',
+              value: _duration(duration),
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '创建日期',
+              value: stat == null ? '未知' : _dateTime(stat.changed),
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '修改日期',
+              value: stat == null ? '未知' : _dateTime(stat.modified),
+            ),
+            CopyableSongDetailRow(
+              labelWidth: 64,
+              label: '文件路径',
+              value: song.filePath,
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  final Map<String, Future<FileStat?>> _informationStats = {};
+
   Future<void> _showSongDetails(
     BuildContext context,
     PlaylistContentNotifier notifier,
@@ -7227,6 +7697,10 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
       backgroundColor: usePlaybackTheme ? Colors.transparent : null,
       shape: usePlaybackTheme ? _playbackSheetShape(context) : null,
       clipBehavior: usePlaybackTheme ? Clip.antiAlias : Clip.none,
+      surfaceBuilder: usePlaybackTheme
+          ? (context, child) =>
+                _playbackThemeSheetSurface(context, child: child)
+          : null,
       builder: (sheetContext) {
         final content = DraggableScrollableSheet(
           expand: false,
@@ -7282,9 +7756,7 @@ class _NowPlayingPageState extends State<_NowPlayingPage>
             ),
           ),
         );
-        return usePlaybackTheme
-            ? _playbackThemeSheetSurface(sheetContext, child: content)
-            : content;
+        return content;
       },
     );
   }

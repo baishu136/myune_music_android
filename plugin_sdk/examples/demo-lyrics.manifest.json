@@ -1,0 +1,14 @@
+{
+  "sdk": 1,
+  "version": "1.0.0",
+  "id": "myune.demo.lyrics",
+  "name": "歌词示例",
+  "permissions": [
+    "lyrics.provide",
+    "ui.page"
+  ],
+  "features": [
+    "lyrics",
+    "page"
+  ]
+}

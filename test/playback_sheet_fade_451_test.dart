@@ -2,10 +2,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:myune_music/widgets/playback_bottom_sheet.dart';
 
-const _fade = ValueKey('playback-bottom-sheet-fade');
+const _fade = ValueKey('playback-sheet-background-fade');
 void main() {
   testWidgets(
-    'whole Material sheet fades on its existing route and completes its result',
+    'background and foreground fade concurrently on their existing route and complete the result',
     (tester) async {
       String? result;
       await tester.pumpWidget(
@@ -43,15 +43,22 @@ void main() {
           tester.widget<FadeTransition>(find.byKey(_fade)).opacity.value;
       expect(opacity(), 0);
       expect(
-        find.ancestor(
-          of: find.byType(BottomSheet),
-          matching: find.byKey(_fade),
-        ),
-        findsOneWidget,
-        reason: 'surface, drag handle, outline and content must all fade',
+        find.ancestor(of: find.text('Close'), matching: find.byKey(_fade)),
+        findsNothing,
+        reason: 'background opacity must stay outside the foreground',
       );
       await tester.pump(const Duration(milliseconds: 65));
       expect(opacity(), inExclusiveRange(0, 1));
+      expect(
+        tester
+            .widget<FadeTransition>(
+              find.byKey(const ValueKey('playback-sheet-foreground-fade')),
+            )
+            .opacity
+            .value,
+        greaterThan(.5),
+        reason: 'foreground uses a fast-to-slow curve from the beginning',
+      );
       final route = ModalRoute.of(tester.element(find.text('Close')))!;
       expect(route, isA<ModalBottomSheetRoute<String>>());
       expect(route.transitionDuration, const Duration(milliseconds: 260));
@@ -64,7 +71,12 @@ void main() {
       await tester.tap(find.text('Close'));
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 60));
-      expect(opacity(), inExclusiveRange(0, 1));
+      expect(
+        opacity(),
+        inExclusiveRange(0, 1),
+        reason:
+            'surface reverses immediately without the old forty-percent delay',
+      );
       await tester.pumpAndSettle();
       expect(result, 'selected');
       expect(find.byKey(_fade), findsNothing);
@@ -108,7 +120,7 @@ void main() {
       );
       await tester.pump();
       await gesture.moveBy(
-        const Offset(0, 60),
+        const Offset(0, 160),
         timeStamp: const Duration(milliseconds: 600),
       );
       await tester.pump();

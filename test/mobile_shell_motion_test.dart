@@ -62,11 +62,6 @@ void main() {
     );
   });
 
-  test('library entrance limits keep both startup views lightweight', () {
-    expect(libraryEntranceItemLimit(LibraryEntranceStyle.list), 6);
-    expect(libraryEntranceItemLimit(LibraryEntranceStyle.indexed), 10);
-  });
-
   testWidgets('original staggered song entrance remains visible in each mode', (
     tester,
   ) async {
@@ -112,9 +107,7 @@ void main() {
     expect(translation().position.value.dy, 0);
   });
 
-  testWidgets('indexed entrance animates one visible wave and skips its tail', (
-    tester,
-  ) async {
+  testWidgets('indexed entrance includes lower visible rows', (tester) async {
     final animation = AnimationController(
       vsync: const TestVSync(),
       duration: const Duration(milliseconds: 720),
@@ -140,7 +133,7 @@ void main() {
         of: find.byKey(const ValueKey('indexed-tail-host')),
         matching: find.byType(FadeTransition),
       ),
-      findsNothing,
+      findsOneWidget,
     );
     expect(find.byKey(const ValueKey('indexed-tail-song')), findsOneWidget);
   });

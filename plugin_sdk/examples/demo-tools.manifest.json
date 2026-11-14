@@ -1,0 +1,26 @@
+{
+  "sdk": 1,
+  "version": "1.0.0",
+  "id": "myune.demo.tools",
+  "name": "工具示例",
+  "permissions": [
+    "playback.read",
+    "playback.control",
+    "library.read",
+    "queue.write",
+    "ui.page",
+    "ui.menu",
+    "storage"
+  ],
+  "features": [
+    "page",
+    "menu",
+    "events"
+  ],
+  "menus": [
+    {
+      "id": "tools",
+      "title": "播放工具"
+    }
+  ]
+}

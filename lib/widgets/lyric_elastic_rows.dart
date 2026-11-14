@@ -244,17 +244,22 @@ class _ElasticPlainParagraphState extends State<_ElasticPlainParagraph> {
         scaler,
         locale,
         constraints.maxWidth,
+        MediaQuery.orientationOf(context),
       );
       if (_signature != signature) {
         _layout?.dispose();
         _pictures?.dispose();
-        _layout = TextPainter(
-          text: TextSpan(style: maskStyle, children: [mask(widget.text)]),
-          textAlign: widget.textAlign,
-          textDirection: direction,
-          textScaler: scaler,
-          locale: locale,
-        )..layout(maxWidth: constraints.maxWidth);
+        _layout =
+            TextPainter(
+              text: TextSpan(style: maskStyle, children: [mask(widget.text)]),
+              textAlign: widget.textAlign,
+              textDirection: direction,
+              textScaler: scaler,
+              locale: locale,
+            )..layout(
+              minWidth: constraints.maxWidth,
+              maxWidth: constraints.maxWidth,
+            );
         final translation = widget.text.children?.last;
         _pictures = _PhysicalLyricPictures(
           _layout!,

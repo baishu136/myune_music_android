@@ -1,0 +1,29 @@
+{
+  "manifest": {
+    "sdk": 1,
+    "version": "1.0.0",
+    "id": "myune.demo.tools",
+    "name": "工具示例",
+    "permissions": [
+      "playback.read",
+      "playback.control",
+      "library.read",
+      "queue.write",
+      "ui.page",
+      "ui.menu",
+      "storage"
+    ],
+    "features": [
+      "page",
+      "menu",
+      "events"
+    ],
+    "menus": [
+      {
+        "id": "tools",
+        "title": "播放工具"
+      }
+    ]
+  },
+  "script": "globalThis.myunePlugin = async function(event, api) {\n  if (event.type === 'lifecycle.enable') return null;\n  if (event.type === 'playback.changed') {\n    await api.request('storage.set', {key:'lastPlayback', value:event.playback});\n    return null;\n  }\n  const action = event.data?.id;\n  if (event.type === 'ui.action') {\n    if (action === 'toggle') {\n      const state = await api.request('playback.get');\n      await api.request('playback.command', {command:state?.playing ? 'pause' : 'play'});\n    }\n    if (action === 'smart') {\n      const page = await api.request('library.query', {limit:100});\n      const songs = page.songs.filter(s => !s.durationMs || s.durationMs <= 240000).slice(0,10);\n      if (songs.length) await api.request('queue.play', {ids:songs.map(s => s.id)});\n    }\n    if (action === 'count') {\n      const count = await api.request('storage.get', {key:'count'}) || 0;\n      await api.request('storage.set', {key:'count',value:count+1});\n    }\n  }\n  const state = await api.request('playback.get');\n  const library = await api.request('library.query', {limit:10});\n  const count = await api.request('storage.get', {key:'count'}) || 0;\n  return {view:{type:'column',children:[\n    {type:'text',style:'title',text:state?.song?.title || '尚未选择歌曲'},\n    {type:'text',text:(state?.song?.artist || '') + (state?.playing ? ' · 播放中' : ' · 已暂停')},\n    {type:'button',text:state?.playing ? '暂停播放' : '继续播放',action:'toggle'},\n    {type:'card',children:[\n      {type:'text',text:'曲库共 ' + library.total + ' 首'},\n      {type:'button',text:'播放短曲精选',action:'smart'},\n      {type:'text',text:'从本次查询的前 100 首中选取不超过 4 分钟的歌曲，最多 10 首。',style:'muted'}\n    ]},\n    {type:'button',text:'计数 ' + count,action:'count'},\n    ...library.songs.slice(0,6).map(song => ({type:'text',text:song.title + ' · ' + song.artist}))\n  ]}};\n};"
+}

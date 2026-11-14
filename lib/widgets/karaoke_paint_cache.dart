@@ -211,6 +211,7 @@ class _KaraokePaintCache extends ChangeNotifier {
     required this.ranges,
     required this.synthetic,
     this.smoothMotion = false,
+    this.fullWidthAlignment = false,
     required this.width,
     required this.style,
     required this.textAlign,
@@ -694,6 +695,7 @@ class _KaraokePaintCache extends ChangeNotifier {
   final double width;
   final TextStyle style;
   final TextAlign textAlign;
+  final bool fullWidthAlignment;
   final TextDirection textDirection;
   final TextScaler textScaler;
   final Locale? locale;
@@ -1218,7 +1220,7 @@ class _KaraokePaintCache extends ChangeNotifier {
       textDirection: textDirection,
       textScaler: textScaler,
       locale: locale,
-    )..layout(maxWidth: width);
+    )..layout(minWidth: fullWidthAlignment ? width : 0, maxWidth: width);
   }
 
   List<ui.TextBox> _boxes(TextPainter layout, _KaraokePaintRange range) =>

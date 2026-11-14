@@ -34,6 +34,11 @@
             </intent-filter>
         </activity>
         <service
+            android:name=".PluginScriptService"
+            android:exported="false"
+            android:isolatedProcess="true"
+            android:process=":plugin_runtime" />
+        <service
             android:name=".DesktopLyricsService"
             android:exported="false"
             android:stopWithTask="false" />

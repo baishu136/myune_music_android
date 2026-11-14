@@ -109,7 +109,10 @@ class _QueueNotifier extends ChangeNotifier implements PlaylistContentNotifier {
 }
 
 void main() {
-  Future<_QueueNotifier> mount(WidgetTester tester) async {
+  Future<_QueueNotifier> mount(
+    WidgetTester tester, {
+    bool compactLandscape = false,
+  }) async {
     SharedPreferences.setMockInitialValues({});
     final settings = SettingsProvider();
     await settings.initializationFuture;
@@ -125,8 +128,14 @@ void main() {
           ),
           ChangeNotifierProvider<SettingsProvider>.value(value: settings),
         ],
-        child: const MaterialApp(
-          home: Scaffold(body: PlayingQueueDrawer(syncHomeBackground: false)),
+        child: MaterialApp(
+          home: Scaffold(
+            body: PlayingQueueDrawer(
+              syncHomeBackground: false,
+              compactLandscapeNavigation: compactLandscape,
+              transparentBackground: compactLandscape,
+            ),
+          ),
         ),
       ),
     );
@@ -392,6 +401,37 @@ void main() {
     }
     await tester.pumpWidget(const SizedBox());
   });
+  testWidgets(
+    'landscape source tabs filter, search and retain playlist access',
+    (tester) async {
+      tester.view.physicalSize = const Size(660, 280);
+      tester.view.devicePixelRatio = 1;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+      await mount(tester, compactLandscape: true);
+      await tester.pumpAndSettle();
+      expect(
+        find.byKey(const ValueKey('landscape-song-scopes')),
+        findsOneWidget,
+      );
+      await tester.tap(find.text('歌手'));
+      await tester.pumpAndSettle();
+      expect(visibleSongs(tester), ['A first', 'A second']);
+      await tester.tap(find.text('搜索'));
+      await tester.pumpAndSettle();
+      await tester.enterText(
+        find.byKey(const ValueKey('queue-library-search')),
+        'second',
+      );
+      await tester.pumpAndSettle();
+      expect(visibleSongs(tester), ['A second']);
+      await tester.tap(find.text('歌单'));
+      await tester.pumpAndSettle();
+      expect(find.text('晚间歌单'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+      await tester.pumpWidget(const SizedBox());
+    },
+  );
   testWidgets('artist scope refreshes after a song change without remount', (
     tester,
   ) async {

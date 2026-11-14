@@ -14,6 +14,9 @@ android {
         targetCompatibility = JavaVersion.VERSION_17
     }
     kotlinOptions { jvmTarget = JavaVersion.VERSION_17.toString() }
+    externalNativeBuild {
+        cmake { path "src/main/cpp/CMakeLists.txt"; version "3.22.1" }
+    }
 
     defaultConfig {
         // Explicit profile-fixture opt-in: never replace the user's player or

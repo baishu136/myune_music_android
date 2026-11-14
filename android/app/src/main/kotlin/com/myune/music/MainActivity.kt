@@ -4,6 +4,7 @@ import android.app.Activity
 import android.Manifest
 import android.content.ContentValues
 import android.content.ComponentCallbacks2
+import android.content.res.Configuration
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -12,6 +13,9 @@ import android.os.Bundle
 import android.os.Environment
 import android.provider.MediaStore
 import android.provider.Settings
+import androidx.core.view.WindowCompat
+import androidx.core.view.WindowInsetsCompat
+import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.android.FlutterActivity
@@ -21,7 +25,32 @@ import java.io.IOException
 import java.util.concurrent.Executors
 
 class MainActivity : FlutterActivity() {
+    private var playbackActive = false
+
+    private fun applyPlaybackSystemBars() {
+        if (!destroyed) {
+                val controller = WindowCompat.getInsetsController(window, window.decorView)
+                if (playbackActive && resources.configuration.orientation == Configuration.ORIENTATION_LANDSCAPE) {
+                    controller.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+                    controller.hide(WindowInsetsCompat.Type.systemBars())
+                } else {
+                    controller.show(WindowInsetsCompat.Type.systemBars())
+                }
+        }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        if (hasFocus) applyPlaybackSystemBars()
+    }
+
+    override fun onConfigurationChanged(newConfig: Configuration) {
+        super.onConfigurationChanged(newConfig)
+        applyPlaybackSystemBars()
+    }
+
     private var audioOutputManager: AudioOutputManager? = null
+    private var pluginScripts: PluginScriptBridge? = null
     private var updateDownloads: UpdateDownloadManager? = null
     private val channelName = "com.myune.music/desktop_lyrics"
     private val coverEditorChannelName = "com.myune.music/cover_editor"
@@ -44,6 +73,16 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        pluginScripts?.dispose()
+        pluginScripts = PluginScriptBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "com.myune.music/playback_ui")
+            .setMethodCallHandler { call, result ->
+                if (call.method == "setPlaybackActive") {
+                    playbackActive = call.arguments as? Boolean ?: false
+                    applyPlaybackSystemBars()
+                    result.success(null)
+                } else result.notImplemented()
+            }
         audioOutputManager?.dispose()
         audioOutputManager = AudioOutputManager(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         updateDownloads?.dispose()
@@ -423,6 +462,10 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun cleanUpFlutterEngine(flutterEngine: FlutterEngine) {
+        pluginScripts?.dispose()
+        pluginScripts = null
+        playbackActive = false
+        applyPlaybackSystemBars()
         updateDownloads?.dispose()
         updateDownloads = null
         audioOutputManager?.dispose()
@@ -432,6 +475,8 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         destroyed = true
+        pluginScripts?.dispose()
+        pluginScripts = null
         DesktopLyricsService.setEventSink(null)
         pendingGalleryResult?.error("activity_destroyed", "页面已关闭", null)
         pendingGalleryResult = null

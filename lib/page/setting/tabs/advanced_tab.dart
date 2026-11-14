@@ -1,4 +1,5 @@
 import 'dart:io';
+import '../../../plugins/plugin_manager_page.dart';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -38,6 +39,14 @@ class AdvancedTab extends StatelessWidget {
     return ListView(
       key: const ValueKey('advanced'),
       children: [
+        ListTile(
+          leading: const Icon(Icons.extension_outlined),
+          title: const Text('插件'),
+          trailing: const Icon(Icons.chevron_right),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const PluginManagerPage()),
+          ),
+        ),
         ListTile(
           leading: const Icon(Icons.equalizer),
           title: const Text('均衡器参数'),

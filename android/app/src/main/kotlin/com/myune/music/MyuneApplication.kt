@@ -5,12 +5,16 @@ import io.flutter.app.FlutterApplication
 
 class MyuneApplication : FlutterApplication() {
     override fun attachBaseContext(base: Context) {
-        FaultLogWriter.install(base)
+        if (!isPluginIsolatedProcess()) FaultLogWriter.install(base)
         super.attachBaseContext(base)
     }
 
     override fun onCreate() {
         super.onCreate()
-        FaultLogWriter.breadcrumb(this, "BOOT_04 Application.onCreate")
+        if (!isPluginIsolatedProcess()) FaultLogWriter.breadcrumb(this, "BOOT_04 Application.onCreate")
     }
+
+    private fun isPluginIsolatedProcess(): Boolean =
+        if (android.os.Build.VERSION.SDK_INT >= 28) android.os.Process.isIsolated()
+        else android.os.Process.myUid() % 100000 >= 99000
 }

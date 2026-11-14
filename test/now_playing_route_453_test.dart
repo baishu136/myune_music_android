@@ -27,6 +27,10 @@ void main() {
       );
       expect(incoming.scale.value, inExclusiveRange(1, 1.035));
       expect(outgoing.scale.value, inExclusiveRange(.965, 1));
+      expect(
+        find.byKey(const ValueKey('player-left-edge-dissolve')),
+        findsOneWidget,
+      );
       for (final key in ['player-entry-scale', 'player-home-scale']) {
         final fades = find.descendant(
           of: find.byKey(ValueKey(key)),

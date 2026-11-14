@@ -82,7 +82,12 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 140));
         final intermediate = tester.getRect(find.byKey(visualKey));
-        expect(intermediate.height, greaterThan(normalVisual.height));
+        if (split) {
+          expect(intermediate.width, greaterThan(normalVisual.width));
+          expect(intermediate.height, normalVisual.height);
+        } else {
+          expect(intermediate.height, greaterThan(normalVisual.height));
+        }
         final opacity = tester.widget<FadeTransition>(
           find
               .ancestor(

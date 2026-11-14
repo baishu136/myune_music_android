@@ -38,6 +38,28 @@ def apk(path, compressed=True, omit=None, font=b"full variable font", abi="arm64
 
 
 class ApkAuditTest(unittest.TestCase):
+    def test_known_plugin_runtime_is_audited_and_unknown_native_is_rejected(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "plugin.apk"
+            apk(path)
+            with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("lib/arm64-v8a/libmyune_plugin_js.so", elf())
+            report, hashes = inspect_apk(path, True)
+            self.assertIn("lib/arm64-v8a/libmyune_plugin_js.so", hashes)
+            with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("lib/arm64-v8a/libunknown.so", elf())
+            with self.assertRaisesRegex(ValueError, "required libraries"):
+                inspect_apk(path, True)
+
+    def test_plugin_runtime_must_also_have_16k_load_alignment(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "unaligned.apk"
+            apk(path)
+            with zipfile.ZipFile(path, "a", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("lib/arm64-v8a/libmyune_plugin_js.so", elf(4096))
+            with self.assertRaisesRegex(ValueError, "16 KiB"):
+                inspect_apk(path, True)
+
     def test_repack_preserves_contents_and_measures_real_reduction(self):
         with tempfile.TemporaryDirectory() as directory:
             baseline_path, current_path = Path(directory) / "old.apk", Path(directory) / "new.apk"

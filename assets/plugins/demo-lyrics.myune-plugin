@@ -1,0 +1,17 @@
+{
+  "manifest": {
+    "sdk": 1,
+    "version": "1.0.0",
+    "id": "myune.demo.lyrics",
+    "name": "歌词示例",
+    "permissions": [
+      "lyrics.provide",
+      "ui.page"
+    ],
+    "features": [
+      "lyrics",
+      "page"
+    ]
+  },
+  "script": "globalThis.myunePlugin = function(event) {\n  if (event.type === 'lyrics.resolve') {\n    return {lrc:'[00:00.00]插件歌词：' + event.data.title + '\\n[00:05.00]这段歌词由独立 JavaScript 插件提供\\n[00:12.00]关闭插件后恢复原歌词来源'};\n  }\n  return {view:{type:'column',children:[\n    {type:'text',style:'title',text:'歌词接口示例'},\n    {type:'text',text:'此插件会为歌曲返回演示歌词，停用后恢复内置来源。'}\n  ]}};\n};"
+}

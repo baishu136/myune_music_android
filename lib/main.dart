@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart'
+    show LicenseRegistry, LicenseEntryWithLineBreaks;
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:system_fonts/system_fonts.dart';
@@ -26,6 +28,7 @@ import 'package:hotkey_manager/hotkey_manager.dart';
 import 'page/statistics_page/statistics_manager.dart';
 import 'layout/navigation_notifier.dart';
 import 'services/notification_service.dart';
+import 'plugins/plugin_controller.dart';
 import 'services/desktop_lyrics_controller.dart';
 import 'services/cover_override_service.dart';
 import 'services/fault_log_service.dart';
@@ -167,10 +170,17 @@ void main() async {
   // blank default surface while SharedPreferences is still loading.
   final settingsProvider = SettingsProvider();
   await settingsProvider.initializationFuture;
+  final preferences = await SharedPreferences.getInstance();
+  LicenseRegistry.addLicense(() async* {
+    yield LicenseEntryWithLineBreaks([
+      'QuickJS',
+    ], await rootBundle.loadString('assets/licenses/quickjs.txt'));
+  });
 
   runApp(
     MultiProvider(
       providers: [
+        ChangeNotifierProvider(create: (_) => PluginController(preferences)),
         ChangeNotifierProvider.value(value: settingsProvider),
         ChangeNotifierProvider(
           lazy: false,
@@ -184,6 +194,7 @@ void main() async {
             context.read<SettingsProvider>(),
             context.read<ThemeProvider>(),
             context.read<CoverOverrideService>(),
+            plugins: context.read<PluginController>(),
           ),
         ),
         ChangeNotifierProxyProvider3<

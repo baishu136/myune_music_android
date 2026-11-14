@@ -11,6 +11,8 @@ class NowPlayingImmersiveLayout extends StatefulWidget {
     required this.controls,
     this.tablet = false,
     this.split = false,
+    this.stableLandscapeCanvas = false,
+    this.landscapeFooter,
   });
 
   static const transitionDuration = Duration(milliseconds: 280);
@@ -20,6 +22,8 @@ class NowPlayingImmersiveLayout extends StatefulWidget {
   final Widget controls;
   final bool tablet;
   final bool split;
+  final bool stableLandscapeCanvas;
+  final Widget? landscapeFooter;
 
   @override
   State<NowPlayingImmersiveLayout> createState() => _ImmersiveLayoutState();
@@ -27,6 +31,8 @@ class NowPlayingImmersiveLayout extends StatefulWidget {
 
 class _ImmersiveLayoutState extends State<NowPlayingImmersiveLayout>
     with SingleTickerProviderStateMixin {
+  final _visualKey = GlobalKey();
+  final _controlsKey = GlobalKey();
   late final AnimationController _controller = AnimationController(
     vsync: this,
     duration: NowPlayingImmersiveLayout.transitionDuration,
@@ -38,10 +44,22 @@ class _ImmersiveLayoutState extends State<NowPlayingImmersiveLayout>
   );
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (MediaQuery.disableAnimationsOf(context)) {
+      _controller.value = widget.immersive ? 0 : 1;
+    }
+  }
+
+  @override
   void didUpdateWidget(covariant NowPlayingImmersiveLayout oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.immersive != widget.immersive) {
-      widget.immersive ? _controller.reverse() : _controller.forward();
+      if (MediaQuery.disableAnimationsOf(context)) {
+        _controller.value = widget.immersive ? 0 : 1;
+      } else {
+        widget.immersive ? _controller.reverse() : _controller.forward();
+      }
     }
   }
 
@@ -66,52 +84,139 @@ class _ImmersiveLayoutState extends State<NowPlayingImmersiveLayout>
   );
 
   @override
-  Widget build(BuildContext context) => Column(
-    children: [
-      _chrome(SizedBox(height: kToolbarHeight, child: widget.header)),
-      Expanded(
+  Widget build(BuildContext context) {
+    final visual = KeyedSubtree(key: _visualKey, child: widget.visual);
+    final controls = KeyedSubtree(key: _controlsKey, child: widget.controls);
+    if (widget.split) {
+      return _ChromeMotionScope(
+        visibility: _visibility,
         child: Center(
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1280),
             child: Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-              child: widget.split
-                  ? LayoutBuilder(
-                      builder: (context, constraints) => AnimatedBuilder(
-                        animation: _visibility,
-                        builder: (context, child) => Row(
-                          children: [
-                            Expanded(child: widget.visual),
-                            SizedBox(width: 32 * _visibility.value),
-                            _chrome(child!, axis: Axis.horizontal),
-                          ],
-                        ),
-                        // Preserve the normal 6:5 ratio without mounting a
-                        // second fullscreen visual or changing its element.
-                        child: SizedBox(
-                          width: (constraints.maxWidth - 32) * 5 / 11,
-                          child: widget.controls,
-                        ),
-                      ),
-                    )
-                  : Column(
-                      children: [
-                        Expanded(child: widget.visual),
-                        _chrome(
-                          Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              const SizedBox(height: 16),
-                              widget.controls,
-                            ],
+              child: LayoutBuilder(
+                builder: (context, constraints) => AnimatedBuilder(
+                  animation: _visibility,
+                  builder: (context, child) => Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      _chrome(child!, axis: Axis.horizontal),
+                      SizedBox(width: 24 * _visibility.value),
+                      Expanded(
+                        child: ClipRect(
+                          clipBehavior: widget.stableLandscapeCanvas
+                              ? Clip.none
+                              : Clip.hardEdge,
+                          child: OverflowBox(
+                            alignment: Alignment.centerRight,
+                            minWidth:
+                                (widget.immersive ||
+                                    widget.stableLandscapeCanvas)
+                                ? constraints.maxWidth
+                                : (constraints.maxWidth - 24) * .57,
+                            maxWidth:
+                                (widget.immersive ||
+                                    widget.stableLandscapeCanvas)
+                                ? constraints.maxWidth
+                                : (constraints.maxWidth - 24) * .57,
+                            minHeight: constraints.maxHeight,
+                            maxHeight: constraints.maxHeight,
+                            child: visual,
                           ),
                         ),
+                      ),
+                    ],
+                  ),
+                  child: SizedBox(
+                    width: (constraints.maxWidth - 24) * .43,
+                    height: constraints.maxHeight,
+                    child: Column(
+                      children: [
+                        SizedBox(height: 48, child: widget.header),
+                        Expanded(
+                          child: SingleChildScrollView(
+                            reverse: false,
+                            key: const PageStorageKey(
+                              'landscape-playback-controls',
+                            ),
+                            child: controls,
+                          ),
+                        ),
+                        if (widget.landscapeFooter != null)
+                          widget.landscapeFooter!,
                       ],
                     ),
+                  ),
+                ),
+              ),
             ),
           ),
         ),
+      );
+    }
+    return _ChromeMotionScope(
+      visibility: _visibility,
+      child: Column(
+        children: [
+          _chrome(SizedBox(height: kToolbarHeight, child: widget.header)),
+          Expanded(
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 1280),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                  child: Column(
+                    children: [
+                      Expanded(child: visual),
+                      _chrome(
+                        Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [const SizedBox(height: 16), controls],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
-    ],
-  );
+    );
+  }
+}
+
+class _ChromeMotionScope extends InheritedWidget {
+  const _ChromeMotionScope({required this.visibility, required super.child});
+  final Animation<double> visibility;
+  @override
+  bool updateShouldNotify(_ChromeMotionScope oldWidget) =>
+      visibility != oldWidget.visibility;
+}
+
+/// Individual foreground controls share the layout clock, with slight offsets.
+class NowPlayingChromeFade extends StatelessWidget {
+  const NowPlayingChromeFade({
+    super.key,
+    required this.order,
+    required this.child,
+  });
+  final int order;
+  final Widget child;
+  @override
+  Widget build(BuildContext context) {
+    final animation = context
+        .dependOnInheritedWidgetOfExactType<_ChromeMotionScope>()
+        ?.visibility;
+    if (animation == null) return child;
+    final delay = (order * .025).clamp(0.0, .2);
+    return FadeTransition(
+      key: ValueKey('immersive-control-fade-$order'),
+      opacity: animation.drive(
+        CurveTween(curve: Interval(delay, .8 + delay, curve: Curves.easeInOut)),
+      ),
+      child: child,
+    );
+  }
 }

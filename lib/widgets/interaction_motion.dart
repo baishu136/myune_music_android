@@ -287,6 +287,12 @@ IconMotionPose iconMotionPose(
   if (phase <= 0 || phase >= 1) return _restPose;
   final strength = active ? 1.0 : .35;
   final bump = iconMotionAccent(phase) * strength;
+  final skip = kind != IconMotion.next && kind != IconMotion.previous
+      ? 0.0
+      : (phase <= .34
+                ? Curves.easeOutCubic.transform(phase / .34)
+                : 1 - Curves.easeInCubic.transform((phase - .34) / .66)) *
+            strength;
   final heart = kind == IconMotion.heart
       ? (.84 * iconMotionAccent(phase * 1.65) +
                 .24 * iconMotionAccent((phase - .34) / .66)) *
@@ -343,17 +349,17 @@ IconMotionPose iconMotionPose(
       angle: .21 * bump,
     ),
     IconMotion.next => (
-      x: 4.0 * bump,
+      x: -4.0 * skip,
       y: 0.0,
-      scaleX: 1 - .05 * bump,
-      scaleY: 1.0,
+      scaleX: 1 - .40 * skip,
+      scaleY: 1 - .40 * skip,
       angle: 0.0,
     ),
     IconMotion.previous => (
-      x: -4.0 * bump,
+      x: 4.0 * skip,
       y: 0.0,
-      scaleX: 1 - .05 * bump,
-      scaleY: 1.0,
+      scaleX: 1 - .40 * skip,
+      scaleY: 1 - .40 * skip,
       angle: 0.0,
     ),
   };
@@ -386,15 +392,18 @@ class ActionMotionIcon extends StatelessWidget {
     required this.child,
     this.active = true,
     this.enabled = true,
+    this.restartOnTrigger = true,
   });
   final Object trigger;
   final IconMotion kind;
   final Widget child;
   final bool active, enabled;
+  final bool restartOnTrigger;
   @override
   Widget build(BuildContext context) => OneShotMotion(
     trigger: trigger,
     enabled: enabled,
+    restartOnTrigger: restartOnTrigger,
     duration: iconMotionDuration(kind),
     child: child,
     builder: (_, phase, child) =>

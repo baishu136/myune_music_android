@@ -1,5 +1,6 @@
 import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
+import 'playback_bottom_sheet.dart';
 
 class PlaybackControlSheetSurface extends StatelessWidget {
   const PlaybackControlSheetSurface({
@@ -25,26 +26,36 @@ class PlaybackControlSheetSurface extends StatelessWidget {
         : theme.colorScheme.outlineVariant;
     return ClipRRect(
       borderRadius: borderRadius,
-      child: BackdropFilter(
-        key: const ValueKey('playback-feature-backdrop-filter'),
-        filter: fluid ? _fluidBlur : _blur,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surface.withValues(
-              alpha: fluid ? .28 : .10,
-            ),
-            borderRadius: borderRadius,
-            border: Border.fromBorderSide(
-              borderSide ?? BorderSide(color: border.withValues(alpha: .72)),
+      child: Stack(
+        children: [
+          Positioned.fill(
+            child: PlaybackSheetBackgroundFade(
+              child: BackdropFilter(
+                key: const ValueKey('playback-feature-backdrop-filter'),
+                filter: fluid ? _fluidBlur : _blur,
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    color: theme.colorScheme.surface.withValues(
+                      alpha: fluid ? .28 : .10,
+                    ),
+                    borderRadius: borderRadius,
+                    border: Border.fromBorderSide(
+                      borderSide ??
+                          BorderSide(color: border.withValues(alpha: .72)),
+                    ),
+                  ),
+                  child: const SizedBox.expand(),
+                ),
+              ),
             ),
           ),
-          child: Material(
+          Material(
             color: Colors.transparent,
             shape: RoundedRectangleBorder(borderRadius: borderRadius),
             clipBehavior: Clip.antiAlias,
             child: child,
           ),
-        ),
+        ],
       ),
     );
   }

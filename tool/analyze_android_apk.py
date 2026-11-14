@@ -18,6 +18,7 @@ REQUIRED_LIBS = frozenset({
     "libmyune.so",
 })
 FONT = "assets/flutter_assets/assets/fonts/MiSansVF.ttf"
+OPTIONAL_LIBS = frozenset({"libmyune_plugin_js.so"})
 
 
 def digest(stream):
@@ -77,9 +78,10 @@ def inspect_apk(path, require_compressed=False):
         if len(names) != len(set(names)):
             raise ValueError("Duplicate APK entries")
         libraries = [entry for entry in entries if entry.filename.startswith("lib/")]
-        if {entry.filename for entry in libraries} != {
-            f"lib/arm64-v8a/{name}" for name in REQUIRED_LIBS
-        }:
+        actual_libs = {entry.filename for entry in libraries}
+        required_libs = {f"lib/arm64-v8a/{name}" for name in REQUIRED_LIBS}
+        allowed_libs = required_libs | {f"lib/arm64-v8a/{name}" for name in OPTIONAL_LIBS}
+        if not required_libs <= actual_libs <= allowed_libs:
             raise ValueError("APK must contain all required libraries and only ARM64")
         if FONT not in names:
             raise ValueError("Missing full MiSans font")

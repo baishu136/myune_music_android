@@ -47,8 +47,12 @@ void main() {
             final pose = iconMotionPose(kind, i / (seconds * hz));
             expect(pose.x.abs(), lessThanOrEqualTo(4));
             expect(pose.y.abs(), lessThanOrEqualTo(2.5));
-            expect(pose.scaleX, inInclusiveRange(.9, 1.181));
-            expect(pose.scaleY, inInclusiveRange(.9, 1.181));
+            final minScale =
+                kind == IconMotion.next || kind == IconMotion.previous
+                ? .6
+                : .9;
+            expect(pose.scaleX, inInclusiveRange(minScale, 1.181));
+            expect(pose.scaleY, inInclusiveRange(minScale, 1.181));
             expect(pose.angle.isFinite, isTrue);
           }
           expect(iconMotionPose(kind, 0), iconMotionPose(kind, 1));

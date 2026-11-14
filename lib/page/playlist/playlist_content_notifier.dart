@@ -2,6 +2,8 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'dart:math';
 import 'dart:async';
+import '../../plugins/plugin_controller.dart';
+import '../../plugins/playlist_plugin_host.dart';
 import 'dart:convert';
 import 'dart:collection';
 
@@ -48,6 +50,7 @@ import '../../services/song_sorting.dart';
 import '../../services/library_song_visibility.dart';
 import '../../services/playlist_folder_policy.dart';
 import '../../services/network_lyric_client.dart';
+import '../../services/network_timed_lyrics.dart' show splitNetworkLrc;
 import '../../services/network_lyric_resolver.dart';
 export '../../services/network_lyric_resolver.dart'
     show networkLyricSourceOrder;
@@ -304,6 +307,28 @@ class PlaylistContentNotifier extends ChangeNotifier
   final SettingsProvider _settingsProvider;
   final ThemeProvider _themeProvider;
   final CoverOverrideService _coverOverrides;
+  PluginController? _plugins;
+  PlaylistPluginHost? _pluginHost;
+  Timer? _pluginReloadTimer;
+  int _pluginRevision = 0;
+
+  void _pluginsChanged() {
+    final revision = _plugins?.revision ?? 0;
+    if (_preparationDisposed || revision == _pluginRevision) return;
+    _pluginRevision = revision;
+    _lyricRequestGeneration++;
+    _lyricPrefetchGeneration++;
+    _lyricCache.clear();
+    _lyricRequests.clear();
+    _visibleLyricsKey = null;
+    _pluginReloadTimer?.cancel();
+    _pluginReloadTimer = Timer(const Duration(milliseconds: 300), () {
+      final song = _currentSong;
+      if (!_preparationDisposed && song != null) {
+        unawaited(_loadLyricsForSong(song.filePath));
+      }
+    });
+  }
 
   bool _allSongsLoaded = false; // 表示全部歌曲是否已加载完成
   bool get allSongsLoaded => _allSongsLoaded;
@@ -1772,7 +1797,14 @@ class PlaylistContentNotifier extends ChangeNotifier
     this._themeProvider,
     this._coverOverrides, {
     AudioService? audioService,
+    PluginController? plugins,
   }) : _audioService = audioService ?? AudioService() {
+    if (plugins != null) {
+      _plugins = plugins;
+      _pluginRevision = plugins.revision;
+      plugins.addListener(_pluginsChanged);
+      _pluginHost = PlaylistPluginHost(this, plugins);
+    }
     WidgetsBinding.instance.addObserver(this);
     _continuousSkip.addListener(_handleContinuousSkipChanged);
     _coverOverrides.addListener(_handleCoverOverridesChanged);
@@ -2254,6 +2286,9 @@ class PlaylistContentNotifier extends ChangeNotifier
   // --- 播放器相关 ---
   void dispose() {
     _preparationDisposed = true;
+    _plugins?.removeListener(_pluginsChanged);
+    _pluginReloadTimer?.cancel();
+    _pluginHost?.dispose();
     _cancelPendingTrackChange();
     _playbackSleepTimerGeneration++;
     unawaited(_playerEvents.close());
@@ -7020,6 +7055,7 @@ class PlaylistContentNotifier extends ChangeNotifier
 
   String _lyricCacheKey(Song song) => [
     song.normalizedPath,
+    'plugins:$_pluginRevision',
     _settingsProvider.preferExternalLyrics ? 'externalFirst' : 'networkFirst',
     _settingsProvider.enableOnlineLyrics ? 'online' : 'local',
     _settingsProvider.primaryLyricSource,
@@ -7068,6 +7104,24 @@ class PlaylistContentNotifier extends ChangeNotifier
   }
 
   Future<List<LyricLine>> _resolveLyricsUncached(Song song) async {
+    final plugins = _plugins;
+    if (plugins != null && plugins.hasLyricProviders) {
+      final result = await plugins.lyrics(pluginSong(song));
+      if (_preparationDisposed || isContinuousSkipping) return const [];
+      if (result != null) {
+        final translation = result['translation'];
+        final lyrics = _parseLrcContent(
+          combineNetworkLyricLines(
+            splitNetworkLrc(result['lrc'] as String),
+            translation is String && translation.length <= 48000
+                ? splitNetworkLrc(translation)
+                : const [],
+            includeTranslation: _settingsProvider.enableLyricTranslation,
+          ),
+        );
+        if (lyrics.isNotEmpty) return lyrics;
+      }
+    }
     final priority = lyricResolutionPriority(
       preferExternalLyrics: _settingsProvider.preferExternalLyrics,
       enableOnlineLyrics: _settingsProvider.enableOnlineLyrics,

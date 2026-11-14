@@ -11,10 +11,12 @@ class TransportSkipButton extends StatefulWidget {
     required this.onSkip,
     this.onHoldStart,
     this.onError,
+    this.iconSize = 38,
   });
 
   final String tooltip;
   final IconData icon;
+  final double iconSize;
   final Future<void> Function() onSkip;
   final VoidCallback Function()? onHoldStart;
   final void Function(Object, StackTrace)? onError;
@@ -116,15 +118,18 @@ class _TransportSkipButtonState extends State<TransportSkipButton> {
         onLongPressEnd: (_) => _stop(),
         onLongPressCancel: _stop,
         child: ButtonPressMotion(
-          enabled: !_holding,
+          // The skip pulse owns its full 40% compression; do not compound it
+          // with the generic pointer-pressure scale.
+          enabled: false,
           child: IconButton(
             icon: ActionMotionIcon(
               trigger: _pulse,
+              restartOnTrigger: false,
               enabled: !_holding,
               kind: widget.icon == Icons.skip_previous
                   ? IconMotion.previous
                   : IconMotion.next,
-              child: Icon(widget.icon, size: 38),
+              child: Icon(widget.icon, size: widget.iconSize),
             ),
             onPressed: _skip,
           ),
